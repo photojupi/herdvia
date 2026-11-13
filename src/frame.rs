@@ -8,6 +8,7 @@ pub const STDOUT: u8 = 3;
 pub const STDERR: u8 = 4;
 pub const EXIT: u8 = 5;
 pub const ERROR: u8 = 6;
+pub const CONTROL: u8 = 7;
 pub const MAX_PAYLOAD: usize = 65_536;
 pub const MAX_OPEN: usize = 8_192;
 
@@ -22,21 +23,24 @@ pub fn invalid(reason: &str) -> io::Error {
 }
 
 fn validate_header(tag: u8, len: usize) -> io::Result<()> {
-    if tag > ERROR {
+    if tag > CONTROL {
         return Err(invalid("unknown frame tag"));
     }
     if len > MAX_PAYLOAD || (tag == OPEN && len > MAX_OPEN) {
         return Err(invalid("frame payload too long"));
     }
-    if (tag == STDIN_EOF && len != 0) || (tag == EXIT && len != 4) {
+    if (tag == STDIN_EOF && len != 0) || (tag == EXIT && len != 4) || (tag == CONTROL && len != 6) {
         return Err(invalid("invalid frame payload length"));
     }
     Ok(())
 }
 
 fn validate_text(tag: u8, payload: &[u8]) -> io::Result<()> {
-    if tag == OPEN || tag == ERROR {
+    if tag == OPEN || tag == ERROR || tag == CONTROL {
         std::str::from_utf8(payload).map_err(|_| invalid("frame payload is not UTF-8"))?;
+    }
+    if tag == CONTROL && payload != b"reload" && payload != b"status" {
+        return Err(invalid("unknown CONTROL request"));
     }
     Ok(())
 }
@@ -105,7 +109,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_headers_before_reading_payload() {
         for header in [
-            [7, 0, 0, 0, 0],
+            [8, 0, 0, 0, 0],
             [STDIN, 0, 1, 0, 1],
             [OPEN, 0, 0, 32, 1],
             [STDIN_EOF, 0, 0, 0, 1],
@@ -135,6 +139,21 @@ mod tests {
                 read(&mut bytes.as_slice()).await.unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_only_reload_and_status_controls() {
+        for payload in [b"reload".as_slice(), b"status".as_slice()] {
+            let mut bytes = Vec::new();
+            write(&mut bytes, CONTROL, payload).await.unwrap();
+            assert_eq!(
+                read(&mut bytes.as_slice()).await.unwrap().unwrap().payload,
+                payload
+            );
+        }
+        for payload in [b"".as_slice(), b"status\n".as_slice(), b"delete".as_slice()] {
+            assert!(write(&mut Vec::new(), CONTROL, payload).await.is_err());
         }
     }
 }

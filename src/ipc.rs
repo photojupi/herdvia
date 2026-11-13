@@ -39,9 +39,20 @@ pub fn data_dir() -> io::Result<PathBuf> {
     }
 }
 
-fn uid() -> u32 {
+pub(crate) fn uid() -> u32 {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() }
+}
+
+pub fn reject_root() -> io::Result<()> {
+    if uid() == 0 {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "hlink must not run as root",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn require_uid(peer: u32) -> io::Result<()> {
@@ -82,7 +93,7 @@ pub(crate) async fn disconnected(socket: OwnedFd) -> io::Error {
     }
 }
 
-pub fn listen(dir: &Path) -> io::Result<Listener> {
+pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -95,7 +106,11 @@ pub fn listen(dir: &Path) -> io::Result<Listener> {
         ));
     }
     require_uid(metadata.uid())?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+pub fn listen(dir: &Path) -> io::Result<Listener> {
+    prepare_dir(dir)?;
     let lock = File::open(dir)?;
     // Lock the directory so two agents cannot race when removing a stale socket.
     // SAFETY: the file descriptor stays open for the lifetime of the listener.

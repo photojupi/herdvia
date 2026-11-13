@@ -1,6 +1,9 @@
 pub mod agent;
+pub mod control;
 pub mod exec;
 pub mod frame;
 pub mod ipc;
+pub mod network;
+pub mod peers;
 pub mod template;
 pub mod via;
