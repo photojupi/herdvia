@@ -1,0 +1,11 @@
+[package]
+name = "hlink"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libc = "0.2"
+tokio = { version = "1", features = ["io-util", "io-std", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
