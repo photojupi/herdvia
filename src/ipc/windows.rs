@@ -78,7 +78,7 @@ pub fn listen(dir: &Path) -> io::Result<Listener> {
     let name = name_for_dir(&sid, dir)?;
     let next = create_pipe(&name, &sid, true).map_err(|err| {
         if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-            in_use(pipe_owner(&name).ok().as_deref(), &sid)
+            in_use(pipe_owner(&name).as_deref(), &sid)
         } else {
             err
         }
@@ -111,27 +111,32 @@ fn lock_agent(dir: &Path) -> io::Result<File> {
     }
 }
 
-/// The error for a pipe name that already has a first instance, given its owner SID if known.
-fn in_use(owner: Option<&str>, sid: &str) -> io::Error {
-    match owner {
-        Some(owner) if owner != sid => io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!(
+/// The error for a pipe name that already has a first instance, given its owner SID or why
+/// it cannot be read. Only this user's own pipe means an agent: agent.lock is already held,
+/// so it is an older agent that holds no lock.
+fn in_use(owner: Result<&str, &io::Error>, sid: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AddrInUse,
+        match owner {
+            Ok(owner) if owner == sid => "agent is already running".to_owned(),
+            Ok(owner) => format!(
                 "another account ({owner}) holds this agent's pipe name; the agent cannot start until that account's process closes it"
             ),
-        ),
-        _ => io::Error::new(io::ErrorKind::AddrInUse, "agent is already running"),
-    }
+            Err(err) => format!(
+                "another process holds this agent's pipe name, and its owner cannot be read ({err}); the agent cannot start until that process closes it"
+            ),
+        },
+    )
 }
 
 /// The owner SID of an existing pipe, connecting as an anonymous client: the server
 /// may belong to another account, so it must not be able to impersonate this one.
+/// Only READ_CONTROL is asked for, so a pipe that admits no reader still names its owner.
 fn pipe_owner(name: &str) -> io::Result<String> {
     let pipe = OpenOptions::new()
-        .read(true)
+        .access_mode(READ_CONTROL)
         .security_qos_flags(SECURITY_ANONYMOUS)
         .open(name)?;
-    // GENERIC_READ includes READ_CONTROL.
     owner_sid(pipe.as_raw_handle(), SE_KERNEL_OBJECT)
 }
 
@@ -661,17 +666,80 @@ mod tests {
 
     #[test]
     fn names_another_account_that_holds_the_pipe_name() {
-        let running = "agent is already running";
-        assert_eq!(in_use(None, "S-1-5-21-1").to_string(), running);
         assert_eq!(
-            in_use(Some("S-1-5-21-1"), "S-1-5-21-1").to_string(),
-            running
+            in_use(Ok("S-1-5-21-1"), "S-1-5-21-1").to_string(),
+            "agent is already running"
         );
-        let other = in_use(Some("S-1-5-21-2"), "S-1-5-21-1");
+        let other = in_use(Ok("S-1-5-21-2"), "S-1-5-21-1");
         assert_eq!(other.kind(), io::ErrorKind::AddrInUse);
         assert!(
             other.to_string().contains("another account (S-1-5-21-2)"),
             "{other}"
+        );
+        // An owner that cannot be read is not taken for this user's agent.
+        let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+        let unknown = in_use(Err(&denied), "S-1-5-21-1");
+        assert_eq!(unknown.kind(), io::ErrorKind::AddrInUse);
+        assert!(
+            unknown.to_string().starts_with(&format!(
+                "another process holds this agent's pipe name, and its owner cannot be read ({denied})"
+            )),
+            "{unknown}"
+        );
+    }
+
+    /// A pipe name of its own, never the agent's.
+    fn test_pipe_name() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!(r"\\.\pipe\herdvia-test-{}-{nanos}", std::process::id())
+    }
+
+    #[tokio::test]
+    async fn reads_the_owner_of_a_pipe_with_read_control_only() {
+        let sid = current_sid().unwrap();
+        let name = test_pipe_name();
+        let _own = create_pipe(&name, &sid, true).unwrap();
+        assert_eq!(pipe_owner(&name).unwrap(), sid);
+        let squat = |name: &str, sddl: &str| {
+            let descriptor = security_descriptor(sddl).unwrap();
+            let mut attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor.0,
+                bInheritHandle: 0,
+            };
+            // SAFETY: attributes and its descriptor live for the call.
+            unsafe {
+                ServerOptions::new().create_with_security_attributes_raw(
+                    name,
+                    (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+            }
+            .unwrap()
+        };
+        // A pipe that admits no reader (CC is FILE_READ_DATA) still names its owner.
+        let name = test_pipe_name();
+        let _no_reader = squat(&name, &format!("O:{sid}D:P(D;;CC;;;{sid})(A;;GA;;;{sid})"));
+        assert_eq!(pipe_owner(&name).unwrap(), sid);
+        // A pipe that lets no one read its security descriptor, as another account's can.
+        let name = test_pipe_name();
+        let _squatter = squat(
+            &name,
+            &format!("O:{sid}D:P(D;;RC;;;OW)(D;;RC;;;{sid})(A;;GA;;;{sid})"),
+        );
+        let err = create_pipe(&name, &sid, true).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        let owner = pipe_owner(&name);
+        assert_eq!(
+            owner.as_ref().unwrap_err().raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32)
+        );
+        assert!(
+            in_use(owner.as_deref(), &sid)
+                .to_string()
+                .contains("its owner cannot be read")
         );
     }
 
