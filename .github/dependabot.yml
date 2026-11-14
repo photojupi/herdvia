@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Keeps the commit SHAs that the workflows pin actions to (and their version comments) current.
+  # No cargo entry: iroh is pinned to ~1.4.0 on purpose, and Cargo.lock changes are made by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
