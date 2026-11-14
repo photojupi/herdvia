@@ -11,6 +11,8 @@ use tokio::net::UnixStream;
 
 const LABEL: &str = "io.github.photojupi.herdvia.agent";
 const PLIST: &str = "Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist";
+/// The agent's PATH after `$HOME/.local/bin`.
+pub(crate) const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 // A service that launchd respawned moments ago took 2.3s to leave after bootout
 // (measured on macOS 27), so allow 10s of 250ms retries.
 const BOOTSTRAP_RETRIES: u32 = if cfg!(test) { 4 } else { 40 };
@@ -222,7 +224,7 @@ fn plist(home: &Path, executable: &Path) -> io::Result<String> {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{path}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>{path}:{SYSTEM_PATH}</string>
     </dict>
 </dict>
 </plist>
@@ -230,7 +232,42 @@ fn plist(home: &Path, executable: &Path) -> io::Result<String> {
     ))
 }
 
-fn unstable_path(executable: &Path, temp: &Path) -> bool {
+/// The executable that the installed LaunchAgent runs, or None when none is installed.
+/// Only reads the plist.
+pub(crate) fn registered_executable(home: &Path) -> io::Result<Option<String>> {
+    let path = home.join(PLIST);
+    match fs::read_to_string(&path) {
+        Ok(xml) => plist_executable(&xml).map(Some).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} has no ProgramArguments", path.display()),
+            )
+        }),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// The first ProgramArguments string of a plist written by `plist`, unescaped.
+fn plist_executable(xml: &str) -> Option<String> {
+    let rest = xml.split_once("<key>ProgramArguments</key>")?.1;
+    let rest = rest
+        .trim_start()
+        .strip_prefix("<array>")?
+        .trim_start()
+        .strip_prefix("<string>")?;
+    let (value, _) = rest.split_once("</string>")?;
+    Some(
+        value
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&"),
+    )
+}
+
+pub(crate) fn unstable_path(executable: &Path, temp: &Path) -> bool {
     let executable = Path::new("/").join(executable.strip_prefix("/private").unwrap_or(executable));
     let temp = Path::new("/").join(temp.strip_prefix("/private").unwrap_or(temp));
     executable.starts_with(temp)
@@ -305,6 +342,11 @@ mod tests {
             dir.path().display()
         )));
         assert!(!xml.contains("HERDVIA_DIR"));
+        assert_eq!(
+            plist_executable(&xml).as_deref(),
+            executable.to_str(),
+            "doctor reads back the escaped executable"
+        );
         #[cfg(target_os = "macos")]
         {
             let path = dir.path().join("agent.plist");
@@ -687,6 +729,30 @@ mod tests {
         assert!(err.to_string().contains("launchctl unavailable"));
         assert!(err.to_string().contains("agent is now stopped"));
         assert!(err.to_string().contains("herdvia agent install again"));
+    }
+
+    #[test]
+    fn registered_executable_reads_the_plist_without_creating_anything() {
+        let dir = temp_home();
+        let home = dir.path().join("home");
+        assert_eq!(registered_executable(&home).unwrap(), None);
+        assert!(!home.exists());
+        let path = home.join(PLIST);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            plist(&home, Path::new("/opt/a & b/herdvia")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            registered_executable(&home).unwrap().as_deref(),
+            Some("/opt/a & b/herdvia")
+        );
+        fs::write(&path, "<plist></plist>").unwrap();
+        assert_eq!(
+            registered_executable(&home).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

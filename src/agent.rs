@@ -111,6 +111,7 @@ async fn connection(mut stream: ipc::ServerStream, network: Arc<Network>) -> io:
                 "reload" => network.reload().map(|()| "reloaded\n".to_owned()),
                 "status" => Ok(network.status()),
                 "pending" => Ok(network.pending()),
+                "doctor" => Ok(crate::doctor::agent_report(&network.endpoint)),
                 _ => Err(frame::invalid("unknown control request")),
             };
             let text = match result {

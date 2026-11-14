@@ -41,6 +41,25 @@ pub(crate) fn run_command(executable: &[u16]) -> io::Result<Vec<u16>> {
     Ok(command)
 }
 
+/// Whether a Run value is the command `install` would register for this executable.
+/// Windows paths ignore case, so ASCII letters are compared without it.
+pub(crate) fn registered_for(value: &[u16], executable: &[u16]) -> bool {
+    let end = value
+        .iter()
+        .rposition(|&unit| unit != 0)
+        .map_or(0, |i| i + 1);
+    let fold = |unit: &u16| match u8::try_from(*unit) {
+        Ok(byte) => u16::from(byte.to_ascii_lowercase()),
+        Err(_) => *unit,
+    };
+    run_command(executable).is_ok_and(|command| {
+        command[..command.len() - 1]
+            .iter()
+            .map(fold)
+            .eq(value[..end].iter().map(fold))
+    })
+}
+
 pub(crate) fn install_requires_stop(registered: bool, running: bool) -> io::Result<bool> {
     if !registered && running {
         return Err(io::Error::new(
@@ -174,6 +193,25 @@ mod tests {
             run_command(&path).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn registered_for_matches_only_this_executables_command() {
+        let wide = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        let value = run_command(&wide(r"C:\Tools\herdvia.exe")).unwrap();
+        // With or without the stored terminator.
+        assert!(registered_for(&value, &wide(r"C:\Tools\herdvia.exe")));
+        assert!(registered_for(
+            &value[..value.len() - 1],
+            &wide(r"C:\Tools\herdvia.exe")
+        ));
+        assert!(registered_for(&value, &wide(r"c:\tools\HERDVIA.exe")));
+        assert!(!registered_for(&value, &wide(r"C:\Other\herdvia.exe")));
+        assert!(!registered_for(
+            &wide("something else"),
+            &wide(r"C:\Tools\herdvia.exe")
+        ));
+        assert!(!registered_for(&[], &wide(r"C:\100%\herdvia.exe")));
     }
 
     #[test]

@@ -26,6 +26,7 @@ enum Command {
         permission: Permission,
     },
     Version,
+    Doctor,
 }
 
 fn parse(args: Vec<String>) -> io::Result<Command> {
@@ -39,6 +40,7 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd] if cmd == "id" => Ok(Command::Id),
         [cmd] if cmd == "status" => Ok(Command::Status),
         [cmd] if cmd == "pending" => Ok(Command::Pending),
+        [cmd] if cmd == "doctor" => Ok(Command::Doctor),
         [cmd, name] if cmd == "revoke" && peers::valid_name(name) => {
             Ok(Command::Revoke(name.clone()))
         }
@@ -88,9 +90,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | --version"
+                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             } else {
-                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | --version"
+                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             },
         )),
     }
@@ -118,6 +120,7 @@ async fn main() {
         #[cfg(windows)]
         Ok(Command::AgentUninstall) => herdvia::launchd::uninstall().await.map(|()| 0),
         Ok(Command::Via { peer, line }) => herdvia::via::run(&peer, &line).await,
+        Ok(Command::Doctor) => herdvia::doctor::run().await,
         Ok(Command::Version) => {
             println!("herdvia {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
@@ -330,6 +333,18 @@ mod tests {
             &["version"],
             &["-V"],
             &["id", "--version"],
+        ] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn doctor_takes_no_other_arguments() {
+        assert!(matches!(parse(args(&["doctor"])).unwrap(), Command::Doctor));
+        for a in [
+            &["doctor", "extra"][..],
+            &["doctor", "--version"],
+            &["Doctor"],
         ] {
             assert!(parse(args(a)).is_err(), "{a:?}");
         }

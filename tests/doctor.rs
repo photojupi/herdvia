@@ -1,0 +1,398 @@
+//! `herdvia doctor`: 읽기 전용 점검. 데이터 폴더를 만들지 않고, 에이전트가 없으면 1로 끝나며,
+//! 떠 있는 에이전트에게서 버전과 실행 파일 경로를 받아 온다.
+
+#![cfg(unix)]
+
+mod common;
+
+use common::*;
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// 모든 줄이 `ok`/`warn`/`fail` 머리로 시작하는지 보고 줄들을 돌려준다.
+fn lines(o: &Out) -> Vec<String> {
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
+    let out = o.out();
+    for l in out.lines() {
+        assert!(
+            ["ok   ", "warn ", "fail "].iter().any(|p| l.starts_with(p)),
+            "줄 머리가 ok/warn/fail 이 아님: {l:?}"
+        );
+    }
+    out.lines().map(str::to_owned).collect()
+}
+
+fn find<'a>(lines: &'a [String], prefix: &str) -> &'a str {
+    lines
+        .iter()
+        .find(|l| l.starts_with(prefix))
+        .unwrap_or_else(|| panic!("{prefix:?} 로 시작하는 줄이 없음:\n{}", lines.join("\n")))
+}
+
+fn listing(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn creates_nothing_for_a_missing_data_directory() {
+    let n = Node::new("X");
+    let missing = n.root.join("none");
+    let home_before = listing(&n.home);
+    let mut c = n.cmd(&["doctor"]);
+    c.env("HERDVIA_DIR", &missing);
+    let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    let l = lines(&o);
+    assert!(find(&l, "warn data directory: ").contains("herdvia id"));
+    find(&l, "warn secret.key: missing");
+    find(&l, "ok   peers: none registered");
+    find(&l, "fail agent: not running");
+    assert!(!missing.exists(), "doctor 가 데이터 폴더를 만듦");
+    assert_eq!(
+        listing(&n.home),
+        home_before,
+        "doctor 가 HOME 에 무언가를 만듦"
+    );
+}
+
+#[test]
+fn fails_without_an_agent_and_reads_the_existing_identity() {
+    let n = Node::new("X");
+    let (id, fp) = n.id();
+    n.allow("p", &id, "--both");
+    let before = listing(&n.herdvia_dir);
+    let o = n.herdvia(&["doctor"]);
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    let l = lines(&o);
+    assert_eq!(
+        find(&l, "ok   secret.key: "),
+        format!("ok   secret.key: present, fingerprint {fp}")
+    );
+    assert!(!o.out().contains(&id), "EndpointId 전체가 출력됨");
+    find(&l, "ok   peers: 1 registered (in 0, out 0, both 1)");
+    assert!(find(&l, "fail agent: not running").contains("herdvia agent"));
+    assert_eq!(listing(&n.herdvia_dir), before);
+    assert!(!l.iter().any(|l| l.starts_with("ok   peer ")));
+}
+
+#[test]
+fn fails_on_a_malformed_peer_list() {
+    let n = Node::new("X");
+    n.id();
+    // 권한이 넓으면 그것부터 알린다.
+    fs::write(n.peers_file(), "bad line\n").unwrap();
+    fs::set_permissions(n.peers_file(), fs::Permissions::from_mode(0o644)).unwrap();
+    let o = n.herdvia(&["doctor"]);
+    assert_eq!(o.code(), Some(1));
+    assert!(
+        find(&lines(&o), "fail peers: ").contains("chmod 600"),
+        "{}",
+        o.out()
+    );
+    fs::set_permissions(n.peers_file(), fs::Permissions::from_mode(0o600)).unwrap();
+    let o = n.herdvia(&["doctor"]);
+    assert_eq!(o.code(), Some(1));
+    assert!(
+        find(&lines(&o), "fail peers: ").contains("invalid or duplicate peer name in peers"),
+        "{}",
+        o.out()
+    );
+    assert_eq!(fs::read_to_string(n.peers_file()).unwrap(), "bad line\n");
+    assert_eq!(mode_of(&n.peers_file()), 0o600);
+}
+
+#[test]
+fn reports_the_running_agents_version_and_executable() {
+    let mut n = Node::new("X");
+    n.id();
+    n.start_agent();
+    let o = n.herdvia(&["doctor"]);
+    let l = lines(&o);
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        find(&l, "ok   agent: "),
+        format!("ok   agent: running herdvia {version} from {HERDVIA}"),
+        "출력:\n{}",
+        o.out()
+    );
+    // 릴레이 연결 여부는 네트워크에 달렸다. 줄이 있는지만 본다.
+    assert!(l.iter().any(|l| l.contains(" relay: ")), "{l:?}");
+    find(&l, "warn peer connections: no peers are registered");
+    find(&l, "ok   pending: no rejected connection attempts");
+    assert!(!l.iter().any(|l| l.starts_with("fail ")), "{l:?}");
+    assert_eq!(o.code(), Some(0));
+}
+
+#[test]
+fn reports_each_connected_peer() {
+    let p = shared();
+    let o = p.a.herdvia(&["doctor"]);
+    let l = lines(&o);
+    assert!(
+        find(&l, "ok   peer b (out): connected ").contains("ms"),
+        "{l:?}"
+    );
+    let o = p.b.herdvia(&["doctor"]);
+    let l = lines(&o);
+    find(&l, "ok   peer a (in): connected ");
+}
+
+// ---------------------------------------------------------------------------
+// 응답하지 않는 에이전트. doctor 는 요청마다 3초(src/doctor.rs 의 AGENT_TIMEOUT)만 기다린다.
+// ---------------------------------------------------------------------------
+
+/// src/doctor.rs 의 AGENT_TIMEOUT 과 같은 값.
+const AGENT_TIMEOUT: Duration = Duration::from_secs(3);
+
+// src/frame.rs 의 태그.
+const STDOUT: u8 = 3;
+const EXIT: u8 = 5;
+
+fn frame(tag: u8, payload: &[u8]) -> Vec<u8> {
+    let mut f = vec![tag];
+    f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    f.extend_from_slice(payload);
+    f
+}
+
+/// 가짜 에이전트가 제어 요청 하나에 하는 일.
+#[derive(Clone, Copy)]
+enum Act {
+    /// 제대로 답한다.
+    Answer,
+    /// 답하지 않고 연결을 붙잡고 있는다.
+    Hang,
+    /// 응답 프레임 머리 3바이트만 보내고 멈춘다.
+    Partial,
+    /// 연결을 끊는다(doctor 를 모르는 구버전 에이전트처럼).
+    Drop,
+}
+
+/// 노드의 소켓에서 듣는 가짜 에이전트. `act` 가 요청마다 할 일을 고른다.
+/// 답하지 않은 연결은 테스트 프로세스가 끝날 때까지 붙잡는다.
+fn fake_agent(n: &Node, act: fn(&str) -> Act) {
+    let listener = UnixListener::bind(n.sock()).unwrap();
+    thread::spawn(move || {
+        let mut held: Vec<UnixStream> = Vec::new();
+        for s in listener.incoming() {
+            let mut s = s.unwrap();
+            let mut head = [0; 5];
+            s.read_exact(&mut head).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(head[1..].try_into().unwrap()) as usize];
+            s.read_exact(&mut payload).unwrap();
+            let request = String::from_utf8(payload).unwrap();
+            match act(&request) {
+                Act::Answer => {
+                    let text = match request.as_str() {
+                        "doctor" => format!(
+                            "version {}\nexe {HERDVIA}\nrelay none\n",
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                        "status" => "name permission connection path rtt\n".into(),
+                        _ => "fingerprint id attempts last-seen\n".into(),
+                    };
+                    let _ = s.write_all(&frame(STDOUT, text.as_bytes()));
+                    let _ = s.write_all(&frame(EXIT, &0_i32.to_be_bytes()));
+                }
+                Act::Hang => held.push(s),
+                Act::Partial => {
+                    let _ = s.write_all(&frame(STDOUT, b"version")[..3]);
+                    held.push(s);
+                }
+                Act::Drop => {}
+            }
+        }
+    });
+}
+
+/// 연결을 받기만 하고 요청을 읽지도 답하지도 않는 가짜 에이전트.
+fn silent_agent(n: &Node) {
+    let listener = UnixListener::bind(n.sock()).unwrap();
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        for s in listener.incoming() {
+            held.push(s.unwrap());
+        }
+    });
+}
+
+fn timed_doctor(n: &Node) -> (Out, Duration) {
+    let start = Instant::now();
+    let o = try_run(n.cmd(&["doctor"]), Duration::from_secs(20))
+        .expect("doctor 가 20초 안에 끝나지 않음");
+    (o, start.elapsed())
+}
+
+/// 제한 시간을 한 번 넘겨 끝났는지. 시간을 두 번 쌓지 않는다.
+fn assert_one_timeout(took: Duration, o: &Out) {
+    assert!(
+        took >= AGENT_TIMEOUT - Duration::from_millis(100) && took < 2 * AGENT_TIMEOUT,
+        "{took:?} 걸림. 출력:\n{}",
+        o.out()
+    );
+}
+
+const NO_ANSWER: &str = "did not answer within 3 seconds";
+
+#[test]
+fn fails_within_the_timeout_when_the_agent_does_not_answer() {
+    for partial in [false, true] {
+        let n = Node::new("X");
+        n.id();
+        if partial {
+            fake_agent(&n, |_| Act::Partial);
+        } else {
+            silent_agent(&n);
+        }
+        let (o, took) = timed_doctor(&n);
+        assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+        let l = lines(&o);
+        let agent = find(&l, "fail agent: ");
+        assert!(
+            agent.contains("may be running") && agent.contains(NO_ANSWER),
+            "{agent}"
+        );
+        assert!(agent.contains("restart it: run herdvia agent"), "{agent}");
+        assert!(
+            !l.iter()
+                .any(|l| l[5..].starts_with("peer ") || l[5..].starts_with("pending:")),
+            "{l:?}"
+        );
+        assert_one_timeout(took, &o);
+    }
+}
+
+#[test]
+fn warns_within_the_timeout_when_status_or_pending_does_not_answer() {
+    let n = Node::new("X");
+    fake_agent(&n, |r| {
+        if r == "status" {
+            Act::Hang
+        } else {
+            Act::Answer
+        }
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    find(&l, "ok   agent: running herdvia ");
+    assert!(
+        find(&l, "warn peer connections: ").contains(&format!("the agent {NO_ANSWER}")),
+        "{l:?}"
+    );
+    // 멈춘 에이전트에게 pending 을 다시 묻지 않는다.
+    assert!(!l.iter().any(|l| l[5..].starts_with("pending:")), "{l:?}");
+    assert_one_timeout(took, &o);
+
+    let n = Node::new("X");
+    fake_agent(&n, |r| {
+        if r == "pending" {
+            Act::Partial
+        } else {
+            Act::Answer
+        }
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    find(&l, "ok   agent: running herdvia ");
+    find(&l, "warn peer connections: no peers are registered");
+    assert!(
+        find(&l, "warn pending: ").contains(&format!("the agent {NO_ANSWER}")),
+        "{l:?}"
+    );
+    assert_one_timeout(took, &o);
+}
+
+#[test]
+fn an_old_agent_is_told_apart_from_a_stuck_one() {
+    // doctor 에서 끊고 status 에 답하면 구버전이다. 기다리지 않는다.
+    let n = Node::new("X");
+    fake_agent(&n, |r| {
+        if r == "doctor" {
+            Act::Drop
+        } else {
+            Act::Answer
+        }
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    find(&l, "warn agent: running, but older than this executable");
+    find(&l, "ok   pending: no rejected connection attempts");
+    assert!(took < AGENT_TIMEOUT, "{took:?} 걸림");
+
+    // doctor 에서 끊고 status 에서 멈추면 멈춘 에이전트다.
+    let n = Node::new("X");
+    fake_agent(&n, |r| if r == "doctor" { Act::Drop } else { Act::Hang });
+    let (o, took) = timed_doctor(&n);
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    let l = lines(&o);
+    assert!(find(&l, "fail agent: ").contains(NO_ANSWER), "{l:?}");
+    assert_one_timeout(took, &o);
+}
+
+// ---------------------------------------------------------------------------
+// 데이터 폴더와 herdr-core 위치
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fails_on_a_data_directory_this_user_cannot_open() {
+    let n = Node::new("X");
+    n.id();
+    // 000: 목록도 못 읽는다. 600: 목록은 읽지만 안의 파일에 닿지 못한다.
+    for mode in [0o000, 0o600] {
+        fs::set_permissions(&n.herdvia_dir, fs::Permissions::from_mode(mode)).unwrap();
+        let o = try_run(n.cmd(&["doctor"]), Duration::from_secs(30));
+        fs::set_permissions(&n.herdvia_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let o = o.expect("doctor 가 30초 안에 끝나지 않음");
+        assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+        let l = lines(&o);
+        let dir = find(&l, "fail data directory: ");
+        assert!(
+            dir.contains("this user cannot open it") && dir.ends_with("run chmod 700 on it"),
+            "{dir}"
+        );
+        // 원인은 폴더에 있으므로 뒤 항목은 쓰지 않는다.
+        for skipped in [" secret.key:", " peers:", " agent:"] {
+            assert!(!l.iter().any(|l| l.contains(skipped)), "{mode:o}: {l:?}");
+        }
+    }
+}
+
+#[test]
+fn shows_a_core_found_through_a_relative_path_by_its_absolute_path() {
+    let n = Node::new("X");
+    let mut c = n.cmd(&["doctor"]);
+    c.env("PATH", "bin:/usr/bin:/bin").current_dir(&n.root);
+    let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
+    let l = lines(&o);
+    let core = find(&l, "warn herdr-core: ");
+    let shown = core["warn herdr-core: ".len()..].split(';').next().unwrap();
+    assert!(shown.starts_with('/'), "{core}");
+    assert_eq!(
+        fs::canonicalize(shown).unwrap(),
+        fs::canonicalize(n.bin.join("herdr-core")).unwrap()
+    );
+    if cfg!(target_os = "macos") {
+        // 안내된 명령을 다른 현재 폴더에서 그대로 실행하면 링크가 실제 파일을 가리킨다.
+        let (_, command) = core.split_once("Link it: ").expect(core);
+        let st = Command::new("sh")
+            .args(["-c", command])
+            .current_dir(&n.home)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        assert_eq!(
+            fs::canonicalize(n.home.join(".local/bin/herdr-core")).unwrap(),
+            fs::canonicalize(n.bin.join("herdr-core")).unwrap()
+        );
+    }
+}

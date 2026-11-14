@@ -139,7 +139,8 @@ ALPN은 `herdvia/1`이다.
 
 ### 로컬 통신 추가
 
-tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending` 중 하나다(`pending`은 나중에 추가).
+tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending`, `doctor` 중 하나다(`pending`과 `doctor`는 나중에 추가).
+그 밖의 payload는 프레임을 읽는 단계에서 프로토콜 오류로 보고 연결을 끊는다.
 에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. 네트워크 스트림에서는 CONTROL을 받지 않는다.
 
 ### M3에 넣지 않는 것
@@ -321,6 +322,55 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - herdr-core는 설치하지 않는다. herdr-core는 Herdr의 것이고 Herdr의 설치 스크립트가 있다. 스크립트는 herdr-core가 없거나
   에이전트가 찾지 못하는 위치에 있으면 Herdr의 설치 명령(macOS에서 다른 곳에 있으면 `~/.local/bin`에 링크하는 명령)을 안내만 하고, 설치는 성공으로 끝낸다.
 - 피어 등록과 `hc machine add`도 하지 않는다.
+
+## 점검: doctor
+
+| 명령 | 역할 |
+|---|---|
+| `herdvia doctor` | 설치와 연결이 왜 안 되는지를 한 번에 보여 준다 |
+
+- 읽기 전용이다. 데이터 폴더, `secret.key`, `peers`, 자동 시작 등록, 에이전트 상태를 만들거나 바꾸지 않는다.
+  키가 없어도 만들지 않는다(키를 만드는 `peers::load_key` 대신 `ipc::private_file`로 열어 읽기만 한다).
+  실행하는 외부 프로그램은 `herdr-core --version`(2초 제한) 하나다. 출력은 앞 4096바이트만 읽고, 해석하지 못한 출력은 첫 줄 80자까지만 쓴다.
+  Unix에서는 새 프로세스 그룹으로 띄워 시간이 넘으면 그룹 전체를 죽인다(Windows는 직접 자식만 죽는다). root 실행은 다른 명령처럼 거부한다.
+- 출력: 표준 출력에 점검 결과 한 줄씩. 줄 머리는 `ok`, `warn`, `fail`(4칸에 맞추고 공백 하나)이고, warn과 fail 줄에는 할 일을 같은 줄에 쓴다.
+  fail이 하나라도 있으면 종료 코드 1, 없으면 0이다(warn만 있으면 0). 인자 오류 같은 기존 오류는 `herdvia: …` 한 줄과 255 그대로다.
+- 점검 항목(이 순서):
+  1. 이 실행 파일의 버전과 경로. 임시 폴더나 `target` 아래면 warn(`agent install`이 이 경로를 기록한다. 판정은 `agent install`의 경고와 같다).
+  2. 데이터 폴더. `HERDVIA_DIR`에서 왔으면 그렇다고 쓴다(자동 시작은 기본 폴더만 쓴다). 없으면 warn(`herdvia id`가 만든다).
+     디렉터리가 아니거나(Unix는 심볼릭 링크도) 다른 사용자 소유이거나 읽을 수 없으면 fail. 이 사용자 소유여도 목록을 읽거나 안을 탐색할 수 없으면 fail이다(`read_dir`와 `폴더/.` 조회로 판정하고, Unix는 `chmod 700`을 안내한다). Unix는 `agent.sock` 경로가 소켓 주소 한도를 넘으면 fail.
+     폴더 자체가 fail이면 3, 4를 건너뛰고, 이 줄이 fail이면(소켓 경로 포함) 7~9도 건너뛴다. 원인은 이 줄에 있으므로 뒤 줄에서 틀린 안내를 하지 않는다.
+  3. `secret.key`. 없으면 warn. Unix에서 에이전트와 같은 권한 검사(이 사용자 소유, 0600 이하)에 어긋나거나 32바이트가 아니면 fail. 있으면 지문만 쓴다.
+  4. `peers`. 에이전트와 같은 로더로 읽는다. 형식·권한 오류는 로더의 문구를 넣어 fail(그 줄을 고치라는 안내는 형식 오류일 때만). 방향별 개수를 쓰고, 파일이 없으면 0개다.
+     권한 안내(소유자와 `chmod 600`)는 Unix에서만 쓰고, Windows에서는 이 사용자가 읽을 수 있는 일반 파일인지 보라고 쓴다. 3도 같다.
+  5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
+     macOS는 LaunchAgent가 주는 PATH(`~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)의 실행 가능한 파일, 그 밖의 Unix는 현재 PATH와 `~/.local/bin`이다.
+     macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. PATH의 상대 경로 항목은 현재 폴더 기준 절대 경로로 바꿔 찾으므로, 표시하는 경로와 링크 대상은 절대 경로다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).
+     찾으면 `--version` 첫 줄의 마지막 단어를 버전으로 읽는다. 검증 버전(상수 `VERIFIED_CORE_VERSION`, `0.1.21`)과 다르면 warn(connect 줄이 바뀌었으면 원격이 거부한다. 로그의 `rejected command`를 보라). 실행이 실패해도 warn.
+  6. 자동 시작. macOS는 plist의 `ProgramArguments` 첫 값, Windows는 Run 값을 읽기만 한다(`launchctl`은 부르지 않는다).
+     등록이 없거나 다른 실행 파일을 가리키면 warn(`agent install`을 다시 실행). Windows는 Run 값을 `install`이 쓸 명령과 ASCII 대소문자를 무시하고 비교한다. Linux는 지원하지 않는다는 warn. Windows에서 관리자 권한으로 돌고 있으면 `agent install`이 거부된다는 warn을 한 줄 더 쓴다.
+  7. 에이전트. 제어 요청 `doctor`를 보낸다. 응답이 없으면 fail. 버전이나 실행 파일 경로가 이 실행 파일과 다르면 warn(업그레이드 뒤 다시 시작하지 않은 경우).
+     doctor가 보내는 제어 요청(`doctor`, 구버전 확인용 `status`, 8의 `status`, 9의 `pending`)은 요청마다 연결부터 응답 끝까지 3초(상수 `AGENT_TIMEOUT`)만 기다린다.
+     `doctor`나 구버전 확인용 `status`가 시간을 넘기면 "실행 중일 수 있으나 3초 안에 답하지 않았다"는 fail이고 뒤 요청은 보내지 않는다. 8의 `status`가 넘기면 warn이고 9는 묻지 않는다. 9가 넘기면 warn이다.
+     그래서 멈춘 에이전트를 기다리는 시간은 한 번의 제한 시간 정도다. 연결이 끊기는 것(구버전)과 시간 초과는 구별한다.
+     홈 릴레이에 연결되어 있지 않으면 relay 줄이 warn이다(외부 HTTPS 연결과 프록시 환경을 확인하라. herdvia는 프록시 환경 변수를 쓰지 않는다).
+  8. 피어별 상태. 기존 `status` 응답에서 피어마다 한 줄. connected는 ok이고, macOS에서 relay면 로컬 네트워크 허용 안내를 덧붙인다.
+     disconnected는 warn이고, out/both면 상대 에이전트가 꺼졌거나 상대가 이 PC를 허용하지 않았다고, in이면 상대가 걸어 와야 연결된다고 안내한다. 피어가 0개면 warn 한 줄.
+  9. 대기 중인 접속 시도. `pending` 응답의 항목 수를 ok 한 줄로 쓰고, 1개 이상이면 `pending`으로 확인하고 `accept`로 수락하라고 안내한다.
+
+  relay 줄과 8, 9는 에이전트가 응답할 때만 쓴다(relay 줄은 `doctor`에 답하는 에이전트일 때만).
+- 제어 요청 `doctor`의 응답은 STDOUT의 `키 값` 줄들과 EXIT 0이다.
+  ```
+  version <에이전트의 Cargo 패키지 버전>
+  exe <에이전트 실행 파일의 경로>
+  relay <연결된 홈 릴레이 URL 또는 none>
+  ```
+  - `exe`는 에이전트가 자기 경로를 얻지 못하면 빠진다.
+  - relay는 iroh `Endpoint::home_relay_status()` 중 연결된 항목의 URL이다. 연결된 것이 없으면 `none`이다.
+  - 받는 쪽은 첫 공백 뒤 나머지 전체를 값으로 읽고(경로에 공백이 있을 수 있다), 모르는 키는 무시한다. 키를 늘려도 이전 doctor가 깨지지 않는다.
+- 구버전 에이전트(0.1.1 이하)는 `doctor`를 모르므로 프로토콜 오류로 연결을 끊고 로그에 `unknown CONTROL request` 한 줄을 남긴다.
+  doctor는 그 경우 `status`를 다시 요청해, 답이 오면 "에이전트가 이 실행 파일보다 오래되었다. 다시 시작하라"는 warn을 쓰고 8, 9를 이어 한다. `status`도 실패하면 fail이다.
+- 판정과 줄 생성은 파일 시스템·네트워크 없이 단위 테스트할 수 있는 순수 함수로 두고, 사실을 모으는 부분과 나눈다.
 
 ## 단계
 

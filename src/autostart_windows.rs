@@ -91,6 +91,17 @@ pub async fn uninstall() -> io::Result<()> {
 }
 
 fn reject_elevated_install() -> io::Result<()> {
+    if elevated()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "run herdvia agent install from a normal PowerShell window without administrator privileges",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether this process runs with an elevated administrator token.
+pub(crate) fn elevated() -> io::Result<bool> {
     let mut token = null_mut();
     // SAFETY: token is writable; only TOKEN_QUERY access is requested for the
     // current process's token, and GetCurrentProcess returns a pseudo-handle.
@@ -115,13 +126,7 @@ fn reject_elevated_install() -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    if elevation.TokenIsElevated != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "run herdvia agent install from a normal PowerShell window without administrator privileges",
-        ));
-    }
-    Ok(())
+    Ok(elevation.TokenIsElevated != 0)
 }
 
 fn log_path() -> io::Result<PathBuf> {
@@ -191,6 +196,44 @@ fn registered() -> io::Result<bool> {
     }
     registry_result(result)?;
     Ok(true)
+}
+
+/// The Run value's command, or None when none is registered. Only reads the registry.
+pub(crate) fn registered_command() -> io::Result<Option<Vec<u16>>> {
+    let Some(key) = open_run(KEY_QUERY_VALUE)? else {
+        return Ok(None);
+    };
+    let mut kind = 0;
+    let mut size = 0;
+    // SAFETY: key is live, VALUE is NUL-terminated, and a null data buffer
+    // requests only the value's type and size in bytes.
+    let result =
+        unsafe { RegQueryValueExW(key.0, VALUE, null(), &mut kind, null_mut(), &mut size) };
+    if result == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    registry_result(result)?;
+    if kind != REG_SZ {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the Run value is not a string",
+        ));
+    }
+    let mut data = vec![0_u16; (size as usize).div_ceil(size_of::<u16>())];
+    let mut size = size_of_val(data.as_slice()) as u32;
+    // SAFETY: data is writable, u16-aligned, and size holds its length in bytes.
+    registry_result(unsafe {
+        RegQueryValueExW(
+            key.0,
+            VALUE,
+            null(),
+            null_mut(),
+            data.as_mut_ptr().cast(),
+            &mut size,
+        )
+    })?;
+    data.truncate(size as usize / size_of::<u16>());
+    Ok(Some(data))
 }
 
 fn register(command: &[u16]) -> io::Result<()> {

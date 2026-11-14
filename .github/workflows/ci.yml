@@ -187,6 +187,19 @@ jobs:
           check test "$code" = 255
           check grep -q '^herdvia: ' "$work/via.out"
 
+          echo "--- doctor"
+          # Read-only. No herdr-core and no agent here, so it reports failures and exits with 1.
+          code=0
+          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin HERDVIA_DIR="$work/doctor" \
+            "$exe" doctor > "$work/doctor.out" 2>&1 || code=$?
+          cat "$work/doctor.out"
+          check test "$code" = 1
+          check grep -qF "executable: herdvia $version at $exe" "$work/doctor.out"
+          check grep -q '^fail herdr-core: not found' "$work/doctor.out"
+          check grep -q '^fail agent: ' "$work/doctor.out"
+          check test -z "$(grep -Ev '^(ok   |warn |fail )' "$work/doctor.out")"
+          check test ! -e "$work/doctor"
+
   install-ps1:
     needs: windows-cross
     runs-on: windows-latest
@@ -358,6 +371,19 @@ jobs:
             Check ($LASTEXITCODE -eq 0) "tar.exe extracts the archive"
             Check ((Get-FileHash "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" -Algorithm SHA256).Hash -eq $built) "the extracted herdvia.exe is the built executable"
             Check ((& "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" --version) -eq "herdvia $version") "the extracted herdvia.exe runs"
+
+            # herdvia doctor only reads. No herdr-core or agent here, so it reports failures and exits with 1.
+            $env:HERDVIA_DIR = Join-Path $work "doctor"
+            $doctor = @(& $exe doctor)
+            $code = $LASTEXITCODE
+            $doctor | Write-Host
+            Check ($code -eq 1) "herdvia doctor exits with 1"
+            Check (@($doctor | Where-Object { $_ -match "^(ok  |warn) executable: herdvia $([regex]::Escape($version)) at .*\\herdvia\.exe(,|$)" }).Count -eq 1) "doctor shows the executable"
+            Check (@($doctor | Where-Object { $_ -match "^fail herdr-core: not found" }).Count -eq 1) "doctor reports the missing herdr-core"
+            Check (@($doctor | Where-Object { $_ -match "^fail agent: " }).Count -eq 1) "doctor reports the missing agent"
+            Check (@($doctor | Where-Object { $_ -notmatch "^(ok   |warn |fail )" }).Count -eq 0) "every doctor line starts with ok, warn, or fail"
+            Check (-not (Test-Path -LiteralPath $env:HERDVIA_DIR)) "doctor did not create the data folder"
+            $env:HERDVIA_DIR = Join-Path $work "d"
           } finally {
             if ($agent -and -not $agent.HasExited) { Stop-Process -Id $agent.Id }
             Stop-Process -Id $server.Id

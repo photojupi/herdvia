@@ -2,6 +2,7 @@ pub mod agent;
 #[cfg(any(windows, test))]
 mod autostart_logic;
 pub mod control;
+pub mod doctor;
 pub mod exec;
 pub mod frame;
 pub mod ipc;

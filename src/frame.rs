@@ -42,7 +42,9 @@ fn validate_text(tag: u8, payload: &[u8]) -> io::Result<()> {
     if tag == OPEN || tag == ERROR || tag == CONTROL {
         std::str::from_utf8(payload).map_err(|_| invalid("frame payload is not UTF-8"))?;
     }
-    if tag == CONTROL && ![b"reload".as_slice(), b"status", b"pending"].contains(&payload) {
+    if tag == CONTROL
+        && ![b"reload".as_slice(), b"status", b"pending", b"doctor"].contains(&payload)
+    {
         return Err(invalid("unknown CONTROL request"));
     }
     Ok(())
@@ -146,11 +148,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_only_reload_status_and_pending_controls() {
+    async fn accepts_only_reload_status_pending_and_doctor_controls() {
         for payload in [
             b"reload".as_slice(),
             b"status".as_slice(),
             b"pending".as_slice(),
+            b"doctor".as_slice(),
         ] {
             let mut bytes = Vec::new();
             write(&mut bytes, CONTROL, payload).await.unwrap();
@@ -165,6 +168,8 @@ mod tests {
             b"delete".as_slice(),
             b"pendinG".as_slice(),
             b"pendings".as_slice(),
+            b"Doctor".as_slice(),
+            b"doctors".as_slice(),
         ] {
             assert!(write(&mut Vec::new(), CONTROL, payload).await.is_err());
         }
