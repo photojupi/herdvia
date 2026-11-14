@@ -113,8 +113,7 @@ fn check_acl(file: &File, path: &Path) -> io::Result<()> {
     let list = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
     if list.is_null() {
         let err = io::Error::last_os_error();
-        // No extended ACL at all.
-        return if err.raw_os_error() == Some(libc::ENOENT) {
+        return if no_acl(err.raw_os_error()) {
             Ok(())
         } else {
             Err(err)
@@ -144,6 +143,13 @@ fn check_acl(file: &File, path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether acl_get_fd_np failing with `errno` means that the file has no extended ACL: it has
+/// none, or its file system does not support ACLs and so cannot hold an allow entry either.
+#[cfg(target_os = "macos")]
+fn no_acl(errno: Option<i32>) -> bool {
+    matches!(errno, Some(libc::ENOENT | libc::ENOTSUP | libc::EOPNOTSUPP))
 }
 
 /// The macOS ACL API, from <sys/acl.h>. The libc crate does not declare it.
@@ -498,5 +504,16 @@ mod tests {
             key.to_bytes()
         );
         check_dir(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn treats_a_file_system_without_acls_as_having_no_acl() {
+        for errno in [libc::ENOENT, libc::ENOTSUP, libc::EOPNOTSUPP] {
+            assert!(no_acl(Some(errno)), "{errno}");
+        }
+        for errno in [None, Some(libc::EACCES), Some(libc::EBADF), Some(libc::EIO)] {
+            assert!(!no_acl(errno), "{errno:?}");
+        }
     }
 }
