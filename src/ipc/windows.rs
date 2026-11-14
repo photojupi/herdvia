@@ -34,18 +34,18 @@ use windows_sys::Win32::{
             GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SE_OBJECT_TYPE,
             SetSecurityInfo,
         },
-        DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-        GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
-        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER,
-        TokenElevationType, TokenElevationTypeFull, TokenUser,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetTokenInformation, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
+        SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER, TokenElevationType,
+        TokenElevationTypeFull, TokenUser, UNPROTECTED_DACL_SECURITY_INFORMATION,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, LOCK_FILE_FLAGS,
-        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, READ_CONTROL,
-        SECURITY_ANONYMOUS, WRITE_DAC,
+        BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+        LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+        READ_CONTROL, SECURITY_ANONYMOUS, WRITE_DAC,
     },
     System::{
         IO::{IO_STATUS_BLOCK, OVERLAPPED},
@@ -316,27 +316,33 @@ const PRIVATE_FILES: [&str; 2] = ["secret.key", "peers"];
 const RESTRICTED_AT_NEXT_RUN: &str = "it allows access to accounts other than this user, SYSTEM, and Administrators; herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)";
 
 /// The counterpart of chmod 700: checks the owner first, then sets a protected DACL unless
-/// the directory has one that admits only this user, SYSTEM, and Administrators already.
-/// Then makes the key and peers inherit only from it if their own DACL lets others in.
+/// the directory has the one that `protect_dir` sets already. Then, when the directory has
+/// it, makes the key and peers inherit only from it if their own DACL lets others in.
 pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let sid = current_sid()?;
     let handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
     check_entry(&handle, dir, true, &sid)?;
     let dacl = read_dacl(&handle, &sid)?;
-    if !(dacl.protected && dacl.private) {
+    let protected = dacl.target || {
         match reopen(&handle, dir, READ_CONTROL | WRITE_DAC) {
             // SetSecurityInfo passes over an entry inside that this user cannot change;
             // private_file refuses the key or peers if they are left open.
-            Ok(writable) => protect_dir(&writable, &sid)?,
-            // Private already, only not protected from what its parent passes on.
-            Err(err) if denied(&err) && dacl.private => {}
+            Ok(writable) => {
+                protect_dir(&writable, &sid)?;
+                true
+            }
+            // Private already, though not as protect_dir sets it: what it passes on to the
+            // files inside is not known to admit this user, so they are left as they are.
+            Err(err) if denied(&err) && dacl.private => false,
             Err(err) if denied(&err) => return Err(loose_dir(dir, &sid)),
             Err(err) => return Err(err),
         }
-    }
-    for name in PRIVATE_FILES {
-        restrict_file(&dir.join(name), &sid);
+    };
+    if protected {
+        for name in PRIVATE_FILES {
+            restrict_file(&dir.join(name), &sid);
+        }
     }
     Ok(())
 }
@@ -347,7 +353,14 @@ pub(crate) fn inspect_dir(dir: &Path) -> io::Result<Option<String>> {
     let sid = current_sid()?;
     let handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
     check_entry(&handle, dir, true, &sid)?;
-    inspect(&handle, dir, &sid, || loose_dir(dir, &sid))
+    if read_dacl(&handle, &sid)?.private {
+        return Ok(None);
+    }
+    if writable(&handle, dir)? {
+        Ok(Some(RESTRICTED_AT_NEXT_RUN.to_owned()))
+    } else {
+        Err(loose_dir(dir, &sid))
+    }
 }
 
 /// Opens the key or peers for reading, refusing another kind of entry, an untrusted owner,
@@ -366,8 +379,22 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
 pub(crate) fn inspect_file(path: &Path) -> io::Result<(File, Option<String>)> {
     let sid = current_sid()?;
     let file = open_file(path, &sid)?;
-    let note = inspect(&file, path, &sid, || loose_file(path))?;
-    Ok((file, note))
+    if read_dacl(&file, &sid)?.private {
+        return Ok((file, None));
+    }
+    // prepare_dir restricts it only when it leaves the directory as protect_dir sets it.
+    let restricted = match path.parent() {
+        Some(dir) => {
+            let dir_handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
+            read_dacl(&dir_handle, &sid)?.target || writable(&dir_handle, dir)?
+        }
+        None => false,
+    };
+    if restricted && writable(&file, path)? {
+        Ok((file, Some(RESTRICTED_AT_NEXT_RUN.to_owned())))
+    } else {
+        Err(loose_file(path))
+    }
 }
 
 fn open_file(path: &Path, sid: &str) -> io::Result<File> {
@@ -379,19 +406,11 @@ fn open_file(path: &Path, sid: &str) -> io::Result<File> {
     Ok(file)
 }
 
-/// None for a private DACL, a note when this user can restrict it, and `refusal` otherwise.
-fn inspect(
-    entry: &File,
-    path: &Path,
-    sid: &str,
-    refusal: impl FnOnce() -> io::Error,
-) -> io::Result<Option<String>> {
-    if read_dacl(entry, sid)?.private {
-        return Ok(None);
-    }
+/// Whether this user may change the DACL of `entry`, which is open at `path`.
+fn writable(entry: &File, path: &Path) -> io::Result<bool> {
     match reopen(entry, path, READ_CONTROL | WRITE_DAC) {
-        Ok(_) => Ok(Some(RESTRICTED_AT_NEXT_RUN.to_owned())),
-        Err(err) if denied(&err) => Err(refusal()),
+        Ok(_) => Ok(true),
+        Err(err) if denied(&err) => Ok(false),
         Err(err) => Err(err),
     }
 }
@@ -421,8 +440,9 @@ fn loose_file(path: &Path) -> io::Error {
     )
 }
 
-/// Makes a data file inherit only from the data directory, dropping its own entries and its
-/// protection, when its DACL lets other accounts in. A file that cannot be opened, checked,
+/// Makes a data file inherit only from the data directory, which has the DACL that
+/// `protect_dir` sets, dropping its own entries and its protection, when its DACL lets other
+/// accounts in. A file that cannot be opened, checked,
 /// or changed is left as it is for `private_file` to refuse.
 fn restrict_file(path: &Path, sid: &str) {
     let Ok(file) = open_entry(path, READ_CONTROL | FILE_READ_ATTRIBUTES) else {
@@ -524,11 +544,13 @@ const ACCESS_DENIED_CALLBACK_ACE_TYPE: u8 = 10;
 const ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: u8 = 12;
 
 struct Dacl {
-    /// Not inherited from the parent.
-    protected: bool,
     /// Present, and every entry that allows access names an account that
     /// `trusted_account` accepts, inheritable entries included. Deny entries are fine.
     private: bool,
+    /// Private and protected (not inherited from the parent), and gives full control to this
+    /// user, SYSTEM, and Administrators, passed on to everything inside, as `protect_dir`
+    /// sets it.
+    target: bool,
 }
 
 /// The DACL of a file or directory, through a handle with READ_CONTROL access.
@@ -561,13 +583,16 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
         return Err(io::Error::last_os_error());
     }
     let protected = control & SE_DACL_PROTECTED != 0;
+    let open = Dacl {
+        private: false,
+        target: false,
+    };
     // A NULL DACL allows everyone everything.
     if acl.is_null() {
-        return Ok(Dacl {
-            protected,
-            private: false,
-        });
+        return Ok(open);
     }
+    // Full control, passed on to files and directories, for this user, SYSTEM, Administrators.
+    let mut granted = [false; 3];
     // SAFETY: acl is a valid ACL inside descriptor.
     for index in 0..u32::from(unsafe { (*acl).AceCount }) {
         let mut ace = null_mut();
@@ -583,24 +608,32 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
             | ACCESS_DENIED_CALLBACK_ACE_TYPE
             | ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE => true,
             ACCESS_ALLOWED_ACE_TYPE => {
+                let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
                 // SAFETY: an entry of this type is an ACCESS_ALLOWED_ACE, whose SID
                 // starts at SidStart and lies within the entry.
-                let trustee = unsafe { &raw mut (*ace.cast::<ACCESS_ALLOWED_ACE>()).SidStart };
-                trusted_account(&sid_string(trustee.cast())?, sid)
+                let trustee = sid_string(unsafe { &raw mut (*ace).SidStart }.cast())?;
+                // SAFETY: as above; the header and mask come first in the entry.
+                let (flags, mask) = unsafe { (u32::from((*ace).Header.AceFlags), (*ace).Mask) };
+                let inherit = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+                if flags & (inherit | INHERIT_ONLY_ACE) == inherit && mask == FILE_ALL_ACCESS {
+                    for (found, account) in
+                        granted.iter_mut().zip([sid, LOCAL_SYSTEM, ADMINISTRATORS])
+                    {
+                        *found |= trustee == account;
+                    }
+                }
+                trusted_account(&trustee, sid)
             }
             // Other allow types (object, callback, compound) are not examined.
             _ => false,
         };
         if !trusted {
-            return Ok(Dacl {
-                protected,
-                private: false,
-            });
+            return Ok(open);
         }
     }
     Ok(Dacl {
-        protected,
         private: true,
+        target: protected && granted == [true; 3],
     })
 }
 
@@ -1134,11 +1167,173 @@ mod tests {
             &open_entry(&dir, READ_CONTROL | WRITE_DAC).unwrap_err()
         ));
         let before = dacl(&dir);
+        // Deny entries leave it as protect_dir sets it.
+        assert!(
+            read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid)
+                .unwrap()
+                .target,
+            "{before}"
+        );
         prepare_dir(&dir).unwrap();
         assert_eq!(dacl(&dir), before);
         assert_eq!(inspect_dir(&dir).unwrap(), None);
         crate::peers::load_key(&dir).unwrap();
-        private_file(&dir.join("secret.key")).unwrap();
+        let secret = dir.join("secret.key");
+        private_file(&secret).unwrap();
+        // The key, which this user may change, is still restricted.
+        icacls(&secret, &["/grant", "*S-1-5-32-545:R"]);
+        assert_eq!(
+            inspect_file(&secret).unwrap().1.as_deref(),
+            Some(RESTRICTED_AT_NEXT_RUN)
+        );
+        prepare_dir(&dir).unwrap();
+        private_file(&secret).unwrap();
+        assert_private(&secret, &sid);
+    }
+
+    #[test]
+    fn rewrites_a_protected_directory_that_passes_nothing_on() {
+        let sid = current_sid().unwrap();
+        let user = format!("*{sid}");
+        for grants in [
+            // Private, but nothing in it inherits this user's access.
+            vec![
+                format!("{user}:F"),
+                "*S-1-5-18:F".into(),
+                "*S-1-5-32-544:F".into(),
+            ],
+            // No entry for this user at all: only the owner's implicit rights.
+            vec!["*S-1-5-18:(OI)(CI)F".into()],
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let dir = temp.path().join("herdvia");
+            fs::create_dir(&dir).unwrap();
+            let mut args = vec!["/inheritance:r", "/grant:r"];
+            args.extend(grants.iter().map(String::as_str));
+            icacls(&dir, &args);
+            let before = dacl(&dir);
+            let state = read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid).unwrap();
+            assert!(before.starts_with("D:P"), "{before}");
+            assert!(state.private && !state.target, "{before}");
+            // Safe as it is, so doctor does not complain.
+            assert_eq!(inspect_dir(&dir).unwrap(), None);
+            prepare_dir(&dir).unwrap();
+            assert_private(&dir, &sid);
+            assert!(
+                dacl(&dir).contains(&format!("(A;OICI;FA;;;{sid})")),
+                "{}",
+                dacl(&dir)
+            );
+            // The new key inherits from it, and a second run still reads it.
+            let key = crate::peers::load_key(&dir).unwrap();
+            assert_eq!(
+                crate::peers::load_key(&dir).unwrap().to_bytes(),
+                key.to_bytes()
+            );
+            private_file(&dir.join("secret.key")).unwrap();
+            assert_private(&dir.join("secret.key"), &sid);
+        }
+    }
+
+    #[test]
+    fn uses_a_private_directory_it_cannot_change_as_it_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // As when SYSTEM owns it and this user may only modify it.
+        icacls(
+            &dir,
+            &[
+                "/inheritance:r",
+                "/grant:r",
+                &format!("*{sid}:(OI)(CI)M"),
+                "*S-1-5-18:(OI)(CI)F",
+            ],
+        );
+        icacls(
+            &dir,
+            &[
+                "/deny",
+                &format!("*{sid}:(WDAC)"),
+                "/deny",
+                "*S-1-3-4:(WDAC)",
+            ],
+        );
+        let before = dacl(&dir);
+        assert!(denied(
+            &open_entry(&dir, READ_CONTROL | WRITE_DAC).unwrap_err()
+        ));
+        prepare_dir(&dir).unwrap();
+        assert_eq!(inspect_dir(&dir).unwrap(), None);
+        let key = crate::peers::load_key(&dir).unwrap();
+        let secret = dir.join("secret.key");
+        private_file(&secret).unwrap();
+        // What the directory passes on is not protect_dir's, so the key is not made to
+        // inherit from it alone; the agent and doctor both refuse it with the fix.
+        icacls(&secret, &["/grant", "*S-1-5-32-545:R"]);
+        let open = dacl(&secret);
+        prepare_dir(&dir).unwrap();
+        assert_eq!(dacl(&dir), before);
+        assert_eq!(dacl(&secret), open);
+        let expected = format!("icacls \"{}\" /reset", secret.display());
+        for err in [
+            crate::peers::load_key(&dir).unwrap_err(),
+            inspect_file(&secret).unwrap_err(),
+        ] {
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert!(err.to_string().ends_with(&expected), "{err}");
+        }
+        icacls(&secret, &["/remove:g", "*S-1-5-32-545"]);
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+    }
+
+    #[test]
+    fn restricts_a_file_with_a_null_dacl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        let key = crate::peers::load_key(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        let secret = dir.join("secret.key");
+        let file = open_entry(&secret, READ_CONTROL | WRITE_DAC).unwrap();
+        // SAFETY: file is open with WRITE_DAC; a null DACL lets everyone in.
+        let result = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null(),
+                null(),
+            )
+        };
+        assert_eq!(result, 0);
+        drop(file);
+        assert!(
+            dacl(&secret).contains("NO_ACCESS_CONTROL"),
+            "{}",
+            dacl(&secret)
+        );
+        let err = private_file(&secret).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with(&format!("icacls \"{}\" /reset", secret.display())),
+            "{err}"
+        );
+        assert_eq!(
+            inspect_file(&secret).unwrap().1.as_deref(),
+            Some(RESTRICTED_AT_NEXT_RUN)
+        );
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        assert_eq!(dacl(&secret).matches("(A;ID;").count(), 3);
+        assert_private(&secret, &sid);
     }
 
     #[test]
