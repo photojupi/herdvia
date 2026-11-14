@@ -283,7 +283,11 @@ mod tests {
         let executable = home.join("bin/herdvia");
         let xml = plist(&home, &executable).unwrap();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
-        assert!(xml.contains("<key>Label</key>\n    <string>io.github.photojupi.herdvia.agent</string>"));
+        assert!(
+            xml.contains(
+                "<key>Label</key>\n    <string>io.github.photojupi.herdvia.agent</string>"
+            )
+        );
         assert!(xml.contains(&format!(
             "<key>ProgramArguments</key>\n    <array>\n        <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/bin/herdvia</string>\n        <string>agent</string>\n    </array>",
             dir.path().display()
@@ -347,7 +351,10 @@ mod tests {
         fs::write(&path, "old plist").unwrap();
         for (code, status) in [(113, ""), (0, "state = waiting\n"), (0, "pid = 1\n")] {
             let err = install_at(home, Path::new("/opt/herdvia"), None, 501, |args| {
-                assert_eq!(args_owned(args), ["print", "gui/501/io.github.photojupi.herdvia.agent"]);
+                assert_eq!(
+                    args_owned(args),
+                    ["print", "gui/501/io.github.photojupi.herdvia.agent"]
+                );
                 Ok(output(code, status))
             })
             .await
@@ -392,7 +399,10 @@ mod tests {
                 .await
                 .unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
-                assert_eq!(calls, [vec!["print", "gui/501/io.github.photojupi.herdvia.agent"]]);
+                assert_eq!(
+                    calls,
+                    [vec!["print", "gui/501/io.github.photojupi.herdvia.agent"]]
+                );
                 assert_eq!(fs::read_to_string(&path).unwrap(), "old plist");
                 assert!(!home.join("Library/Logs").exists());
                 assert!(!data.join("agent.sock").exists());
@@ -450,7 +460,10 @@ mod tests {
         assert_eq!(
             calls,
             [
-                vec!["print".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
+                vec![
+                    "print".to_owned(),
+                    "gui/501/io.github.photojupi.herdvia.agent".to_owned()
+                ],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
@@ -488,8 +501,14 @@ mod tests {
         assert_eq!(
             calls,
             [
-                vec!["print".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
-                vec!["bootout".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
+                vec![
+                    "print".to_owned(),
+                    "gui/501/io.github.photojupi.herdvia.agent".to_owned()
+                ],
+                vec![
+                    "bootout".to_owned(),
+                    "gui/501/io.github.photojupi.herdvia.agent".to_owned()
+                ],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
@@ -497,7 +516,11 @@ mod tests {
                 ],
             ]
         );
-        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/herdvia"));
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("/opt/new/herdvia")
+        );
         drop(listener);
     }
 
@@ -539,7 +562,10 @@ mod tests {
                 Ok(output(code, ""))
             })
             .unwrap();
-            assert_eq!(calls, [vec!["bootout", "gui/501/io.github.photojupi.herdvia.agent"]]);
+            assert_eq!(
+                calls,
+                [vec!["bootout", "gui/501/io.github.photojupi.herdvia.agent"]]
+            );
             assert!(!path.exists());
             assert_eq!(fs::read_to_string(&log).unwrap(), "log");
             assert_eq!(fs::read_to_string(&key).unwrap(), "key");
@@ -592,24 +618,36 @@ mod tests {
         fs::write(&path, "old plist").unwrap();
         let mut calls = Vec::new();
         let mut attempts = 0;
-        install_at(dir.path(), Path::new("/opt/new/herdvia"), None, 501, |args| {
-            calls.push(args_owned(args));
-            if args[0] == "bootstrap" {
-                attempts += 1;
-                assert!(
-                    fs::read_to_string(&path)
-                        .unwrap()
-                        .contains("/opt/new/herdvia")
-                );
-                return Ok(output(if attempts < 3 { 5 } else { 0 }, ""));
-            }
-            Ok(output(0, ""))
-        })
+        install_at(
+            dir.path(),
+            Path::new("/opt/new/herdvia"),
+            None,
+            501,
+            |args| {
+                calls.push(args_owned(args));
+                if args[0] == "bootstrap" {
+                    attempts += 1;
+                    assert!(
+                        fs::read_to_string(&path)
+                            .unwrap()
+                            .contains("/opt/new/herdvia")
+                    );
+                    return Ok(output(if attempts < 3 { 5 } else { 0 }, ""));
+                }
+                Ok(output(0, ""))
+            },
+        )
         .await
         .unwrap();
         assert_eq!(attempts, 3);
-        assert_eq!(calls[0], ["print", "gui/501/io.github.photojupi.herdvia.agent"]);
-        assert_eq!(calls[1], ["bootout", "gui/501/io.github.photojupi.herdvia.agent"]);
+        assert_eq!(
+            calls[0],
+            ["print", "gui/501/io.github.photojupi.herdvia.agent"]
+        );
+        assert_eq!(
+            calls[1],
+            ["bootout", "gui/501/io.github.photojupi.herdvia.agent"]
+        );
         assert_eq!(calls.len(), 5);
         for call in &calls[2..] {
             assert_eq!(call, &["bootstrap", "gui/501", path.to_str().unwrap()]);
@@ -624,18 +662,28 @@ mod tests {
             .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
-        let err = install_at(dir.path(), Path::new("/opt/new/herdvia"), None, 501, |args| {
-            if args[0] == "bootstrap" {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "launchctl unavailable",
-                ));
-            }
-            Ok(output(0, ""))
-        })
+        let err = install_at(
+            dir.path(),
+            Path::new("/opt/new/herdvia"),
+            None,
+            501,
+            |args| {
+                if args[0] == "bootstrap" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "launchctl unavailable",
+                    ));
+                }
+                Ok(output(0, ""))
+            },
+        )
         .await
         .unwrap_err();
-        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/herdvia"));
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("/opt/new/herdvia")
+        );
         assert!(err.to_string().contains("launchctl unavailable"));
         assert!(err.to_string().contains("agent is now stopped"));
         assert!(err.to_string().contains("herdvia agent install again"));

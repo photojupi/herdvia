@@ -299,12 +299,22 @@ impl Node {
     /// `herdvia id` 의 (EndpointId, 지문).
     pub fn id(&self) -> (String, String) {
         let o = self.herdvia(&["id"]);
-        assert_eq!(o.code(), Some(0), "[{}] herdvia id 실패. stderr: {}", self.label, o.err());
+        assert_eq!(
+            o.code(),
+            Some(0),
+            "[{}] herdvia id 실패. stderr: {}",
+            self.label,
+            o.err()
+        );
         let s = o.out();
         let mut lines = s.lines();
         let id = lines.next().unwrap_or("").trim().to_string();
         let fp = lines.next().unwrap_or("").trim().to_string();
-        assert!(!id.is_empty(), "[{}] herdvia id 출력이 비어 있음", self.label);
+        assert!(
+            !id.is_empty(),
+            "[{}] herdvia id 출력이 비어 있음",
+            self.label
+        );
         (id, fp)
     }
 
@@ -341,18 +351,29 @@ impl Node {
     // --- 에이전트 -----------------------------------------------------------
 
     pub fn agent_running(&self) -> bool {
-        self.agent.as_ref().map(|a| process_alive(&a.pid)).unwrap_or(false)
+        self.agent
+            .as_ref()
+            .map(|a| process_alive(&a.pid))
+            .unwrap_or(false)
     }
 
     pub fn start_agent(&mut self) {
-        assert!(self.agent.is_none(), "[{}] 에이전트가 이미 떠 있음", self.label);
+        assert!(
+            self.agent.is_none(),
+            "[{}] 에이전트가 이미 떠 있음",
+            self.label
+        );
         let mut c = Command::new("/bin/sh");
         c.arg("-c")
             .arg(AGENT_WRAPPER)
             .arg("herdvia-agent-wrapper")
             .arg(HERDVIA)
             .arg(&self.root)
-            .arg(if self.remove_root_on_exit { "rm" } else { "keep" });
+            .arg(if self.remove_root_on_exit {
+                "rm"
+            } else {
+                "keep"
+            });
         self.env(&mut c);
         let mut w = c
             .stdin(Stdio::piped())
@@ -366,7 +387,11 @@ impl Node {
             .read_line(&mut line)
             .unwrap();
         let pid = line.trim().to_string();
-        assert!(!pid.is_empty(), "[{}] 에이전트 pid 를 받지 못함", self.label);
+        assert!(
+            !pid.is_empty(),
+            "[{}] 에이전트 pid 를 받지 못함",
+            self.label
+        );
         self.agent = Some(AgentProc {
             wrapper: w,
             stdin,
@@ -398,7 +423,9 @@ impl Node {
 
     /// 에이전트에 시그널을 보내 죽인다 (기본 KILL). 감시 스크립트도 거둔다.
     pub fn kill_agent(&mut self, sig: &str) {
-        let Some(mut a) = self.agent.take() else { return };
+        let Some(mut a) = self.agent.take() else {
+            return;
+        };
         let _ = Command::new("kill")
             .args([format!("-{sig}"), a.pid.clone()])
             .stderr(Stdio::null())
@@ -419,7 +446,9 @@ impl Node {
 
     /// 감시 스크립트의 표준 입력을 닫아 에이전트를 TERM 으로 끝낸다.
     pub fn stop_agent(&mut self) {
-        let Some(mut a) = self.agent.take() else { return };
+        let Some(mut a) = self.agent.take() else {
+            return;
+        };
         drop(a.stdin.take());
         if !reap(&mut a.wrapper, Duration::from_secs(15)) {
             let _ = Command::new("kill")
@@ -514,7 +543,14 @@ impl Node {
     /// 이전 검증의 흔적을 지운다. 남은 원격 프로세스는 pid 파일로 정리한다.
     pub fn clear_state(&self) {
         kill_pid_files(&self.root);
-        for f in ["invoked", "child.pid", "grandchild.pid", "PWNED", "stdin_copy", "pattern.bin"] {
+        for f in [
+            "invoked",
+            "child.pid",
+            "grandchild.pid",
+            "PWNED",
+            "stdin_copy",
+            "pattern.bin",
+        ] {
             let _ = fs::remove_file(self.root.join(f));
         }
     }
@@ -559,8 +595,16 @@ fn reap(child: &mut Child, timeout: Duration) -> bool {
 pub fn expect_agent_refused(n: &Node, what: &str) -> Out {
     let o = try_run(n.cmd(&["agent"]), Duration::from_secs(10))
         .unwrap_or_else(|| panic!("[{what}] 에이전트가 시작을 거부하지 않고 계속 돎"));
-    assert_ne!(o.code(), Some(0), "[{what}] 에이전트가 코드 0으로 끝남. stderr: {}", o.err());
-    assert!(!o.err().trim().is_empty(), "[{what}] 거부 사유가 stderr 에 없음");
+    assert_ne!(
+        o.code(),
+        Some(0),
+        "[{what}] 에이전트가 코드 0으로 끝남. stderr: {}",
+        o.err()
+    );
+    assert!(
+        !o.err().trim().is_empty(),
+        "[{what}] 거부 사유가 stderr 에 없음"
+    );
     o
 }
 
@@ -571,8 +615,10 @@ pub fn expect_agent_refused(n: &Node, what: &str) -> Out {
 /// status 출력에서 피어 이름이 낱말로 들어 있는 줄.
 pub fn status_line<'a>(out: &'a str, peer: &str) -> Option<&'a str> {
     out.lines().find(|l| {
-        l.split(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '|' | '=' | '[' | ']' | '(' | ')'))
-            .any(|t| t == peer)
+        l.split(|c: char| {
+            c.is_whitespace() || matches!(c, ',' | ':' | '|' | '=' | '[' | ']' | '(' | ')')
+        })
+        .any(|t| t == peer)
     })
 }
 
@@ -609,7 +655,12 @@ pub fn wait_connected(node: &Node, peer: &str, callee: Option<&Node>, timeout: D
     let mut last: String;
     loop {
         let o = node.status();
-        last = format!("코드 {:?}\nstdout:\n{}stderr:\n{}", o.code(), o.out(), o.err());
+        last = format!(
+            "코드 {:?}\nstdout:\n{}stderr:\n{}",
+            o.code(),
+            o.out(),
+            o.err()
+        );
         if o.code() == Some(0)
             && let Some(l) = status_line(&o.out(), peer)
             && says_connected(l)

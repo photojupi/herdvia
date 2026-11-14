@@ -364,7 +364,11 @@ fn id_prints_endpoint_id_and_fingerprint_stably() {
     );
 
     assert_eq!(mode_of(&n.key_file()), 0o600, "id 가 만든 secret.key 권한");
-    assert_eq!(mode_of(&n.herdvia_dir), 0o700, "id 가 만든 데이터 폴더 권한");
+    assert_eq!(
+        mode_of(&n.herdvia_dir),
+        0o700,
+        "id 가 만든 데이터 폴더 권한"
+    );
 
     let o2 = n.herdvia(&["id"]);
     assert_eq!(o2.code(), Some(0));
