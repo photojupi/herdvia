@@ -482,7 +482,7 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 1. **当前可执行文件：** 版本与路径（若从临时目录或 Cargo `target` 编译目录运行会发出警告，因为 `agent install` 会记录该路径）。
 2. **数据目录：** 路径（包括是否来自 `HERDVIA_DIR`；`HERDVIA_DIR` 必须为绝对路径）、是否存在、是否为目录（不接受符号链接，Windows 上也不接受目录联接 junction），以及当前用户是否能够打开（macOS/Unix 上还会校验所有者；若无法打开则判为 `fail`，并在 macOS/Unix 上提示运行 `chmod 700`）。在 macOS 上，若目录带有允许访问的 ACL（访问控制列表）条目，也判为 `fail` 并提示 `chmod -N`；在 Windows 上，若它是其他类型的重解析点（reparse point），或所有者不是当前用户、Administrators 或 SYSTEM，或它向其他账户授予了访问权限而当前用户无法修改其权限，也判为 `fail`（最后一种情况会给出需在管理员终端中运行的 `icacls … /grant` 命令）。在 Windows 上，若目录向这三者以外的账户授予了访问权限但当前用户可以修改其权限，则判为 `warn`，因为 herdvia 会在下次运行时加以限制。在 macOS/Unix 上还会检查代理套接字路径是否超出 Unix 套接字长度上限。
 3. **`secret.key`：** 是否存在，以及能否通过与代理相同的检查（macOS/Unix：归当前用户所有、权限不宽于 `0600`，macOS 上还不得有允许访问的 ACL 条目；Windows：不是链接的普通文件，所有者为当前用户、Administrators 或 SYSTEM，且不向其他账户授予访问权限）。在 Windows 上，向其他账户授予了访问权限的文件，若 herdvia 能在下次运行时加以限制则判为 `warn`，否则判为 `fail` 并给出 `icacls … /reset` 命令。输出中仅显示短指纹。
-4. **`peers`：** 是否可读（与 `secret.key` 相同的检查）且格式有效，并统计各方向已注册的对端数量。
+4. **`peers`：** 是否可读（与 `secret.key` 相同的检查）且格式有效，并统计各方向已注册的对端数量。在 Windows 上，herdvia 将在下次运行时加以限制的文件显示为不带数量的 `warn` 行（此时不解析该文件）。
 5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。
 6. **自动启动：** 是否已注册（macOS 的 LaunchAgent plist、Windows 的注册表 `Run` 值）且指向当前可执行文件。在 Windows 上若以管理员身份运行也会发出警告。
 7. **代理：** 当前数据目录对应的代理是否响应、其版本与可执行文件路径，以及是否已连接归属中继（home relay）。
@@ -491,7 +491,7 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 
 输出行写往标准输出（`stdout`），以 `ok`、`warn` 或 `fail` 开头；`warn` 与 `fail` 行会在同一行给出处理建议。对端连接按每个对端输出一行，当前置步骤失败时会省略依赖它的后续检查：若数据目录检查为 `fail`，将跳过代理检查及其后的所有行（除非仅因 Unix 套接字路径过长而失败，否则 `secret.key` 与 `peers` 也会一并跳过）；若代理无响应，则跳过 `relay`、对端连接与 `pending` 行。没有任何 `fail` 时退出码为 `0`（仅有 `warn` 仍为 `0`），存在任一 `fail` 时退出码为 `1`。命令参数错误等情况仍输出一行 `herdvia:` 并以 `255` 结束。
 
-`doctor` 是只读命令：不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直显示 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到某个使用数据目录的命令将其限制；从 `v0.1.2` 升级的电脑在运行新版本的第一条命令之前可能显示这些行（安装脚本会运行 `herdvia id`）。唯一运行的程序是 `herdr-core --version`（限时 2 秒）。向代理发送的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，则对应行记为 `warn`（`status` 超时后跳过 `pending`）。`herdvia doctor` 自 `v0.1.2` 起提供；更早版本的代理不认识该请求，此时 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理日志中会记录一行 `unknown CONTROL request`。
+`doctor` 是只读命令：不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直显示 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到某个准备数据目录的命令将其限制：`herdvia id`、`allow`、`accept`、`revoke` 或代理启动（`status`、`pending` 和 `doctor` 不做任何修改）。从 `v0.1.2` 升级的电脑在用新版本运行其中某个命令之前可能显示这些行（安装脚本会运行 `herdvia id`）。唯一运行的程序是 `herdr-core --version`（限时 2 秒）。向代理发送的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，则对应行记为 `warn`（`status` 超时后跳过 `pending`）。`herdvia doctor` 自 `v0.1.2` 起提供；更早版本的代理不认识该请求，此时 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理日志中会记录一行 `unknown CONTROL request`。
 
 请在**两台电脑**上都运行一次：电脑 B 上的问题（例如缺少 `herdr-core` 或尚未 `accept` 对端）会显示在 B 的输出中。电脑 A 上的运行示例：
 
