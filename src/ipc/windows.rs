@@ -2,15 +2,16 @@ use super::{pipe_name::pipe_name, pipe_state};
 use std::{
     env,
     ffi::c_void,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io,
     mem::{size_of, size_of_val},
     os::windows::{
         ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
         io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
-    ptr::null_mut,
+    ptr::{null, null_mut},
     time::Duration,
 };
 use tokio::{
@@ -23,17 +24,25 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY, LocalFree, STATUS_SUCCESS,
+        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_LOCK_VIOLATION, ERROR_PIPE_BUSY,
+        HANDLE, LocalFree, STATUS_SUCCESS,
     },
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            GetSecurityInfo, SE_KERNEL_OBJECT,
+            GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SE_OBJECT_TYPE,
+            SetSecurityInfo,
         },
-        GetTokenInformation, OWNER_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
-    Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx},
+    Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+        READ_CONTROL, SECURITY_ANONYMOUS, WRITE_DAC,
+    },
     System::{
         IO::{IO_STATUS_BLOCK, OVERLAPPED},
         Threading::{GetCurrentProcess, OpenProcessToken},
@@ -48,6 +57,7 @@ pub struct Listener {
     next: NamedPipeServer,
     name: String,
     sid: String,
+    _lock: File,
 }
 
 impl Listener {
@@ -61,16 +71,67 @@ impl Listener {
 
 pub fn listen(dir: &Path) -> io::Result<Listener> {
     prepare_dir(dir)?;
+    // The pipe name follows how HERDVIA_DIR is spelled; this lock follows the directory.
+    let lock = lock_agent(dir)?;
     let sid = current_sid()?;
     let name = name_for_dir(&sid, dir)?;
     let next = create_pipe(&name, &sid, true).map_err(|err| {
         if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-            io::Error::new(io::ErrorKind::AddrInUse, "agent is already running")
+            in_use(pipe_owner(&name).ok().as_deref(), &sid)
         } else {
             err
         }
     })?;
-    Ok(Listener { next, name, sid })
+    Ok(Listener {
+        next,
+        name,
+        sid,
+        _lock: lock,
+    })
+}
+
+/// Holds agent.lock in the data directory for as long as the agent runs.
+fn lock_agent(dir: &Path) -> io::Result<File> {
+    // No FILE_SHARE_DELETE: the name cannot be removed while the lock is held.
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(dir.join("agent.lock"))?;
+    match lock_byte(&lock, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY) {
+        Ok(()) => Ok(lock),
+        Err(err) if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "agent is already running",
+        )),
+        Err(err) => Err(err),
+    }
+}
+
+/// The error for a pipe name that already has a first instance, given its owner SID if known.
+fn in_use(owner: Option<&str>, sid: &str) -> io::Error {
+    match owner {
+        Some(owner) if owner != sid => io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "another account ({owner}) holds this agent's pipe name; the agent cannot start until that account's process closes it"
+            ),
+        ),
+        _ => io::Error::new(io::ErrorKind::AddrInUse, "agent is already running"),
+    }
+}
+
+/// The owner SID of an existing pipe, connecting as an anonymous client: the server
+/// may belong to another account, so it must not be able to impersonate this one.
+fn pipe_owner(name: &str) -> io::Result<String> {
+    let pipe = OpenOptions::new()
+        .read(true)
+        .security_qos_flags(SECURITY_ANONYMOUS)
+        .open(name)?;
+    // GENERIC_READ includes READ_CONTROL.
+    owner_sid(pipe.as_raw_handle(), SE_KERNEL_OBJECT)
 }
 
 pub async fn connect(dir: &Path) -> io::Result<ClientStream> {
@@ -173,7 +234,7 @@ pub fn home_dir() -> io::Result<PathBuf> {
 
 pub fn data_dir() -> io::Result<PathBuf> {
     match env::var_os("HERDVIA_DIR") {
-        Some(dir) => Ok(PathBuf::from(dir)),
+        Some(dir) => super::override_dir(dir),
         None => Ok(env_path("APPDATA")?.join("herdvia")),
     }
 }
@@ -182,34 +243,154 @@ pub fn reject_root() -> io::Result<()> {
     Ok(())
 }
 
+/// Refuses an elevated administrator token, as Unix refuses root.
+pub fn reject_elevated() -> io::Result<()> {
+    if crate::launchd::elevated()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "herdvia agent must not run as administrator; run it from a normal terminal without administrator privileges",
+        ));
+    }
+    Ok(())
+}
+
+const ADMINISTRATORS: &str = "S-1-5-32-544";
+const LOCAL_SYSTEM: &str = "S-1-5-18";
+
+/// Whether an owner can be trusted with the data: the owner of an object can always
+/// change its DACL back. An elevated user's new objects belong to Administrators.
+fn trusted_owner(owner: &str, sid: &str) -> bool {
+    owner == sid || owner == ADMINISTRATORS || owner == LOCAL_SYSTEM
+}
+
+/// The counterpart of chmod 700: checks the owner first, then sets a protected DACL.
 pub fn prepare_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)
+    fs::create_dir_all(dir)?;
+    let sid = current_sid()?;
+    let handle = match open_entry(dir, READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES) {
+        Ok(handle) => handle,
+        Err(err) => {
+            // Explain a directory that another account owns, if it can be read.
+            check_dir(dir)?;
+            return Err(err);
+        }
+    };
+    check_entry(&handle, dir, true, &sid)?;
+    protect_dir(&handle, &sid)
+}
+
+/// The read-only checks that `prepare_dir` makes before it sets the DACL.
+pub(crate) fn check_dir(dir: &Path) -> io::Result<()> {
+    let handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
+    check_entry(&handle, dir, true, &current_sid()?)
 }
 
 pub(crate) fn private_file(path: &Path) -> io::Result<File> {
-    // M5a retains the permissions inherited from the user's profile.
-    File::open(path)
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    check_entry(&file, path, false, &current_sid()?)?;
+    Ok(file)
+}
+
+/// Opens a file or directory itself, not the target of a link or junction.
+fn open_entry(path: &Path, access: u32) -> io::Result<File> {
+    OpenOptions::new()
+        .access_mode(access)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Refuses a reparse point (a junction or link), the other kind of entry, and an owner
+/// that `trusted_owner` does not accept. `file` needs READ_CONTROL and FILE_READ_ATTRIBUTES.
+fn check_entry(file: &File, path: &Path, directory: bool, sid: &str) -> io::Result<()> {
+    let attributes = file.metadata()?.file_attributes();
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || (attributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            if directory {
+                "data path must be a real directory, not a junction, symbolic link, or other reparse point".to_owned()
+            } else {
+                format!(
+                    "{} must be a regular file, not a directory, link, or other reparse point",
+                    path.display()
+                )
+            },
+        ));
+    }
+    let owner = owner_sid(file.as_raw_handle(), SE_FILE_OBJECT)?;
+    if !trusted_owner(&owner, sid) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            if directory {
+                format!(
+                    "data directory must be owned by this user, Administrators, or SYSTEM, not {owner}; use a directory that this user created"
+                )
+            } else {
+                format!(
+                    "{} must be owned by this user, Administrators, or SYSTEM, not {owner}",
+                    path.display()
+                )
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// Only this user, SYSTEM, and Administrators, inherited by everything created inside
+/// (including the key and peers, written through temporary files) and not from the parent.
+fn protect_dir(dir: &File, sid: &str) -> io::Result<()> {
+    let descriptor = security_descriptor(&format!(
+        "D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    ))?;
+    let mut present = 0;
+    let mut dacl = null_mut();
+    let mut defaulted = 0;
+    // SAFETY: descriptor is a live security descriptor; the outputs are writable. dacl
+    // points into descriptor, which outlives its use below.
+    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if present == 0 || dacl.is_null() {
+        return Err(io::Error::other("data directory DACL is missing"));
+    }
+    // SAFETY: dir owns a handle opened with WRITE_DAC; dacl is a valid ACL, and the
+    // owner, group, and SACL are left unchanged (null).
+    let result = unsafe {
+        SetSecurityInfo(
+            dir.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            dacl,
+            null(),
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    Ok(())
 }
 
 pub(crate) fn lock_file(lock: &File) -> io::Result<()> {
+    lock_byte(lock, LOCKFILE_EXCLUSIVE_LOCK)
+}
+
+fn lock_byte(lock: &File, flags: LOCK_FILE_FLAGS) -> io::Result<()> {
     let mut overlapped = OVERLAPPED::default();
     // Windows locks are mandatory. Lock the fixed byte at 4 GiB, well beyond
     // the 32-byte key and read_to_end's read buffer, so id/agent can still read it.
     overlapped.Anonymous.Anonymous.Offset = 0;
     overlapped.Anonymous.Anonymous.OffsetHigh = 1;
     // SAFETY: lock owns a synchronous file handle and overlapped remains alive
-    // for this blocking call. Closing lock releases the byte-range lock.
-    if unsafe {
-        LockFileEx(
-            lock.as_raw_handle(),
-            LOCKFILE_EXCLUSIVE_LOCK,
-            0,
-            1,
-            0,
-            &mut overlapped,
-        )
-    } == 0
-    {
+    // for this synchronous call. Closing lock releases the byte-range lock.
+    if unsafe { LockFileEx(lock.as_raw_handle(), flags, 0, 1, 0, &mut overlapped) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -236,7 +417,7 @@ fn sid_string(sid: PSID) -> io::Result<String> {
     if sid.is_null() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "missing pipe owner SID",
+            "missing owner SID",
         ));
     }
     let mut text = null_mut();
@@ -300,19 +481,14 @@ fn current_sid() -> io::Result<String> {
     sid_string(user.User.Sid)
 }
 
-fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<NamedPipeServer> {
-    // Set the owner explicitly, including for elevated users whose token's
-    // default owner might otherwise be the Administrators group.
-    let sddl: Vec<u16> = format!("O:{sid}D:P(A;;GA;;;{sid})")
-        .encode_utf16()
-        .chain([0])
-        .collect();
+fn security_descriptor(sddl: &str) -> io::Result<LocalAllocation> {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
     let mut descriptor = null_mut();
     // SAFETY: sddl is NUL-terminated; descriptor is a valid output location.
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
-            1,
+            SDDL_REVISION_1,
             &mut descriptor,
             null_mut(),
         )
@@ -320,10 +496,16 @@ fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<NamedPipeServer
     {
         return Err(io::Error::last_os_error());
     }
-    let _allocation = LocalAllocation(descriptor);
+    Ok(LocalAllocation(descriptor))
+}
+
+fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<NamedPipeServer> {
+    // Set the owner explicitly, including for elevated users whose token's
+    // default owner might otherwise be the Administrators group.
+    let descriptor = security_descriptor(&format!("O:{sid}D:P(A;;GA;;;{sid})"))?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
+        lpSecurityDescriptor: descriptor.0,
         bInheritHandle: 0,
     };
     // SAFETY: attributes and its valid security descriptor remain alive for the
@@ -341,16 +523,16 @@ fn create_pipe(name: &str, sid: &str, first: bool) -> io::Result<NamedPipeServer
     }
 }
 
-fn check_owner(stream: &ClientStream, sid: &str) -> io::Result<()> {
+/// The owner SID of an object, through a handle with READ_CONTROL access.
+fn owner_sid(handle: HANDLE, kind: SE_OBJECT_TYPE) -> io::Result<String> {
     let mut owner = null_mut();
     let mut descriptor = null_mut();
-    // ClientOptions opens with GENERIC_READ, which includes READ_CONTROL.
-    // SAFETY: stream owns a valid pipe handle; owner and descriptor are writable
-    // outputs, and all unused optional outputs are null.
+    // SAFETY: callers pass a live handle of this object type; owner and descriptor
+    // are writable outputs, and all unused optional outputs are null.
     let result = unsafe {
         GetSecurityInfo(
-            stream.as_raw_handle(),
-            SE_KERNEL_OBJECT,
+            handle,
+            kind,
             OWNER_SECURITY_INFORMATION,
             &mut owner,
             null_mut(),
@@ -362,12 +544,236 @@ fn check_owner(stream: &ClientStream, sid: &str) -> io::Result<()> {
     if result != 0 {
         return Err(io::Error::from_raw_os_error(result as i32));
     }
+    // owner points into descriptor, which lives until sid_string returns.
     let _allocation = LocalAllocation(descriptor);
-    if sid_string(owner)? != sid {
+    sid_string(owner)
+}
+
+fn check_owner(stream: &ClientStream, sid: &str) -> io::Result<()> {
+    // ClientOptions opens with GENERIC_READ, which includes READ_CONTROL.
+    if owner_sid(stream.as_raw_handle(), SE_KERNEL_OBJECT)? != sid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "pipe owner SID does not match",
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::{
+        Foundation::ERROR_PRIVILEGE_NOT_HELD,
+        Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    };
+
+    /// The DACL of a file or directory in SDDL.
+    fn dacl(path: &Path) -> String {
+        let handle = open_entry(path, READ_CONTROL).unwrap();
+        let mut descriptor = null_mut();
+        // SAFETY: handle is live with READ_CONTROL; descriptor is a writable output.
+        let result = unsafe {
+            GetSecurityInfo(
+                handle.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(result, 0);
+        let _descriptor = LocalAllocation(descriptor);
+        let mut text = null_mut();
+        // SAFETY: descriptor is live; text is a writable output freed below.
+        assert_ne!(
+            unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let _text = LocalAllocation(text.cast());
+        // SAFETY: a successful conversion returns a NUL-terminated UTF-16 string.
+        let units = unsafe {
+            let mut length = 0;
+            while *text.add(length) != 0 {
+                length += 1;
+            }
+            std::slice::from_raw_parts(text, length)
+        };
+        String::from_utf16(units).unwrap()
+    }
+
+    #[test]
+    fn trusts_this_user_administrators_and_system_only() {
+        for owner in ["S-1-5-21-1", ADMINISTRATORS, LOCAL_SYSTEM] {
+            assert!(trusted_owner(owner, "S-1-5-21-1"), "{owner}");
+        }
+        for owner in ["S-1-5-21-2", "S-1-1-0", "S-1-5-32-545", "S-1-5-11"] {
+            assert!(!trusted_owner(owner, "S-1-5-21-1"), "{owner}");
+        }
+    }
+
+    #[test]
+    fn names_another_account_that_holds_the_pipe_name() {
+        let running = "agent is already running";
+        assert_eq!(in_use(None, "S-1-5-21-1").to_string(), running);
+        assert_eq!(
+            in_use(Some("S-1-5-21-1"), "S-1-5-21-1").to_string(),
+            running
+        );
+        let other = in_use(Some("S-1-5-21-2"), "S-1-5-21-1");
+        assert_eq!(other.kind(), io::ErrorKind::AddrInUse);
+        assert!(
+            other.to_string().contains("another account (S-1-5-21-2)"),
+            "{other}"
+        );
+    }
+
+    #[test]
+    fn protects_the_directory_and_its_new_files_inherit_that() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        // An inheritable grant to Users, and a file that inherited it before the upgrade.
+        let status = std::process::Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)R"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let old = dir.join("old");
+        fs::write(&old, b"x").unwrap();
+        assert!(dacl(&old).contains(";;;BU)"), "{}", dacl(&old));
+        prepare_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // SetSecurityInfo propagates the new inheritable ACEs to existing children.
+        let existing = dacl(&old);
+        assert!(
+            existing.contains(&format!(";;;{sid})")) && !existing.contains(";;;BU)"),
+            "{existing}"
+        );
+        // SetSecurityInfo also marks the DACL auto-inherited (AI).
+        let protected = dacl(&dir);
+        assert!(protected.starts_with("D:P"), "{protected}");
+        assert_eq!(protected.matches("(A;").count(), 3, "{protected}");
+        for ace in [
+            format!("(A;OICI;FA;;;{sid})"),
+            "(A;OICI;FA;;;SY)".into(),
+            "(A;OICI;FA;;;BA)".into(),
+        ] {
+            assert!(protected.contains(&ace), "{protected}");
+        }
+        check_dir(&dir).unwrap();
+        // The key and peers are written through temporary files and renamed.
+        let key = crate::peers::load_key(&dir).unwrap();
+        let peer = crate::peers::Peer {
+            name: "work".into(),
+            id: key.public(),
+            permission: crate::peers::Permission::Both,
+        };
+        crate::peers::allow(&dir, peer.clone()).unwrap();
+        assert_eq!(crate::peers::load(&dir).unwrap(), vec![peer]);
+        for name in ["secret.key", "peers"] {
+            let path = dir.join(name);
+            private_file(&path).unwrap();
+            let file = dacl(&path);
+            assert!(
+                file.contains(&format!(";;;{sid})"))
+                    && !file.contains(";;;WD)")
+                    && !file.contains(";;;BU)")
+                    && !file.contains(";;;AU)"),
+                "{name}: {file}"
+            );
+        }
+        // Again on an existing directory.
+        prepare_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_junction_and_entries_of_the_wrong_kind() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        fs::create_dir(&target).unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        for result in [prepare_dir(&link), check_dir(&link)] {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        }
+        let file = temp.path().join("file");
+        fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            check_dir(&file).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        // Without FILE_FLAG_BACKUP_SEMANTICS, CreateFileW itself refuses a directory.
+        assert_eq!(
+            private_file(&target).unwrap_err().raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32)
+        );
+        assert_eq!(
+            private_file(&temp.path().join("none")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn refuses_a_file_symbolic_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"x").unwrap();
+        let link = temp.path().join("secret.key");
+        if let Err(err) = std::os::windows::fs::symlink_file(&target, &link) {
+            // Creating symbolic links needs elevation or Developer Mode.
+            assert_eq!(err.raw_os_error(), Some(ERROR_PRIVILEGE_NOT_HELD as i32));
+            eprintln!("skipped: {err}");
+            return;
+        }
+        let err = private_file(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("must be a regular file"), "{err}");
+        private_file(&target).unwrap();
+    }
+
+    #[test]
+    fn agent_lock_follows_the_directory_not_its_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        prepare_dir(&dir).unwrap();
+        let lock = lock_agent(&dir).unwrap();
+        let spelled = dir.to_string_lossy();
+        for other in [
+            PathBuf::from(spelled.to_uppercase()),
+            PathBuf::from(format!("{spelled}\\")),
+        ] {
+            let err = lock_agent(&other).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{}", other.display());
+            assert_eq!(err.to_string(), "agent is already running");
+        }
+        drop(lock);
+        lock_agent(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_an_elevated_token_only() {
+        assert_eq!(
+            reject_elevated().is_err(),
+            crate::launchd::elevated().unwrap()
+        );
+    }
 }

@@ -80,7 +80,98 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
             ),
         ));
     }
+    check_acl(&file, path)?;
     Ok(file)
+}
+
+/// The read-only checks that `prepare_dir` makes after its chmod: on macOS, no ACL
+/// entry that allows access. Mode bits do not limit what an ACL allows.
+#[cfg(target_os = "macos")]
+pub(crate) fn check_dir(dir: &Path) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(dir)?;
+    check_acl(&file, dir)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn check_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_acl(_file: &File, _path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Refuses an extended ACL with any allow entry. An ACL of deny entries only is accepted.
+#[cfg(target_os = "macos")]
+fn check_acl(file: &File, path: &Path) -> io::Result<()> {
+    use acl::*;
+    // SAFETY: file owns a live descriptor; the returned ACL is freed by Acl below.
+    let list = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
+    if list.is_null() {
+        let err = io::Error::last_os_error();
+        // No extended ACL at all.
+        return if err.raw_os_error() == Some(libc::ENOENT) {
+            Ok(())
+        } else {
+            Err(err)
+        };
+    }
+    let _list = Acl(list);
+    let mut id = ACL_FIRST_ENTRY;
+    let mut entry = std::ptr::null_mut();
+    // SAFETY: list is a live ACL and entry is a writable output. The entry stays
+    // valid while list lives. The call fails with EINVAL after the last entry.
+    while unsafe { acl_get_entry(list, id, &mut entry) } == 0 {
+        id = ACL_NEXT_ENTRY;
+        let mut tag = 0;
+        // SAFETY: entry came from acl_get_entry on the live list; tag is writable.
+        if unsafe { acl_get_tag_type(entry, &mut tag) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if tag == ACL_EXTENDED_ALLOW {
+            let path = path.display().to_string();
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{path} has an access control list (ACL) entry that allows access; remove the ACL with chmod -N '{}'",
+                    path.replace('\'', r"'\''")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The macOS ACL API, from <sys/acl.h>. The libc crate does not declare it.
+#[cfg(target_os = "macos")]
+mod acl {
+    use std::ffi::{c_int, c_void};
+
+    // acl_type_t, acl_entry_id_t and acl_tag_t are C enums, so int.
+    pub const ACL_TYPE_EXTENDED: c_int = 0x0000_0100;
+    pub const ACL_FIRST_ENTRY: c_int = 0;
+    pub const ACL_NEXT_ENTRY: c_int = -1;
+    pub const ACL_EXTENDED_ALLOW: c_int = 1;
+
+    unsafe extern "C" {
+        pub fn acl_get_fd_np(fd: c_int, kind: c_int) -> *mut c_void;
+        pub fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
+        pub fn acl_get_tag_type(entry: *mut c_void, tag: *mut c_int) -> c_int;
+        pub fn acl_free(object: *mut c_void) -> c_int;
+    }
+
+    pub struct Acl(pub *mut c_void);
+
+    impl Drop for Acl {
+        fn drop(&mut self) {
+            // SAFETY: the ACL came from acl_get_fd_np and this wrapper is its only owner.
+            unsafe { acl_free(self.0) };
+        }
+    }
 }
 
 pub(crate) fn lock_file(lock: &File) -> io::Result<()> {
@@ -101,7 +192,7 @@ pub fn home_dir() -> io::Result<PathBuf> {
 
 pub fn data_dir() -> io::Result<PathBuf> {
     if let Some(dir) = env::var_os("HERDVIA_DIR") {
-        return Ok(PathBuf::from(dir));
+        return super::override_dir(dir);
     }
     if cfg!(target_os = "macos") {
         Ok(home_dir()?.join("Library/Application Support/herdvia"))
@@ -128,6 +219,11 @@ pub fn reject_root() -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Refuses an elevated administrator token on Windows. Root is refused by `reject_root`.
+pub fn reject_elevated() -> io::Result<()> {
+    Ok(())
 }
 
 fn require_uid(peer: u32) -> io::Result<()> {
@@ -181,7 +277,8 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
         ));
     }
     require_uid(metadata.uid())?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    check_dir(dir)
 }
 
 pub(crate) fn lock_dir(dir: &Path) -> io::Result<File> {
@@ -257,10 +354,29 @@ impl Drop for Listener {
     }
 }
 
+/// Held by tests that start a child process, and by a test whose closed socket must not
+/// live on in such a child: until exec, a child holds every descriptor of this process.
+#[cfg(test)]
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs /bin/chmod in a test, for example to add an ACL with +a.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn test_chmod(args: &[&str], path: &Path) {
+    let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    let status = std::process::Command::new("/bin/chmod")
+        .args(args)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "chmod {args:?} {}", path.display());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(target_os = "macos")]
+    use test_chmod as chmod;
 
     #[test]
     fn rejects_a_different_uid() {
@@ -300,8 +416,10 @@ mod tests {
     async fn recovers_stale_socket_but_preserves_regular_files() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("agent.sock");
+        let spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         drop(listen(temp.path()).unwrap());
+        drop(spawn);
         std::fs::write(&path, b"keep").unwrap();
         assert!(listen(temp.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"keep");
@@ -313,5 +431,72 @@ mod tests {
         let link = temp.path().join("link");
         symlink(temp.path(), &link).unwrap();
         assert!(listen(&link).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_acl_refused(result: io::Result<impl std::fmt::Debug>, path: &Path) {
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert!(
+            err.to_string().starts_with(&path.display().to_string())
+                && err.to_string().contains("chmod -N"),
+            "{err}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_a_new_key_in_a_directory_with_an_inheritable_allow_acl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        chmod(&["+a", "everyone allow read,file_inherit"], &dir);
+        assert_acl_refused(crate::peers::load_key(&dir), &dir);
+        assert!(!dir.join("secret.key").exists());
+        assert_acl_refused(check_dir(&dir), &dir);
+        chmod(&["-N"], &dir);
+        crate::peers::load_key(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_key_and_peers_with_an_allow_acl() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let key = crate::peers::load_key(dir).unwrap();
+        let peer = crate::peers::Peer {
+            name: "work".into(),
+            id: key.public(),
+            permission: crate::peers::Permission::Both,
+        };
+        crate::peers::allow(dir, peer.clone()).unwrap();
+        let (key_path, peers_path) = (dir.join("secret.key"), dir.join("peers"));
+        chmod(&["+a", "everyone allow read"], &key_path);
+        assert_acl_refused(crate::peers::load_key(dir), &key_path);
+        chmod(&["-N"], &key_path);
+        assert_eq!(
+            crate::peers::load_key(dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        chmod(&["+a", "everyone allow write"], &peers_path);
+        assert_acl_refused(crate::peers::load(dir), &peers_path);
+        chmod(&["-N"], &peers_path);
+        assert_eq!(crate::peers::load(dir).unwrap(), vec![peer]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn accepts_an_acl_of_deny_entries_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        chmod(&["+a", "everyone deny delete"], &dir);
+        let key = crate::peers::load_key(&dir).unwrap();
+        chmod(&["+a", "everyone deny write"], &dir.join("secret.key"));
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        check_dir(&dir).unwrap();
     }
 }

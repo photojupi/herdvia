@@ -145,6 +145,9 @@ enum DirState {
     Unreadable(String),
     /// This user's directory, but this user cannot list it or reach the files in it.
     Inaccessible(String),
+    /// The agent refuses it (`ipc::check_dir`): an ACL entry that allows access (macOS),
+    /// or another owner or a reparse point (Windows). The message says how to fix it.
+    Refused(String),
 }
 
 /// The agent socket path on Unix, its length in bytes, and whether it fits in a socket address.
@@ -200,6 +203,7 @@ fn data_dir_check(dir: &Path, from_env: bool, state: &DirState, socket: Option<&
             Level::Fail,
             format!("{text}; this user cannot open it ({err}); {DIR_FIX}"),
         ),
+        DirState::Refused(err) => check(Level::Fail, format!("{text}; {err}")),
     }
 }
 
@@ -584,7 +588,11 @@ pub async fn run() -> io::Result<i32> {
         Err(err) => {
             report.add(check(
                 Level::Fail,
-                format!("data directory: {err}; set it, or set HERDVIA_DIR"),
+                if from_env {
+                    format!("data directory: {err}; set it to a full path, or unset it")
+                } else {
+                    format!("data directory: {err}; set it, or set HERDVIA_DIR")
+                },
             ));
             None
         }
@@ -754,19 +762,18 @@ fn socket(_dir: &Path) -> Option<Socket> {
 }
 
 fn dir_state(dir: &Path) -> DirState {
-    // The agent refuses a symbolic link on Unix (ipc::prepare_dir).
-    #[cfg(unix)]
-    let metadata = fs::symlink_metadata(dir);
-    #[cfg(windows)]
-    let metadata = fs::metadata(dir);
-    match metadata {
+    // The agent refuses a symbolic link, and a junction on Windows (ipc::prepare_dir).
+    match fs::symlink_metadata(dir) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => DirState::Missing,
         Err(err) => DirState::Unreadable(err.to_string()),
         Ok(metadata) if !metadata.is_dir() => DirState::NotDirectory,
         Ok(metadata) if !owned(&metadata) => DirState::ForeignOwner,
         // Reads its entries, then looks up a name inside it (which needs search permission).
         Ok(_) => match fs::read_dir(dir).and_then(|_| fs::metadata(dir.join("."))) {
-            Ok(_) => DirState::Directory,
+            Ok(_) => match ipc::check_dir(dir) {
+                Ok(()) => DirState::Directory,
+                Err(err) => DirState::Refused(err.to_string()),
+            },
             Err(err) => DirState::Inaccessible(err.to_string()),
         },
     }
@@ -778,6 +785,7 @@ fn owned(metadata: &Metadata) -> bool {
     metadata.uid() == ipc::uid()
 }
 
+/// The owner is checked by ipc::check_dir on Windows.
 #[cfg(windows)]
 fn owned(_metadata: &Metadata) -> bool {
     true
@@ -806,18 +814,18 @@ fn key_state(path: &Path) -> KeyState {
 #[cfg(unix)]
 const PRIVATE_FILE_FIX: &str = "make this user its owner and run chmod 600 on it";
 #[cfg(windows)]
-const PRIVATE_FILE_FIX: &str = "check that it is a regular file that this user can read";
+const PRIVATE_FILE_FIX: &str =
+    "check that it is a regular file, not a link, that this user can read";
 
 #[cfg(unix)]
 const DIR_FIX: &str = "run chmod 700 on it";
 #[cfg(windows)]
 const DIR_FIX: &str = "give this user access to it";
 
-// The agent refuses a symbolic link as its data directory on Unix only.
 #[cfg(unix)]
 const NOT_DIRECTORY_NOTE: &str = " (a symbolic link is not accepted)";
 #[cfg(windows)]
-const NOT_DIRECTORY_NOTE: &str = "";
+const NOT_DIRECTORY_NOTE: &str = " (a junction or symbolic link is not accepted)";
 
 #[cfg(windows)]
 const INSTALL_DIR: &str = r"%LOCALAPPDATA%\Programs\herdvia";
@@ -1071,6 +1079,7 @@ mod tests {
             DirState::ForeignOwner,
             DirState::Unreadable("denied".into()),
             DirState::Inaccessible("denied".into()),
+            DirState::Refused("remove the ACL".into()),
         ] {
             assert_eq!(
                 level(&data_dir_check(dir, false, &state, None)),
@@ -1078,6 +1087,16 @@ mod tests {
                 "{state:?}"
             );
         }
+        assert_eq!(
+            data_dir_check(
+                dir,
+                false,
+                &DirState::Refused("remove the ACL".into()),
+                None
+            )
+            .text,
+            "data directory: /d; remove the ACL"
+        );
         let long = Socket {
             path: "/d/agent.sock".into(),
             len: 200,
@@ -1145,6 +1164,47 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(&path, [1; 31]).unwrap();
         assert!(matches!(key_state(&path), KeyState::Unreadable(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn allow_acls_on_the_directory_or_its_files_fail_without_changes() {
+        let chmod = ipc::test_chmod;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        let key = peers::load_key(&dir).unwrap();
+        let peer = Peer {
+            name: "work".into(),
+            id: key.public(),
+            permission: Permission::Both,
+        };
+        peers::allow(&dir, peer).unwrap();
+
+        let path = dir.join("secret.key");
+        chmod(&["+a", "everyone allow read"], &path);
+        assert!(matches!(key_state(&path), KeyState::BadPermissions(e) if e.contains("chmod -N")));
+        chmod(&["-N"], &path);
+        assert!(matches!(key_state(&path), KeyState::Present(id) if id == key.public()));
+        let path = dir.join("peers");
+        chmod(&["+a", "everyone allow write"], &path);
+        let err = peers::load(&dir).unwrap_err();
+        assert_eq!(level(&peers_check(&path, Err(&err))), Level::Fail);
+
+        assert!(matches!(dir_state(&dir), DirState::Directory));
+        chmod(&["+a", "everyone deny delete"], &dir);
+        assert!(matches!(dir_state(&dir), DirState::Directory));
+        chmod(&["+a", "everyone allow list,search"], &dir);
+        let state = dir_state(&dir);
+        assert!(
+            matches!(&state, DirState::Refused(e) if e.contains("chmod -N")),
+            "{state:?}"
+        );
+        assert_eq!(
+            level(&data_dir_check(&dir, false, &state, None)),
+            Level::Fail
+        );
+        // Read-only: the ACL is still there.
+        assert!(matches!(dir_state(&dir), DirState::Refused(_)));
     }
 
     #[test]

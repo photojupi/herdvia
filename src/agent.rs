@@ -17,6 +17,7 @@ use tokio::task::{AbortHandle, JoinSet};
 /// On Unix they are removed only while standard error still appends to that file.
 pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
     ipc::reject_root()?;
+    ipc::reject_elevated()?;
     let mut shutdown = ipc::Shutdown::new()?;
     let dir = ipc::data_dir()?;
     let network = Network::bind(dir.clone()).await?;
