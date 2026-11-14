@@ -149,8 +149,9 @@ jobs:
           cat SHA256SUMS
 
       # Signed provenance for every file the release job publishes, checked with
-      # `gh attestation verify <file> --repo photojupi/herdvia`. Nothing changes dist/ after this
-      # step: the release job uploads these files as they are.
+      # `gh attestation verify <file> --repo photojupi/herdvia
+      # --signer-workflow photojupi/herdvia/.github/workflows/release.yml`. Nothing changes dist/
+      # after this step: the release job uploads these files as they are.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
