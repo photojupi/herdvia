@@ -218,6 +218,7 @@ enum KeyState {
     Present(EndpointId),
     /// Present, and herdvia restricts its DACL the next time it runs (Windows).
     Loose(EndpointId, String),
+    /// The agent's refusal, with advice.
     BadPermissions(String),
     Unreadable(String),
 }
@@ -242,10 +243,7 @@ fn key_check(state: &KeyState) -> Check {
                 peers::fingerprint(*id)
             ),
         ),
-        KeyState::BadPermissions(err) => check(
-            Level::Fail,
-            format!("secret.key: {err}; {PRIVATE_FILE_FIX}"),
-        ),
+        KeyState::BadPermissions(err) => check(Level::Fail, format!("secret.key: {err}")),
         KeyState::Unreadable(err) => check(
             Level::Fail,
             format!(
@@ -273,7 +271,7 @@ fn peers_check(path: &Path, peers: Result<&[Peer], &io::Error>) -> Check {
         }
         // The loader's message already names the file.
         Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            check(Level::Fail, format!("peers: {err}; {PRIVATE_FILE_FIX}"))
+            check(Level::Fail, format!("peers: {}", refusal(err)))
         }
         // A malformed line.
         Err(err) if err.kind() == io::ErrorKind::InvalidData => check(
@@ -818,7 +816,7 @@ fn key_state(path: &Path) -> KeyState {
         Ok(opened) => opened,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return KeyState::Missing,
         Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
-            return KeyState::BadPermissions(err.to_string());
+            return KeyState::BadPermissions(refusal(&err));
         }
         Err(err) => return KeyState::Unreadable(format!("{}: {err}", path.display())),
     };
@@ -859,6 +857,28 @@ fn open_private(path: &Path) -> io::Result<(fs::File, Option<String>)> {
 #[cfg(windows)]
 fn open_private(path: &Path) -> io::Result<(fs::File, Option<String>)> {
     ipc::inspect_file(path)
+}
+
+/// A refusal of the key or peers, with `PRIVATE_FILE_FIX` unless it says what to do itself.
+fn refusal(err: &io::Error) -> String {
+    if names_its_fix(err) {
+        err.to_string()
+    } else {
+        format!("{err}; {PRIVATE_FILE_FIX}")
+    }
+}
+
+/// The ACL refusal (macOS) says how to remove the ACL; the owner and mode refusal does not.
+#[cfg(unix)]
+fn names_its_fix(err: &io::Error) -> bool {
+    err.to_string().contains("chmod -N")
+}
+
+/// herdvia's own refusals (the kind of entry, the owner, a DACL with the icacls command) say
+/// what is required; an error from the system does not.
+#[cfg(windows)]
+fn names_its_fix(err: &io::Error) -> bool {
+    err.raw_os_error().is_none()
 }
 
 #[cfg(unix)]
@@ -1196,8 +1216,10 @@ mod tests {
         assert!(!present.text.contains(&key.public().to_string()));
         assert_eq!(level(&key_check(&KeyState::Missing)), Level::Warn);
         let wide = key_check(&KeyState::BadPermissions("k must be 0600".into()));
-        assert_eq!(wide.level, Level::Fail);
-        assert!(wide.text.ends_with(PRIVATE_FILE_FIX), "{}", wide.text);
+        assert_eq!(
+            (wide.level, wide.text.as_str()),
+            (Level::Fail, "secret.key: k must be 0600")
+        );
         let loose = key_check(&KeyState::Loose(key.public(), "restricted later".into()));
         assert_eq!(loose.level, Level::Warn);
         assert_eq!(
@@ -1229,7 +1251,9 @@ mod tests {
         let key = peers::load_key(dir.path()).unwrap();
         assert!(matches!(key_state(&path), KeyState::Present(id) if id == key.public()));
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(matches!(key_state(&path), KeyState::BadPermissions(_)));
+        assert!(
+            matches!(key_state(&path), KeyState::BadPermissions(e) if e.ends_with(PRIVATE_FILE_FIX))
+        );
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(&path, [1; 31]).unwrap();
         assert!(matches!(key_state(&path), KeyState::Unreadable(_)));
@@ -1251,13 +1275,17 @@ mod tests {
 
         let path = dir.join("secret.key");
         chmod(&["+a", "everyone allow read"], &path);
-        assert!(matches!(key_state(&path), KeyState::BadPermissions(e) if e.contains("chmod -N")));
+        assert!(
+            matches!(key_state(&path), KeyState::BadPermissions(e) if e.contains("chmod -N") && !e.contains(PRIVATE_FILE_FIX))
+        );
         chmod(&["-N"], &path);
         assert!(matches!(key_state(&path), KeyState::Present(id) if id == key.public()));
         let path = dir.join("peers");
         chmod(&["+a", "everyone allow write"], &path);
         let err = peers::load(&dir).unwrap_err();
-        assert_eq!(level(&peers_check(&path, Err(&err))), Level::Fail);
+        let refused = peers_check(&path, Err(&err));
+        assert_eq!(refused.level, Level::Fail);
+        assert_eq!(refused.text, format!("peers: {err}"));
 
         assert!(matches!(dir_state(&dir), DirState::Directory));
         chmod(&["+a", "everyone deny delete"], &dir);
@@ -1355,6 +1383,7 @@ mod tests {
             )),
         );
         assert_eq!(wide.level, Level::Fail);
+        #[cfg(unix)]
         assert_eq!(
             wide.text,
             format!(
@@ -1368,6 +1397,18 @@ mod tests {
             other.text,
             "peers: too many links (/d/peers); it must be a regular file that this user can read"
         );
+    }
+
+    #[test]
+    fn private_file_advice_only_where_the_refusal_gives_none() {
+        let system = io::Error::from_raw_os_error(5);
+        assert_eq!(refusal(&system), format!("{system}; {PRIVATE_FILE_FIX}"));
+        #[cfg(unix)]
+        let own = "/d/k has an access control list (ACL) entry that allows access; remove the ACL with chmod -N '/d/k'";
+        #[cfg(windows)]
+        let own = r"C:\d\k must be owned by this user, Administrators, or SYSTEM, not S-1-5-21-2";
+        let own = io::Error::new(io::ErrorKind::PermissionDenied, own);
+        assert_eq!(refusal(&own), own.to_string());
     }
 
     #[test]
