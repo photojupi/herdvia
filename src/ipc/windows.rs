@@ -243,6 +243,17 @@ pub fn reject_root() -> io::Result<()> {
     Ok(())
 }
 
+/// Refuses an elevated administrator token, as Unix refuses root.
+pub fn reject_elevated() -> io::Result<()> {
+    if crate::launchd::elevated()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "herdvia agent must not run as administrator; run it from a normal terminal without administrator privileges",
+        ));
+    }
+    Ok(())
+}
+
 const ADMINISTRATORS: &str = "S-1-5-32-544";
 const LOCAL_SYSTEM: &str = "S-1-5-18";
 
@@ -717,5 +728,13 @@ mod tests {
         }
         drop(lock);
         lock_agent(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_an_elevated_token_only() {
+        assert_eq!(
+            reject_elevated().is_err(),
+            crate::launchd::elevated().unwrap()
+        );
     }
 }

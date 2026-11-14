@@ -221,6 +221,11 @@ pub fn reject_root() -> io::Result<()> {
     }
 }
 
+/// Refuses an elevated administrator token on Windows. Root is refused by `reject_root`.
+pub fn reject_elevated() -> io::Result<()> {
+    Ok(())
+}
+
 fn require_uid(peer: u32) -> io::Result<()> {
     if peer == uid() {
         Ok(())
