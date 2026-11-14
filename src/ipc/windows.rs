@@ -136,10 +136,24 @@ fn in_use(owner: Result<&str, &io::Error>, sid: &str) -> io::Error {
 /// may belong to another account, so it must not be able to impersonate this one.
 /// Only READ_CONTROL is asked for, so a pipe that admits no reader still names its owner.
 fn pipe_owner(name: &str) -> io::Result<String> {
-    let pipe = OpenOptions::new()
-        .access_mode(READ_CONTROL)
-        .security_qos_flags(SECURITY_ANONYMOUS)
-        .open(name)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let pipe = loop {
+        match OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .security_qos_flags(SECURITY_ANONYMOUS)
+            .open(name)
+        {
+            Ok(pipe) => break pipe,
+            Err(err)
+                if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32)
+                    && std::time::Instant::now() < deadline =>
+            {
+                // Every instance is connected, as between an agent's accept and its next one.
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
+        }
+    };
     owner_sid(pipe.as_raw_handle(), SE_KERNEL_OBJECT)
 }
 
@@ -1005,6 +1019,26 @@ mod tests {
                 .to_string()
                 .contains("its owner cannot be read")
         );
+    }
+
+    #[tokio::test]
+    async fn waits_for_a_busy_pipe_to_read_its_owner() {
+        let sid = current_sid().unwrap();
+        let name = test_pipe_name();
+        let _first = create_pipe(&name, &sid, true).unwrap();
+        // A client takes the only instance, as between an agent's accept and its next one.
+        let _client = ClientOptions::new().open(&name).unwrap();
+        let runtime = tokio::runtime::Handle::current();
+        let next = std::thread::spawn({
+            let (name, sid) = (name.clone(), sid.clone());
+            move || {
+                std::thread::sleep(Duration::from_millis(200));
+                let _runtime = runtime.enter();
+                create_pipe(&name, &sid, false).unwrap()
+            }
+        });
+        assert_eq!(pipe_owner(&name).unwrap(), sid);
+        drop(next.join().unwrap());
     }
 
     fn icacls(path: &Path, args: &[&str]) {
