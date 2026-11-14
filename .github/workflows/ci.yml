@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # Unit tests only: the integration tests in tests/ depend on the public n0 relay network and timing assertions.
+      - name: Unit tests
+        run: cargo test --locked --lib --bins
+
+  windows-cross:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Clippy (Windows)
+        run: cargo clippy --target x86_64-pc-windows-gnu --all-targets --locked -- -D warnings
+
+      # Release only: debug builds fail to link on windows-gnu because iroh also builds a cdylib.
+      - name: Build (Windows, release)
+        run: cargo build --release --target x86_64-pc-windows-gnu --locked

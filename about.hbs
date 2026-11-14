@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>herdvia third-party licenses</title>
+    <style>
+        body { font-family: sans-serif; max-width: 860px; margin: 0 auto; padding: 0 16px; }
+        .license-text { white-space: pre-wrap; background: #f4f4f4; padding: 12px; overflow-x: auto; }
+        @media (prefers-color-scheme: dark) {
+            body { background: #1e1e1e; color: #ddd; }
+            a { color: #8ab4f8; }
+            .license-text { background: #2a2a2a; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Third-party licenses</h1>
+    <p>herdvia is built from the open source Rust crates listed below. Their licenses are reproduced on this page.</p>
+    <p>The source code of every crate listed here is available from crates.io at exactly the version shown, and herdvia uses these crates without modification.</p>
+    <p>The herdvia executable also contains the Rust standard library, which is licensed under MIT OR Apache-2.0 (<a href="https://github.com/rust-lang/rust">https://github.com/rust-lang/rust</a>).</p>
+
+    <h2>Overview</h2>
+    <ul>
+        {{#each overview}}
+        <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+        {{/each}}
+    </ul>
+
+    <h2>License texts</h2>
+    {{#each licenses}}
+    {{#if first_of_kind}}
+    <h3 id="{{id}}">{{name}}</h3>
+    {{/if}}
+    <section id="{{id}}-{{@index}}">
+        <p>Used by:</p>
+        <ul>
+            {{#each used_by}}
+            <li><a href="https://crates.io/crates/{{crate.name}}/{{crate.version}}">{{crate.name}} {{crate.version}}</a>{{#if crate.repository}} (<a href="{{crate.repository}}">repository</a>){{/if}}</li>
+            {{/each}}
+        </ul>
+        {{#unless source_path}}
+        <p>These crates do not ship a copy of this license with their own copyright notice, so the standard license text is shown below. The copyright holders are the authors of each crate; see the repository linked above.</p>
+        {{/unless}}
+        <pre class="license-text">{{text}}</pre>
+    </section>
+    {{/each}}
+</body>
+</html>

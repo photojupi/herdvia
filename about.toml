@@ -1,0 +1,286 @@
+# cargo-about configuration for THIRD-PARTY-LICENSES.html in release zips.
+# `accepted` lists only the licenses that the current dependency tree
+# actually needs, in order of preference.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+# Leave herdvia itself out of the third-party list
+# (takes effect because Cargo.toml has `publish = false`).
+private = { ignore = true }
+
+# Only the platforms we ship.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+]
+
+# Clarifications
+#
+# Without these, cargo-about falls back to the generic SPDX text (with a
+# "<copyright holders>" placeholder) for crates whose license file it cannot
+# find or identify. Each entry points at the crate's real license text and
+# pins it with a SHA-256 checksum. If a dependency update changes the file,
+# the checksum no longer matches, cargo-about prints a warning and the
+# release workflow fails, so these must be refreshed after `cargo update`.
+#
+# `files` paths are inside the published crate (read offline).
+# `git` paths are relative to the crate's repository root, fetched from
+# raw.githubusercontent.com at the commit recorded in .cargo_vcs_info.json.
+#
+# Not clarified: objc2, block2, dispatch2, objc2-encode, objc2-* framework
+# crates and enum-assoc. Neither their packages nor their repositories carry
+# a license text with a copyright line, so the generic text stays and the
+# template links to each crate's repository.
+
+# n0 crates: the MIT text lives only at the repository root.
+[iroh.clarify]
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+
+[[iroh.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050"
+
+# Code derived from Tailscale, shipped inside the crate.
+[[iroh.clarify.files]]
+path = "LICENSE-BSD3"
+license = "BSD-3-Clause"
+checksum = "7c6c032bf8c84fb4cd99784965a39be9e836fb7f244b3cf40c42faf4b211c10a"
+
+[iroh-relay.clarify]
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+
+[[iroh-relay.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050"
+
+# Code derived from Tailscale, shipped inside the crate.
+[[iroh-relay.clarify.files]]
+path = "LICENSE-BSD3"
+license = "BSD-3-Clause"
+checksum = "bcaa9acadee6c20991d4b5eb56e226191411a3f6ceb92587b272f2ef0221ed71"
+
+[iroh-base.clarify]
+license = "MIT OR Apache-2.0"
+
+[[iroh-base.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050"
+
+[iroh-dns.clarify]
+license = "MIT OR Apache-2.0"
+
+[[iroh-dns.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "f169adb8124d3b005416d8485d00777c9a7bdd9099982c52a4493f9732e6d050"
+
+[iroh-metrics-derive.clarify]
+license = "MIT OR Apache-2.0"
+
+[[iroh-metrics-derive.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "339060c99d5c80c2742cae417f765980afe6b0149a78f959bbf2a79f19ab3af5"
+
+[n0-error-macros.clarify]
+license = "MIT OR Apache-2.0"
+
+[[n0-error-macros.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "339060c99d5c80c2742cae417f765980afe6b0149a78f959bbf2a79f19ab3af5"
+
+[netwatch.clarify]
+license = "MIT OR Apache-2.0"
+
+[[netwatch.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "33616ec4c88b6e00de66e6c06f1a55d80bb32a9d7939f3aa83d28e673a1adcae"
+
+[portmapper.clarify]
+license = "MIT OR Apache-2.0"
+
+[[portmapper.clarify.git]]
+path = "LICENSE-MIT"
+license = "MIT"
+checksum = "33616ec4c88b6e00de66e6c06f1a55d80bb32a9d7939f3aa83d28e673a1adcae"
+
+# chrono: MIT and Apache-2.0 share one file; take the header and the MIT part.
+[chrono.clarify]
+license = "MIT OR Apache-2.0"
+
+[[chrono.clarify.files]]
+path = "LICENSE.txt"
+license = "MIT"
+start = "Rust-chrono is dual-licensed"
+end = "THE SOFTWARE."
+checksum = "8f62e89f5d579c48175357a870e1e8096ad2c3ef95b0655d9344d1e112a4d207"
+
+# sha1_smol: BSD-3-Clause for the crate, MIT for src/simd.rs, in one file.
+[sha1_smol.clarify]
+license = "BSD-3-Clause AND MIT"
+
+[[sha1_smol.clarify.files]]
+path = "LICENSE"
+license = "BSD-3-Clause"
+start = "BSD 3-Clause License"
+end = "POSSIBILITY OF SUCH DAMAGE."
+checksum = "3d7f7841688ba4c69892be4df5dd7a2c114d3ac8b2113953a6e3a35d7f86c657"
+
+[[sha1_smol.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+start = "src/simd.rs is licensed"
+end = "DEALINGS IN THE SOFTWARE."
+checksum = "db9792b680e1e478199ba3112a9910ccbcd9c25988f79bb1623b7129d562d655"
+
+# Apache-2.0 files that the scanner misidentifies (as Pixar) or skips.
+[blake3.clarify]
+license = "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
+
+[[blake3.clarify.files]]
+path = "LICENSE_A2"
+license = "Apache-2.0"
+checksum = "00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e"
+
+[constant_time_eq.clarify]
+license = "CC0-1.0 OR MIT-0 OR Apache-2.0"
+
+[[constant_time_eq.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+
+[ryu.clarify]
+license = "Apache-2.0 OR BSL-1.0"
+
+[[ryu.clarify.files]]
+path = "LICENSE-APACHE"
+license = "Apache-2.0"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+
+[sync_wrapper.clarify]
+license = "Apache-2.0"
+
+[[sync_wrapper.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+
+# windows-rs crates ship `license-mit`, which the scanner does not pick up.
+[windows.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-collections.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-collections.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-core.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-future.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-future.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-implement.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-implement.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-interface.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-interface.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-link.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-numerics.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-numerics.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-registry.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-registry.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-result.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-strings.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-sys.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-threading.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-threading.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
