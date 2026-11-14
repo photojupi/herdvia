@@ -420,7 +420,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | コマンド | 説明 |
 |---|---|
 | `herdvia id` | このマシンの `EndpointId`（1 行目）と 16 文字のフィンガープリント（2 行目）を表示します。秘密鍵がなければ生成します。 |
-| `herdvia allow <名前> <EndpointId> (--inbound \| --outbound \| --both)` | ピアを追加または更新します。稼働中のエージェントには即座に反映されます。 |
+| `herdvia allow <名前> <EndpointId> (--inbound \| --outbound \| --both)` | ピアを追加または更新します。稼働中のエージェントには即座に反映されます（または次回エージェント起動時に反映）。 |
 | `herdvia revoke <名前>` | ピアを削除し、そのピアとの接続を即座に切断します。 |
 | `herdvia status` | 各ピアの名前、権限、接続状態、経路（`direct`/`relay`）、往復遅延（RTT）を表示します。エージェントの起動が必要です。 |
 | `herdvia pending` | `inbound` 権限がないために拒否された着信試行を新しい順に表示します（フィンガープリント、`EndpointId`、試行回数、最終試行からの経過秒数）。メモリ上のみ最大 16 件・最終試行から 10 分間保持。エージェントの起動が必要です。 |
@@ -462,7 +462,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 ### Linux
 
-自動起動（`agent install` / `agent uninstall`）には対応していません。`herdvia agent` をご自身で起動してください。
+自動起動（`agent install` / `agent uninstall`）には対応していません。`herdvia agent` をご自身で起動してください（例：`systemd --user` 配下またはセッションマネージャー内）。
 
 ---
 
@@ -531,7 +531,7 @@ ok   pending: no rejected connection attempts
 **推奨 — [インストールスクリプト](#install-script)を再実行する:**
 新しいバイナリを取得・検証して安全に置き換え（macOS はアトミックな `mv`、Windows は稼働中ロックを回避するため `herdvia.new.exe` で動作確認後に `.old` へリネーム置換）、`herdvia agent install` を再実行して新しいバイナリでエージェントを再起動します。`PATH` が重複追加されることはありません。
 
-*（手動起動したフォアグラウンドのエージェントが動作中、または `HERDVIA_DIR` が設定されている場合はバイナリ更新後に停止するため、エージェントを止めるか `HERDVIA_DIR` を解除して `herdvia agent install` を実行してください。）*
+*（手動起動したフォアグラウンドのエージェントが動作中、または `HERDVIA_DIR` が設定されている場合は、そのエージェントを止めるか `HERDVIA_DIR` を解除して `herdvia agent install` を実行するか、`HERDVIA_NO_AGENT=1` を渡してご自身でエージェントを再起動してください。）*
 
 **手動アップグレード:**
 - **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon) のダウンロード・検証・`mv` 手順を再実行します（`.zprofile` の行は不要）。**稼働中のバイナリを `cp` で上書きしないでください**（次回起動時に `Killed: 9` になります）。必ず `mv` で置き換えてから `herdvia agent install` を実行してください。
@@ -559,7 +559,7 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`（または `--both`）で許可したピアは、このマシン上であなたのユーザー権限として `herdr-core` セッションを開けます — 実質的にシェル権限を与えるのと同等です。** 自分自身の端末と同等に信頼できる機器のみを許可してください。
 
-- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。セッションごとに再確認され、リストの変更は稼働中のエージェントに即時反映されます。
+- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。セッションごとに再確認され、リストの変更は稼働中のエージェントに即時反映されます。
 - **コマンド許可リストの位置づけ:** `hc` の正確な `herdr-core connect` 行のみを通し他を拒否・ログ記録する仕組みは、誤用を減らし異常を検知するためのものです。`herdr-core connect` 自体が任意のコマンドを実行できるため、**本来のセキュリティ境界はピアの鍵リスト（`peers`）です。**
 - **`root` 実行の拒否:** macOS/Unix では `root` での起動を拒否します。
 - **ユーザー分離されたローカル IPC:**
@@ -568,7 +568,7 @@ ok   pending: no rejected connection attempts
 - **秘密鍵（`secret.key`）の保護:** macOS/Unix では権限 `0600` で作成され、それより広い権限だと起動を拒否します（Windows ではユーザープロファイルの既定の権限を使用）。漏洩した場合はすべてのピアで直ちに `revoke` し、`secret.key` を削除して新しい ID を再生成してください。
 - **フィンガープリントと `pending` / `accept`:** フィンガープリントは `EndpointId` の先頭 16 文字（64 ビット）であり、目視確認と `accept` 入力用の短縮表記です。保存・検証されるのは常に完全な `EndpointId` です。`pending` はハンドシェイク認証を通過した試行のみをメモリ上に最大 16 件・10 分間保持し、`accept` は一致がただ 1 件のときのみ登録します。フィンガープリントは必ず**相手マシン自身の画面**から読み取ってください。
 
-**脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡ください。
+**脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
 
 ---
 
@@ -611,7 +611,7 @@ ok   pending: no rejected connection attempts
 | **データフォルダ（Windows）** | `%APPDATA%\herdvia` |
 | **データフォルダ（Linux）** | `$XDG_DATA_HOME/herdvia`（既定値 `~/.local/share/herdvia`） |
 | **保存先の上書き環境変数** | `HERDVIA_DIR=<パス>` でデータフォルダを変更可能（`hc` が起動する `via` を含む全コマンドに同じ値を渡す必要あり。自動起動登録とは併用不可） |
-| **`secret.key`** | このマシンの 32 バイト秘密鍵（データフォルダ内） |
+| **`secret.key`** | このマシンの 32 バイト Ed25519 秘密鍵（データフォルダ内） |
 | **`peers`** | ピア許可リスト（1 行に `名前 EndpointId 権限`、`allow`・`accept`・`revoke` で管理） |
 | **`agent.sock`** | macOS/Unix のローカルソケット（Windows はユーザー SID 別の名前付きパイプを使用） |
 | **ログ（macOS 自動起動時）** | `~/Library/Logs/herdvia.log` |

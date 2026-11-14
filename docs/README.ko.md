@@ -420,7 +420,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | 명령어 | 설명 |
 |---|---|
 | `herdvia id` | 이 PC의 `EndpointId`(첫째 줄)와 16자 지문(둘째 줄)을 출력합니다. 비밀키가 없으면 새로 생성합니다. |
-| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 바꿉니다. 실행 중인 에이전트가 있으면 즉시 반영됩니다. |
+| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 바꿉니다. 실행 중인 에이전트에는 즉시 반영됩니다(또는 다음 에이전트 시작 시 반영). |
 | `herdvia revoke <이름>` | 피어를 삭제하고 해당 피어와 맺어진 연결을 즉시 끊습니다. |
 | `herdvia status` | 각 피어의 이름, 권한, 연결 상태, 경로(`direct`/`relay`), 왕복 시간(RTT)을 표시합니다. 에이전트 실행 필요. |
 | `herdvia pending` | `inbound` 권한이 없어 거부된 접속 시도를 최근 순으로 보여 줍니다(지문, `EndpointId`, 횟수, 경과 초). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
@@ -462,7 +462,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 ### Linux
 
-자동 시작(`agent install` / `agent uninstall`)을 지원하지 않습니다. `herdvia agent`를 직접 실행하세요.
+자동 시작(`agent install` / `agent uninstall`)을 지원하지 않습니다. `herdvia agent`를 직접 실행하세요(예: `systemd --user` 아래나 세션 관리자 안에서).
 
 ---
 
@@ -531,7 +531,7 @@ ok   pending: no rejected connection attempts
 **권장 방법 — [설치 스크립트](#install-script) 다시 실행:**
 새 버전을 내려받아 검증한 뒤 실행 파일을 안전하게 교체(macOS는 원자적 `mv`, Windows는 실행 중인 파일 잠금을 피하기 위해 `herdvia.new.exe` 검증 후 `.old`로 이름 변경 교체)하고 `herdvia agent install`을 다시 실행해 새 실행 파일로 에이전트를 재시작합니다. `PATH` 항목은 중복 추가하지 않습니다.
 
-*(수동으로 띄운 포그라운드 에이전트가 돌고 있거나 `HERDVIA_DIR`이 설정돼 있으면 실행 파일 교체 후 멈추므로, 해당 에이전트를 끄거나 `HERDVIA_DIR`을 해제한 뒤 `herdvia agent install`을 실행하세요.)*
+*(수동으로 띄운 포그라운드 에이전트가 돌고 있거나 `HERDVIA_DIR`이 설정돼 있으면 해당 에이전트를 끄거나 `HERDVIA_DIR`을 해제한 뒤 `herdvia agent install`을 실행하거나, `HERDVIA_NO_AGENT=1`을 넘기고 에이전트를 직접 재시작하세요.)*
 
 **수동 업그레이드:**
 - **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon)의 다운로드·검증·`mv` 명령을 다시 실행합니다(`~/.zprofile` 추가 줄은 생략). **실행 중인 파일 위에 절대 `cp`로 덮어쓰지 마세요**(`Killed: 9` 오류 발생) — 반드시 `mv`로 교체한 뒤 `herdvia agent install`을 실행하세요.
@@ -559,7 +559,7 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`(또는 `--both`) 권한을 준 피어는 이 PC에서 내 사용자 권한으로 `herdr-core` 세션을 열 수 있으며, 이는 사실상 셸(터미널) 권한을 주는 것과 같습니다.** 본인이 직접 소유하거나 완전히 신뢰하는 기기만 허용하세요.
 
-- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 세션마다 권한을 재확인하며, `allow`·`revoke` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다.
+- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 Ed25519 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 세션마다 권한을 재확인하며, `allow`·`revoke` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다.
 - **명령줄 허용 목록의 역할:** `hc`의 정확한 `herdr-core connect` 줄만 허용하고 나머지를 로그에 남기며 차단하는 것은 오용 표면을 줄이고 이상 징후를 포착하기 위함입니다. `herdr-core connect` 자체가 임의 명령을 실행할 수 있으므로, **실질적인 보안 경계는 피어 키 목록(`peers`)입니다.**
 - **`root` 실행 거부:** macOS/Unix에서 `herdvia`는 `root` 권한으로 실행되지 않습니다.
 - **사용자 전용 로컬 통신(IPC):**
@@ -568,7 +568,7 @@ ok   pending: no rejected connection attempts
 - **비밀키(`secret.key`) 관리:** macOS/Unix에서는 권한 `0600`으로 생성되며 권한이 더 넓으면 시작을 거부합니다(Windows는 사용자 프로필 기본 권한 사용). 이 파일이 유출되면 공격자가 내 PC로 위장할 수 있으므로, 유출 시 모든 피어에서 즉시 `revoke`하고 `secret.key`를 삭제해 새 키를 발급받으세요.
 - **지문과 `pending` / `accept`:** 지문은 `EndpointId` 앞 16자(64비트)로 사람이 눈으로 대조하고 입력하기 위한 축약값이며, 실제 저장·검증은 항상 전체 `EndpointId`로 이루어집니다. `pending`은 핸드셰이크 인증을 통과한 시도만 메모리에 최대 16개·10분간 유지하며, `accept`는 일치하는 항목이 정확히 1개일 때만 등록합니다. 지문은 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
 
-**보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주세요.
+**보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주시고, 민감하지 않은 버그는 일반 이슈를 열어 주세요.
 
 ---
 
@@ -611,7 +611,7 @@ ok   pending: no rejected connection attempts
 | **데이터 폴더 (Windows)** | `%APPDATA%\herdvia` |
 | **데이터 폴더 (Linux)** | `$XDG_DATA_HOME/herdvia` (기본값 `~/.local/share/herdvia`) |
 | **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (`hc`가 띄우는 `via`를 포함해 모든 명령에 동일한 값이 보여야 하며, 자동 시작 등록과는 함께 쓸 수 없음) |
-| **`secret.key`** | 이 PC의 32바이트 비밀키 (데이터 폴더 내) |
+| **`secret.key`** | 이 PC의 32바이트 Ed25519 비밀키 (데이터 폴더 내) |
 | **`peers`** | 피어 허용 목록 (`이름 EndpointId 권한` 형식, `allow`·`accept`·`revoke`로 관리) |
 | **`agent.sock`** | macOS/Unix 로컬 소켓 (Windows는 사용자 SID별 이름 있는 파이프 사용) |
 | **로그 (macOS 자동 시작)** | `~/Library/Logs/herdvia.log` |

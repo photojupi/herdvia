@@ -442,7 +442,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install` 会在 `~/Library/LaunchAgents/` 下创建当前用户的 LaunchAgent（标签为 `io.github.photojupi.herdvia.agent`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在异常退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`。
+`herdvia agent install` 会创建当前用户的 LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在异常退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`。
 
 - 若设置了 `HERDVIA_DIR` 环境变量，或已有手动启动的前台代理在运行，则会拒绝安装。
 - 再次运行 `herdvia agent install` 会更新为当前可执行文件路径并重启代理。
@@ -462,7 +462,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 ### Linux
 
-Linux 暂不支持自动启动（`agent install` / `agent uninstall` 会提示不支持），请自行运行 `herdvia agent`。
+Linux 暂不支持自动启动（`agent install` / `agent uninstall` 会提示不支持），请自行运行 `herdvia agent`（例如在 `systemd --user` 下或会话管理器内）。
 
 ---
 
@@ -531,7 +531,7 @@ ok   pending: no rejected connection attempts
 **推荐方式 — 重新运行[一键安装脚本](#install-script)：**
 脚本会自动下载校验新版文件、安全替换旧程序（macOS 采用原子 `mv`；Windows 先复制为 `herdvia.new.exe` 验证可运行后将正在运行的旧程序重命名为 `.old`，避免文件占用锁死），并再次运行 `herdvia agent install` 用新程序重启代理，且不会重复写入 `PATH`。
 
-*（若有手动启动的前台代理正在运行或设置了 `HERDVIA_DIR`，脚本在更新二进制后会报错停止；请先停止该代理或取消 `HERDVIA_DIR`，再运行 `herdvia agent install`。）*
+*（若有手动启动的前台代理正在运行或设置了 `HERDVIA_DIR`，请停止该代理或取消 `HERDVIA_DIR` 后运行 `herdvia agent install`，或传入 `HERDVIA_NO_AGENT=1` 并自行重启代理。）*
 
 **手动升级：**
 - **macOS：** 重新执行 [macOS (Apple Silicon)](#macos-apple-silicon) 中的下载、校验与 `mv` 命令（省略 `.zprofile` 那行）。**切勿用 `cp` 直接覆盖正在运行的二进制文件**（否则下次启动会触发 `Killed: 9`），务必使用 `mv` 替换后再运行 `herdvia agent install`。
@@ -559,7 +559,7 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **向某个对端授予 `--inbound`（或 `--both`）权限，意味着允许它以你的当前系统用户身份启动 `herdr-core` 会话——实际上等同于授予完整的本地 Shell 权限。** 请仅授权你像信任自己一样完全信任的设备。
 
-- **端到端公钥双向认证：** 所有连接均由 `iroh` 使用各设备的密钥对（`EndpointId`）完成双向认证。当授权列表为空或方向权限（`in`、`out`、`both`）不匹配时一律拒绝。每次新建会话都会重新校验权限，`allow` 与 `revoke` 对运行中的代理立即生效。
+- **端到端公钥双向认证：** 所有连接均由 `iroh` 使用各设备的 Ed25519 密钥对（`EndpointId`）完成双向认证。当授权列表为空或方向权限（`in`、`out`、`both`）不匹配时一律拒绝。每次新建会话都会重新校验权限，`allow` 与 `revoke` 对运行中的代理立即生效。
 - **命令白名单仅作纵深防御：** 仅放行 `hc` 的精确 `herdr-core connect` 命令并记录异常请求，旨在缩小误用面并及时发现异常；但 `herdr-core connect` 本身即可执行任意命令，**真正的安全边界是对端密钥列表（`peers`）。**
 - **拒绝 `root` 运行：** 在 macOS/Unix 上，`herdvia` 拒绝以 `root` 身份启动。
 - **用户隔离的本地 IPC：**
@@ -568,7 +568,7 @@ ok   pending: no rejected connection attempts
 - **私钥保护 (`secret.key`)：** macOS/Unix 上以 `0600` 权限创建，若权限过宽则拒绝启动；Windows 上沿用用户配置文件夹的默认权限。任何拿到 `secret.key` 的人都可向信任本机的对端冒充本机——一旦泄露，请立即在所有对端上执行 `revoke`，并删除 `secret.key` 以重新生成新身份。
 - **短指纹与 `pending` / `accept`：** 指纹仅取 `EndpointId` 的前 16 个十六进制字符（64 位），供人工肉眼比对与 `accept` 输入；底层存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成握手认证的连接，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
 
-**报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交。
+**报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交；非敏感的 bug 请新建普通 Issue。
 
 ---
 
@@ -611,7 +611,7 @@ ok   pending: no rejected connection attempts
 | **数据目录（Windows）** | `%APPDATA%\herdvia` |
 | **数据目录（Linux）** | `$XDG_DATA_HOME/herdvia`（默认为 `~/.local/share/herdvia`） |
 | **覆盖数据目录环境变量** | `HERDVIA_DIR=<路径>` 可替换默认数据目录（包含 `hc` 拉起的 `via` 在内的所有命令必须看到相同值；设置后无法使用 `agent install`） |
-| **`secret.key`** | 本机 32 字节私钥（位于数据目录内） |
+| **`secret.key`** | 本机 32 字节 Ed25519 私钥（位于数据目录内） |
 | **`peers`** | 对端授权列表（每行 `名称 EndpointId 权限`，通过 `allow`、`accept`、`revoke` 管理） |
 | **`agent.sock`** | macOS/Unix 本地套接字（Windows 使用按用户 SID 隔离的命名管道） |
 | **日志（macOS 自动启动）** | `~/Library/Logs/herdvia.log` |
