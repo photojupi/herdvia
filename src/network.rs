@@ -785,6 +785,34 @@ mod tests {
             "a unidirectional stream was granted"
         );
         assert_eq!(conn.max_datagram_size(), None);
+        // At most 16 bidirectional streams at once: the 17th waits until streams end. The QUIC
+        // stack announces new streams only once more than an eighth of the limit has ended, so
+        // all 16 end here.
+        let mut streams = Vec::new();
+        for _ in 0..16 {
+            streams.push(
+                tokio::time::timeout(Duration::from_secs(5), conn.open_bi())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), conn.open_bi())
+                .await
+                .is_err(),
+            "a 17th bidirectional stream was granted"
+        );
+        for (send, _) in &mut streams {
+            send.finish().unwrap();
+            let (mut local_send, mut local_recv) =
+                tokio::time::timeout(Duration::from_secs(5), local.accept_bi())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            local_recv.read_to_end(0).await.unwrap();
+            local_send.finish().unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(5), conn.open_bi())
             .await
             .unwrap()
