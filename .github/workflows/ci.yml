@@ -95,6 +95,23 @@ jobs:
           path: target/x86_64-pc-windows-gnu/release/herdvia.exe
           if-no-files-found: error
 
+  # Runs the cfg(windows) unit tests on Windows. With the MSVC toolchain the runner has: the
+  # windows-gnu release build is cross-compiled on Linux, and its debug builds fail to link.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Unit tests
+        run: cargo test --locked --lib --bins
+
   install-sh:
     runs-on: macos-latest
     steps:
