@@ -32,6 +32,8 @@
 - [명령어 일람](#commands)
 - [로그인 시 자동 시작](#automatic-startup)
 - [자주 겪는 문제 해결 (Troubleshooting)](#troubleshooting)
+  - [`herdvia doctor` 실행하기](#run-herdvia-doctor)
+  - [자주 겪는 증상](#common-symptoms)
 - [업그레이드 및 삭제](#upgrading-and-uninstalling)
 - [보안 모델](#security-model)
 - [네트워크 및 외부 공개 정보](#network-and-published-information)
@@ -262,6 +264,7 @@ B out connected direct 4.12ms
 - **`path`:** 처음에는 `relay`(중계)로 연결된 뒤 보통 몇 초 안에 `direct`(직접 P2P)로 전환됩니다.
 - **macOS 로컬 네트워크 권한 안내:** 같은 공유기(LAN/Wi-Fi) 안인데도 계속 `relay`에 머문다면 **시스템 설정 > 개인정보 보호 및 보안 > 로컬 네트워크**에서 `herdvia`를 허용해 주세요([macOS 자동 시작](#macos) 참고).
 - **팁:** B가 아직 A를 `accept`하기 전에도 A가 재시도할 때마다 잠깐 `connected`로 보일 수 있습니다. 확실한 연결 여부는 **B**에서 `herdvia status`를 실행해 확인하세요.
+- **연결이 잘 안 될 때:** 양쪽 PC에서 `herdvia doctor`를 실행해 보세요. 각 `warn` 또는 `fail` 줄에 해야 할 일이 바로 안내됩니다([`herdvia doctor` 실행하기](#run-herdvia-doctor) 참고).
 
 ---
 
@@ -422,6 +425,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia status` | 각 피어의 이름, 권한, 연결 상태, 경로(`direct`/`relay`), 왕복 시간(RTT)을 표시합니다. 에이전트 실행 필요. |
 | `herdvia pending` | `inbound` 권한이 없어 거부된 접속 시도를 최근 순으로 보여 줍니다(지문, `EndpointId`, 횟수, 경과 초). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
 | `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문으로 시작하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, `<이름>`이 이미 다른 ID로 등록돼 있으면 거부합니다. 에이전트 실행 필요. |
+| `herdvia doctor` | 아무것도 변경하지 않고 이 PC의 설정 상태(실행 파일, 데이터 폴더, `secret.key`, `peers`, `herdr-core`, 자동 시작, 에이전트, 중계 서버, 피어 연결, 대기 중인 접속 시도)를 점검합니다. `ok`/`warn`/`fail` 줄들을 출력하며(피어 연결은 피어마다 한 줄, 앞 단계가 실패하면 뒤 점검 생략), 실패한 항목이 하나라도 있으면 종료 코드 `1`로 끝납니다. [`herdvia doctor` 실행하기](#run-herdvia-doctor) 참고. |
 | `herdvia --version` | `herdvia <버전>`을 출력합니다. |
 | `herdvia agent` | 에이전트를 포그라운드에서 실행합니다 (`Ctrl-C`로 종료). |
 | `herdvia agent install` | 로그인 시 자동 시작을 등록하고 즉시 에이전트를 시작합니다 (macOS, Windows). |
@@ -465,6 +469,45 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="troubleshooting"></a>
 ## 자주 겪는 문제 해결 (Troubleshooting)
 
+<a id="run-herdvia-doctor"></a>
+### `herdvia doctor` 실행하기
+
+`herdvia doctor`는 다음 항목을 순서대로 점검합니다:
+
+1. **이 실행 파일:** 버전과 경로 (`agent install`이 이 경로를 그대로 기록하므로 임시 폴더나 Cargo `target` 폴더에서 실행 중이면 경고).
+2. **데이터 폴더:** 경로(`HERDVIA_DIR`로 지정되었는지 여부 포함), 존재 여부, 디렉터리인지 여부(macOS/Unix에서는 심볼릭 링크 거부), 그리고 이 사용자가 열 수 있는지 여부(macOS/Unix에서는 소유자도 확인하며, 열 수 없으면 `fail`이고 macOS/Unix에서는 `chmod 700`을 안내). macOS/Unix에서는 에이전트 소켓 경로가 Unix 소켓 길이 한도 안에 들어오는지도 함께 확인합니다.
+3. **`secret.key`:** 존재 여부 및 macOS/Unix에서 `herdvia`가 요구하는 권한을 만족하는지 여부. 출력에는 지문만 표시됩니다.
+4. **`peers`:** 파일을 읽고 해석할 수 있는지 여부와 방향별 등록된 피어 수.
+5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.21`을 출력하는지 여부.
+6. **자동 시작:** 등록되어 있는지(macOS의 LaunchAgent plist, Windows의 레지스트리 `Run` 값), 그리고 이 실행 파일을 가리키는지 여부. Windows에서 관리자 권한으로 실행 중이면 이에 대해서도 경고합니다.
+7. **에이전트:** 이 데이터 폴더의 에이전트가 응답하는지, 실행 중인 버전과 실행 파일 경로, 홈 중계 서버(relay) 연결 여부.
+8. **피어 연결:** `herdvia status`를 바탕으로 등록된 피어마다 연결 상태와 경로를 한 줄씩 표시 (등록된 피어가 없으면 `warn` 한 줄).
+9. **대기 목록(`pending`):** `herdvia pending`이 보여 줄 거부된 접속 시도 건수.
+
+출력 줄은 표준 출력(`stdout`)에 `ok`, `warn`, `fail` 중 하나로 시작하며, `warn`과 `fail` 줄에는 해야 할 일이 같은 줄에 함께 적힙니다. 피어 연결은 피어마다 한 줄씩 출력되고, 앞 단계가 실패하면 그에 의존하는 뒤 점검은 생략됩니다: 데이터 폴더 점검이 `fail`이면 에이전트 점검과 그 이후 줄들이 생략되고(Unix 소켓 경로 길이만 초과한 경우가 아니면 `secret.key`와 `peers`도 생략), 에이전트가 응답하지 않으면 `relay`, 피어, `pending` 줄이 생략됩니다. 실패(`fail`)한 점검이 하나도 없으면 종료 코드 `0`(경고만 있어도 `0`), 하나라도 있으면 `1`로 끝납니다. 명령어 인자 오류 등은 다른 명령과 마찬가지로 `herdvia:` 한 줄을 출력하고 `255`로 끝납니다.
+
+`doctor`는 읽기 전용입니다. 데이터 폴더, `secret.key`, `peers`, 자동 시작 등록, 에이전트 상태를 만들거나 바꾸지 않으며, 실행하는 프로그램은 `herdr-core --version`(2초 제한) 하나뿐입니다. 에이전트에 보내는 요청마다 3초 제한이 있어서, 에이전트가 실행 중이어도 3초 안에 답하지 않으면 `fail agent: it may be running, but it did not answer within 3 seconds; …`를 출력하고 나머지 에이전트 점검을 생략합니다. 뒤이어 보내는 피어 상태나 `pending` 요청이 3초를 넘기면 그 줄은 `warn`이 됩니다(`status`가 시간 초과되면 `pending`은 생략). `herdvia doctor`는 `v0.1.2`에서 추가되었으며, 그 이전 버전의 에이전트는 `doctor` 요청을 모르므로 `doctor`가 에이전트가 이 실행 파일보다 오래되어 재시작해야 한다고 경고하고(`relay`는 생략하되 피어와 `pending`은 계속 점검), 해당 에이전트 로그에는 `unknown CONTROL request` 한 줄이 남습니다.
+
+**양쪽 PC 모두에서** 실행해 보세요. B에 `herdr-core`가 없거나 아직 피어를 수락하지 않은 문제 등은 B의 출력에 나타납니다. PC A에서의 실행 예시:
+
+```text
+$ herdvia doctor
+ok   executable: herdvia 0.1.2 at /Users/you/.local/bin/herdvia
+ok   data directory: /Users/you/Library/Application Support/herdvia
+ok   secret.key: present, fingerprint 28af-63b6-258e-859d
+ok   peers: 2 registered (in 0, out 1, both 1)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   automatic start: registered for this executable
+ok   agent: running herdvia 0.1.2 from /Users/you/.local/bin/herdvia
+ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
+ok   peer B (out): connected directly, 4.12ms
+warn peer office (both): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)
+ok   pending: no rejected connection attempts
+```
+
+<a id="common-symptoms"></a>
+### 자주 겪는 증상
+
 | 증상 | 주요 원인 | 해결 방법 |
 |---|---|---|
 | B에서 `herdvia pending`을 쳐도 아무것도 안 나옴 | A의 에이전트가 꺼져 있거나, A에서 `--outbound` 허용을 안 했거나, 재시도 대기 간격 중임 | A에서 `herdvia status`가 동작하는지, `herdvia allow B <B_ID> --outbound`를 했는지 확인 후 최대 30초 기다렸다 다시 `herdvia pending` 실행 |
@@ -493,6 +536,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 **수동 업그레이드:**
 - **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon)의 다운로드·검증·`mv` 명령을 다시 실행합니다(`~/.zprofile` 추가 줄은 생략). **실행 중인 파일 위에 절대 `cp`로 덮어쓰지 마세요**(`Killed: 9` 오류 발생) — 반드시 `mv`로 교체한 뒤 `herdvia agent install`을 실행하세요.
 - **Windows:** 실행 중인 `.exe`는 `tar.exe`가 덮어쓸 수 없으므로 먼저 `herdvia agent uninstall`(포그라운드 실행 중이면 `Ctrl-C`)로 에이전트를 멈춘 뒤, [Windows (x64)](#windows-x64)의 다운로드·검증·압축 해제 명령을 실행하고 다시 `herdvia agent install`을 실행하세요.
+
+업그레이드 후에도 실행 중인 에이전트가 여전히 이전 실행 파일이나 이전 버전이면 `herdvia doctor`가 경고합니다.
 
 ### 삭제 (Uninstalling)
 

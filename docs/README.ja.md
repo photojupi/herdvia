@@ -32,6 +32,8 @@
 - [コマンド一覧](#commands)
 - [ログイン時の自動起動](#automatic-startup)
 - [トラブルシューティング](#troubleshooting)
+  - [`herdvia doctor` を実行する](#run-herdvia-doctor)
+  - [よくある症状](#common-symptoms)
 - [アップグレードとアンインストール](#upgrading-and-uninstalling)
 - [セキュリティモデル](#security-model)
 - [ネットワークと公開される情報](#network-and-published-information)
@@ -262,6 +264,7 @@ B out connected direct 4.12ms
 - **`path`:** 最初は `relay`（リレー経由）で始まり、通常は数秒以内に `direct`（直接通信）へ切り替わります。
 - **macOS のローカルネットワーク権限:** 同じ Wi-Fi / LAN 内にあるのに `relay` のまま変わらない場合は、Mac の **システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` を許可してください（[macOS の自動起動](#macos)を参照）。
 - **ヒント:** B が A を `accept` する前でも、A の再試行の瞬間に A 側の `status` が一瞬 `connected` と見えることがあります。確実に確認するには **B 側**で `herdvia status` を実行してください。
+- **うまく動かない場合:** 両方のマシンで `herdvia doctor` を実行してください。各 `warn` や `fail` の行に、何をすべきかがそのまま表示されます（[`herdvia doctor` を実行する](#run-herdvia-doctor)を参照）。
 
 ---
 
@@ -422,6 +425,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia status` | 各ピアの名前、権限、接続状態、経路（`direct`/`relay`）、往復遅延（RTT）を表示します。エージェントの起動が必要です。 |
 | `herdvia pending` | `inbound` 権限がないために拒否された着信試行を新しい順に表示します（フィンガープリント、`EndpointId`、試行回数、最終試行からの経過秒数）。メモリ上のみ最大 16 件・最終試行から 10 分間保持。エージェントの起動が必要です。 |
 | `herdvia accept <名前> <fingerprint> (--inbound \| --both)` | `pending` 内で指定フィンガープリントに一致する 1 台を完全な `EndpointId` で登録します。一致が 0 件または複数件の場合、あるいは `<名前>` が別の ID で登録済みの場合は拒否します。エージェントの起動が必要です。 |
+| `herdvia doctor` | 何も変更せずにこのマシンの設定状態（実行ファイル、データフォルダ、`secret.key`、`peers`、`herdr-core`、自動起動、エージェント、リレー、ピア接続、保留中の着信試行）を点検します。`ok`/`warn`/`fail` の行を出力し（ピア接続はピアごとに 1 行、前の段階が失敗した場合は後続の点検を省略）、1 つでも失敗があれば終了コード `1` で終了します。[`herdvia doctor` を実行する](#run-herdvia-doctor)を参照。 |
 | `herdvia --version` | `herdvia <バージョン>` を表示します。 |
 | `herdvia agent` | エージェントをフォアグラウンドで実行します（`Ctrl-C` で停止）。 |
 | `herdvia agent install` | ログイン時の自動起動を登録し、今すぐエージェントを起動します（macOS、Windows）。 |
@@ -465,6 +469,45 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="troubleshooting"></a>
 ## トラブルシューティング
 
+<a id="run-herdvia-doctor"></a>
+### `herdvia doctor` を実行する
+
+`herdvia doctor` は以下の項目を順番に点検します：
+
+1. **この実行ファイル:** バージョンとパス（`agent install` がそのパスを記録するため、一時フォルダや Cargo の `target` ディレクトリから実行されている場合は警告）。
+2. **データフォルダ:** パス（`HERDVIA_DIR` 由来かどうかも含む）、存在するか、ディレクトリであるか（macOS/Unix ではシンボリックリンク不可）、そしてこのユーザーが開けるか（macOS/Unix では所有者も確認し、開けない場合は `fail` となり macOS/Unix では `chmod 700` を案内）。macOS/Unix ではエージェントのソケットパスが Unix ソケット長の上限に収まるかも確認します。
+3. **`secret.key`:** 存在するか、および macOS/Unix で `herdvia` が要求する権限になっているか。出力にはフィンガープリントのみが表示されます。
+4. **`peers`:** 読み取り・解析できるか、および方向ごとの登録ピア数。
+5. **`herdr-core`:** エージェントが探す場所（macOS では自動起動エージェントの `PATH`）にあるか、また `herdr-core --version` が検証済みの `0.1.21` を返すか。
+6. **自動起動:** 登録されているか（macOS の LaunchAgent plist、Windows の `Run` レジストリ値）、かつこの実行ファイルを指しているか。Windows で管理者として実行されている場合も警告します。
+7. **エージェント:** このデータフォルダのエージェントが応答するか、そのバージョンと実行ファイル、およびホームリレーに接続されているか。
+8. **ピア:** `herdvia status` に基づき、登録されたピアごとに接続状態と経路を 1 行ずつ表示（ピアが未登録の場合は `warn` を 1 行表示）。
+9. **保留中の試行（`pending`）:** `herdvia pending` に表示される拒否された着信試行の件数。
+
+出力行は標準出力（`stdout`）に `ok`、`warn`、`fail` のいずれかで始まり、`warn` と `fail` の行には対処法が同じ行に書かれます。ピア接続はピアごとに 1 行出力され、前の段階が失敗した場合はそれに依存する後続の点検が省略されます：データフォルダの点検が `fail` になるとエージェント点検とそれ以降の行はすべて省略され（Unix ソケットパス長の上限超過のみが原因である場合を除き、`secret.key` と `peers` も省略）、エージェントが応答しない場合は `relay`、ピア、`pending` の行が省略されます。失敗（`fail`）が 1 つもなければ終了コード `0`（警告のみでも `0`）、1 つでも失敗があれば `1` で終了します。引数エラーなどは他のコマンドと同様に `herdvia:` の 1 行を出力して `255` で終了します。
+
+`doctor` は読み取り専用であり、データフォルダ、`secret.key`、`peers`、自動起動の登録、エージェントの状態を作成・変更しません。実行するプログラムは `herdr-core --version`（2 秒制限）のみです。エージェントへの各リクエストには 3 秒の制限があり、エージェントが起動中でも 3 秒以内に応答しない場合は `fail agent: it may be running, but it did not answer within 3 seconds; …` を出力して残りのエージェント点検を省略します。続くピア状態や `pending` のリクエストが 3 秒を超えた場合はその行が `warn` になります（`status` がタイムアウトした場合は `pending` を省略）。`herdvia doctor` は `v0.1.2` で追加されました。それより前のバージョンのエージェントは `doctor` リクエストを知らないため、`doctor` はエージェントがこの実行ファイルより古く再起動が必要であると警告し（`relay` は省略しつつピアと `pending` は点検します）、エージェント側のログには `unknown CONTROL request` が 1 行記録されます。
+
+**両方のマシン**で実行してください。B 側の問題（`herdr-core` の未導入や未承認のピアなど）は B の出力に現れます。マシン A での実行例：
+
+```text
+$ herdvia doctor
+ok   executable: herdvia 0.1.2 at /Users/you/.local/bin/herdvia
+ok   data directory: /Users/you/Library/Application Support/herdvia
+ok   secret.key: present, fingerprint 28af-63b6-258e-859d
+ok   peers: 2 registered (in 0, out 1, both 1)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   automatic start: registered for this executable
+ok   agent: running herdvia 0.1.2 from /Users/you/.local/bin/herdvia
+ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
+ok   peer B (out): connected directly, 4.12ms
+warn peer office (both): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)
+ok   pending: no rejected connection attempts
+```
+
+<a id="common-symptoms"></a>
+### よくある症状
+
 | 症状 | 主な原因 | 対処法 |
 |---|---|---|
 | B で `herdvia pending` を実行しても空のまま | A のエージェント未起動、A で `--outbound` 未設定、または再試行の待機中 | A で `herdvia status` が動くか、`herdvia allow B <B_ID> --outbound` 済みかを確認し、最大 30 秒待ってから再度 `herdvia pending` を実行 |
@@ -493,6 +536,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 **手動アップグレード:**
 - **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon) のダウンロード・検証・`mv` 手順を再実行します（`.zprofile` の行は不要）。**稼働中のバイナリを `cp` で上書きしないでください**（次回起動時に `Killed: 9` になります）。必ず `mv` で置き換えてから `herdvia agent install` を実行してください。
 - **Windows:** 実行中の `.exe` は `tar.exe` で上書きできないため、先に `herdvia agent uninstall`（フォアグラウンドなら `Ctrl-C`）で停止してから [Windows (x64)](#windows-x64) の手順で展開し、再度 `herdvia agent install` を実行します。
+
+アップグレード後、稼働中のエージェントが古い実行ファイルやバージョンのままになっている場合、`herdvia doctor` が警告します。
 
 ### アンインストール
 

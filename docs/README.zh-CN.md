@@ -32,6 +32,8 @@
 - [命令参考](#commands)
 - [开机自动启动](#automatic-startup)
 - [常见问题排查（Troubleshooting）](#troubleshooting)
+  - [运行 `herdvia doctor`](#run-herdvia-doctor)
+  - [常见现象](#common-symptoms)
 - [升级与卸载](#upgrading-and-uninstalling)
 - [安全模型](#security-model)
 - [网络与公开信息说明](#network-and-published-information)
@@ -262,6 +264,7 @@ B out connected direct 4.12ms
 - **`path`：** 连接刚建立时通常走 `relay`（中继），一般在几秒内自动升级为 `direct`（点对点直连）。
 - **macOS 局域网权限提示：** 如果两台设备在同一局域网/Wi-Fi 下却一直停留在 `relay`，请在 Mac 的 **系统设置 > 隐私与安全性 > 本地网络** 中允许 `herdvia`（详见 [macOS 自动启动](#macos)）。
 - **提示：** 在 B 尚未 `accept` A 之前，每次 A 重试时 A 侧的 `herdvia status` 可能会短暂闪现 `connected`。若要确认真正连通，请在 **B** 上运行 `herdvia status`。
+- **如果遇到连接异常：** 请在两台电脑上运行 `herdvia doctor`，每条 `warn` 或 `fail` 输出都会直接提示处理方法（详见[运行 `herdvia doctor`](#run-herdvia-doctor)）。
 
 ---
 
@@ -422,6 +425,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia status` | 显示各对端的名称、权限、连接状态、`direct`/`relay` 路径及往返时延（RTT）。需要代理正在运行。 |
 | `herdvia pending` | 按最近时间倒序列出因缺少 `inbound` 权限而被拒的连入请求（指纹、`EndpointId`、尝试次数、距上次尝试秒数）。仅保存在内存中，最多保留 16 台设备，末次尝试 10 分钟后过期。需要代理正在运行。 |
 | `herdvia accept <名称> <指纹> (--inbound \| --both)` | 将 `pending` 中唯一匹配该指纹的设备以其完整 `EndpointId` 加入授权列表。若匹配数为 0 或多于 1，或 `<名称>` 已绑定其他 ID，则拒绝操作。需要代理正在运行。 |
+| `herdvia doctor` | 在不做任何修改的前提下检查本机配置（可执行文件、数据目录、`secret.key`、`peers`、`herdr-core`、自动启动、代理、中继、对端连接、待确认连入请求）。输出以 `ok`/`warn`/`fail` 开头的检查行（对端连接为每个对端一行；前置步骤失败时省略后续依赖项），若有任一检查失败则以退出码 `1` 结束。详见[运行 `herdvia doctor`](#run-herdvia-doctor)。 |
 | `herdvia --version` | 输出 `herdvia <版本号>`。 |
 | `herdvia agent` | 在前台运行代理（按 `Ctrl-C` 停止）。 |
 | `herdvia agent install` | 注册登录自动启动并立即启动代理（支持 macOS、Windows）。 |
@@ -465,6 +469,45 @@ Linux 暂不支持自动启动（`agent install` / `agent uninstall` 会提示�
 <a id="troubleshooting"></a>
 ## 常见问题排查（Troubleshooting）
 
+<a id="run-herdvia-doctor"></a>
+### 运行 `herdvia doctor`
+
+`herdvia doctor` 会按顺序检查以下项目：
+
+1. **当前可执行文件：** 版本与路径（若从临时目录或 Cargo `target` 编译目录运行会发出警告，因为 `agent install` 会记录该路径）。
+2. **数据目录：** 路径（包括是否来自 `HERDVIA_DIR`）、是否存在、是否为目录（macOS/Unix 上不接受符号链接），以及当前用户是否能够打开（macOS/Unix 上还会校验所有者；若无法打开则判为 `fail`，并在 macOS/Unix 上提示运行 `chmod 700`）。在 macOS/Unix 上还会检查代理套接字路径是否超出 Unix 套接字长度上限。
+3. **`secret.key`：** 是否存在，以及在 macOS/Unix 上是否符合 `herdvia` 要求的权限。输出中仅显示短指纹。
+4. **`peers`：** 是否可读且格式有效，并统计各方向已注册的对端数量。
+5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。
+6. **自动启动：** 是否已注册（macOS 的 LaunchAgent plist、Windows 的注册表 `Run` 值）且指向当前可执行文件。在 Windows 上若以管理员身份运行也会发出警告。
+7. **代理：** 当前数据目录对应的代理是否响应、其版本与可执行文件路径，以及是否已连接归属中继（home relay）。
+8. **对端连接：** 基于 `herdvia status`，为每个已注册对端输出一行连接状态与路径（若尚未注册任何对端，则输出一行 `warn`）。
+9. **待确认连接（`pending`）：** `herdvia pending` 中会列出的被拒连入请求数量。
+
+输出行写往标准输出（`stdout`），以 `ok`、`warn` 或 `fail` 开头；`warn` 与 `fail` 行会在同一行给出处理建议。对端连接按每个对端输出一行，当前置步骤失败时会省略依赖它的后续检查：若数据目录检查为 `fail`，将跳过代理检查及其后的所有行（除非仅因 Unix 套接字路径过长而失败，否则 `secret.key` 与 `peers` 也会一并跳过）；若代理无响应，则跳过 `relay`、对端连接与 `pending` 行。没有任何 `fail` 时退出码为 `0`（仅有 `warn` 仍为 `0`），存在任一 `fail` 时退出码为 `1`。命令参数错误等情况仍输出一行 `herdvia:` 并以 `255` 结束。
+
+`doctor` 是只读命令：不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态，唯一运行的程序是 `herdr-core --version`（限时 2 秒）。向代理发送的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，则对应行记为 `warn`（`status` 超时后跳过 `pending`）。`herdvia doctor` 自 `v0.1.2` 起提供；更早版本的代理不认识该请求，此时 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理日志中会记录一行 `unknown CONTROL request`。
+
+请在**两台电脑**上都运行一次：电脑 B 上的问题（例如缺少 `herdr-core` 或尚未 `accept` 对端）会显示在 B 的输出中。电脑 A 上的运行示例：
+
+```text
+$ herdvia doctor
+ok   executable: herdvia 0.1.2 at /Users/you/.local/bin/herdvia
+ok   data directory: /Users/you/Library/Application Support/herdvia
+ok   secret.key: present, fingerprint 28af-63b6-258e-859d
+ok   peers: 2 registered (in 0, out 1, both 1)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   automatic start: registered for this executable
+ok   agent: running herdvia 0.1.2 from /Users/you/.local/bin/herdvia
+ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
+ok   peer B (out): connected directly, 4.12ms
+warn peer office (both): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)
+ok   pending: no rejected connection attempts
+```
+
+<a id="common-symptoms"></a>
+### 常见现象
+
 | 现象 | 常见原因 | 解决方法 |
 |---|---|---|
 | 在 B 上运行 `herdvia pending` 列表为空 | A 的代理未启动、A 未配置 `--outbound`，或正处于重试间隔内 | 确认 A 上 `herdvia status` 正常且已执行 `herdvia allow B <B_ID> --outbound`，等待最多 30 秒后再运行 `herdvia pending` |
@@ -493,6 +536,8 @@ Linux 暂不支持自动启动（`agent install` / `agent uninstall` 会提示�
 **手动升级：**
 - **macOS：** 重新执行 [macOS (Apple Silicon)](#macos-apple-silicon) 中的下载、校验与 `mv` 命令（省略 `.zprofile` 那行）。**切勿用 `cp` 直接覆盖正在运行的二进制文件**（否则下次启动会触发 `Killed: 9`），务必使用 `mv` 替换后再运行 `herdvia agent install`。
 - **Windows：** 由于运行中的 `.exe` 无法被 `tar.exe` 覆盖，请先运行 `herdvia agent uninstall`（前台运行则按 `Ctrl-C`）停止代理，按 [Windows (x64)](#windows-x64) 步骤解压替换后，再运行 `herdvia agent install`。
+
+升级完成后，若正在运行的代理仍是旧的可执行文件或旧版本，`herdvia doctor` 会发出警告。
 
 ### 卸载
 

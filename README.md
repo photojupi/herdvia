@@ -414,7 +414,7 @@ This builds `main` and installs into `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` 
 | `herdvia status` | Show each peer's name, permission, connection state, `direct`/`relay` path, and RTT. Requires a running agent. |
 | `herdvia pending` | List machines whose inbound connection attempts were rejected (fingerprint, `EndpointId`, attempt count, time since last seen). In-memory only: max 16 entries, expires 10 minutes after last attempt. Requires a running agent. |
 | `herdvia accept <name> <fingerprint> (--inbound \| --both)` | Authorize the single `pending` peer matching `<fingerprint>`. Refuses if 0 or >1 entries match, or if `<name>` already points to a different `EndpointId`. Requires a running agent. |
-| `herdvia doctor` | Check this machine's setup (executable, data folder, `secret.key`, `peers`, `herdr-core`, automatic startup, agent, relay, peer connections) without changing anything. Prints one `ok`/`warn`/`fail` line per check and exits with `1` if any check fails. See [Run `herdvia doctor`](#run-herdvia-doctor). |
+| `herdvia doctor` | Check this machine's setup (executable, data folder, `secret.key`, `peers`, `herdr-core`, automatic startup, agent, relay, peer connections, pending attempts) without changing anything. Prints `ok`/`warn`/`fail` lines (including one per peer, omitting dependent checks when an earlier step fails) and exits with `1` if any check fails. See [Run `herdvia doctor`](#run-herdvia-doctor). |
 | `herdvia --version` | Print `herdvia <version>`. |
 | `herdvia agent` | Run the agent in the foreground (stop with `Ctrl-C`). |
 | `herdvia agent install` | Register automatic startup at login and start the agent immediately (macOS, Windows). |
@@ -460,18 +460,18 @@ Automatic startup (`agent install` / `agent uninstall`) is not supported on Linu
 `herdvia doctor` checks, in order:
 
 1. **This executable:** its version and path (warns if it runs from a temporary or Cargo `target` directory, because `agent install` records that path).
-2. **Data folder:** its path (and whether it comes from `HERDVIA_DIR`), whether it exists, and on macOS/Unix whether the agent socket path fits the Unix socket length limit.
+2. **Data folder:** its path (and whether it comes from `HERDVIA_DIR`), whether it exists, whether it is a directory (not a symlink on macOS/Unix), and whether this user can open it (and owns it on macOS/Unix; if it cannot be opened, fails and suggests `chmod 700` on macOS/Unix). On macOS/Unix, also checks that the agent socket path fits the Unix socket length limit.
 3. **`secret.key`:** whether it exists and, on macOS/Unix, has the permissions herdvia requires. Only the fingerprint is printed.
 4. **`peers`:** whether it can be read and parsed, and how many peers it lists per direction.
 5. **`herdr-core`:** whether it is where the agent looks for it (on macOS, the auto-started agent's `PATH`), and whether `herdr-core --version` reports the verified `0.1.21`.
 6. **Automatic startup:** whether it is registered (LaunchAgent plist on macOS, `Run` value on Windows) and points to this executable. On Windows, also warns when run as administrator.
 7. **Agent:** whether the agent for this data folder answers, its version and executable, and whether it is connected to its home relay.
-8. **Peers:** each peer's connection state and path, from `herdvia status`.
+8. **Peers:** one line per registered peer with its connection state and path from `herdvia status` (or a single `warn` line if no peers are registered).
 9. **Pending:** how many rejected connection attempts `herdvia pending` would list.
 
-Each check prints one line to `stdout` starting with `ok`, `warn`, or `fail`; `warn` and `fail` lines say on the same line what to do. `doctor` exits with `0` when nothing failed (warnings alone still exit `0`) and with `1` when any check failed. Usage errors still print a single `herdvia:` line and exit `255`.
+Output lines go to `stdout` starting with `ok`, `warn`, or `fail`, and `warn` and `fail` lines say on the same line what to do. Peer connections print one line per peer, and dependent checks are omitted when an earlier step fails: if the data folder check fails, the agent check and everything after it are skipped (and unless only the Unix socket path was too long, `secret.key` and `peers` are skipped too); if the agent does not answer, the `relay`, peer, and `pending` lines are skipped. `doctor` exits with `0` when nothing failed (warnings alone still exit `0`) and with `1` when any check failed. Usage errors still print a single `herdvia:` line and exit `255`.
 
-`doctor` is read-only: it does not create or change the data folder, `secret.key`, `peers`, the automatic startup registration, or the agent's state. The only program it runs is `herdr-core --version` (with a 2-second limit). The checks after the agent line need a running agent. An agent from a herdvia release that predates `doctor` does not know its request: `doctor` then warns that the agent is older than this executable and should be restarted, and that agent logs one `unknown CONTROL request` line.
+`doctor` is read-only: it does not create or change the data folder, `secret.key`, `peers`, the automatic startup registration, or the agent's state. The only program it runs is `herdr-core --version` (with a 2-second limit). Each request to the agent has a 3-second limit: if the agent does not answer within 3 seconds even if running, `doctor` prints `fail agent: it may be running, but it did not answer within 3 seconds; …` and skips the remaining agent checks; if the peer status or `pending` request exceeds 3 seconds, that line is `warn` (and after a `status` timeout, `pending` is skipped). `herdvia doctor` was added in `v0.1.2`; an agent from an earlier release does not know its request, so `doctor` warns that the agent is older than this executable and should be restarted (omitting `relay` while still checking peers and `pending`), and that agent logs one `unknown CONTROL request` line.
 
 Run it on **both** machines: a problem on B (such as a missing `herdr-core` or an unaccepted peer) shows up in B's output. Example on Machine A:
 
