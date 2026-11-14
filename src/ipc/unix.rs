@@ -313,21 +313,36 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
 
 /// Sets the mode of `path` without following a symbolic link there, which may have replaced
 /// the directory since it was checked. macOS sets the link's own mode; Linux (glibc 2.32 or
-/// later, or musl) refuses a link with EOPNOTSUPP.
+/// later, or musl) refuses a link with EOPNOTSUPP. Where Linux does not support the flag at
+/// all, a path that is still a real directory gets the path-based chmod instead.
 fn chmod_nofollow(path: &Path, mode: libc::mode_t) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: path is a NUL-terminated string that lives for the call.
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: c_path is a NUL-terminated string that lives for the call.
     if unsafe {
         libc::fchmodat(
             libc::AT_FDCWD,
-            path.as_ptr(),
+            c_path.as_ptr(),
             mode,
             libc::AT_SYMLINK_NOFOLLOW,
         )
     } != 0
     {
-        return Err(io::Error::last_os_error());
+        let err = io::Error::last_os_error();
+        // glibc before 2.32 refuses the flag for any path, and later glibc or musl without
+        // /proc refuses it for a directory too. Fall back to the path-based chmod for what is
+        // still a real directory, as before.
+        let code = err.raw_os_error();
+        if (code == Some(libc::ENOTSUP) || code == Some(libc::EOPNOTSUPP))
+            && fs::symlink_metadata(path)?.is_dir()
+        {
+            // SAFETY: as above.
+            if unsafe { libc::chmod(c_path.as_ptr(), mode) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            return Ok(());
+        }
+        return Err(err);
     }
     Ok(())
 }
