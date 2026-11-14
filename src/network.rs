@@ -6,7 +6,8 @@ use crate::{
 use iroh::{
     Endpoint, EndpointId,
     endpoint::{
-        AfterHandshakeOutcome, Connection, EndpointHooks, RecvStream, SendStream, Side, presets,
+        AfterHandshakeOutcome, Connection, EndpointHooks, QuicTransportConfig, RecvStream,
+        SendStream, Side, VarInt, presets,
     },
 };
 use std::{
@@ -129,6 +130,17 @@ impl EndpointHooks for Policy {
     }
 }
 
+/// herdvia only uses bidirectional streams. Refusing unidirectional streams and datagrams keeps
+/// any connected peer, even an outbound-only one, from parking data in streams nobody accepts.
+/// The builder starts from iroh's defaults, so its keep-alive and path settings stay.
+fn transport_config() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        .max_concurrent_bidi_streams(VarInt::from_u32(16))
+        .datagram_receive_buffer_size(None)
+        .build()
+}
+
 pub struct Network {
     pub endpoint: Endpoint,
     dir: PathBuf,
@@ -146,6 +158,7 @@ impl Network {
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(key)
             .alpns(vec![ALPN.to_vec()])
+            .transport_config(transport_config())
             .hooks(Policy {
                 peers: policy,
                 attempts: attempts.clone(),
@@ -603,6 +616,67 @@ mod tests {
         ];
         attempts.forget_permitted(&peers);
         assert_eq!(attempts.list(start), vec![(a, 1, Duration::ZERO)]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connected_peers_cannot_open_unidirectional_streams_or_send_datagrams() {
+        // As in the audit: this side dials a peer that it allowed outbound only.
+        let dir = tempfile::tempdir().unwrap();
+        let remote_key = SecretKey::generate();
+        let remote_id = remote_key.public();
+        peers::allow(
+            dir.path(),
+            Peer {
+                name: "r".into(),
+                id: remote_id,
+                permission: Permission::Out,
+            },
+        )
+        .unwrap();
+        let network = Network::bind(dir.path().to_owned()).await.unwrap();
+        let remote = Endpoint::builder(presets::Minimal)
+            .secret_key(remote_key)
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let port = remote
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
+        let addr = iroh::EndpointAddr::new(remote_id).with_ip_addr(([127, 0, 0, 1], port).into());
+        let accepted = tokio::spawn({
+            let remote = remote.clone();
+            async move { remote.accept().await.unwrap().await.unwrap() }
+        });
+        let local = tokio::time::timeout(
+            Duration::from_secs(10),
+            network.endpoint.connect(addr, ALPN),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let conn = tokio::time::timeout(Duration::from_secs(10), accepted)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), conn.open_uni())
+                .await
+                .is_err(),
+            "a unidirectional stream was granted"
+        );
+        assert_eq!(conn.max_datagram_size(), None);
+        tokio::time::timeout(Duration::from_secs(5), conn.open_bi())
+            .await
+            .unwrap()
+            .unwrap();
+        local.close(0u32.into(), b"done");
+        remote.close().await;
+        network.endpoint.close().await;
     }
 
     #[test]
