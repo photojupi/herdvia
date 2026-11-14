@@ -44,7 +44,8 @@ fn changed_peers(old: &[Peer], new: &[Peer]) -> HashSet<EndpointId> {
         .collect()
 }
 
-const MAX_ATTEMPTS: usize = 16;
+/// Most entries `pending` lists. `accept` refuses a full list: pushing out entries is open to anyone.
+pub const MAX_ATTEMPTS: usize = 16;
 const ATTEMPT_TTL: Duration = Duration::from_secs(600);
 
 /// Inbound connections rejected for lacking inbound permission: attempts and last seen.
