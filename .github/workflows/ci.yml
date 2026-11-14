@@ -60,3 +60,306 @@ jobs:
       # Release only: debug builds fail to link on windows-gnu because iroh also builds a cdylib.
       - name: Build (Windows, release)
         run: cargo build --release --target x86_64-pc-windows-gnu --locked
+
+      # For the install-ps1 job.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: herdvia-windows-x64
+          path: target/x86_64-pc-windows-gnu/release/herdvia.exe
+          if-no-files-found: error
+
+  install-sh:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      # Serves a release built like release.yml's from a local server. HERDVIA_NO_AGENT=1:
+      # whether launchd accepts an agent on the runner is unknown.
+      - name: Test scripts/install.sh
+        run: |
+          set -u
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          # Short, because HERDVIA_DIR below holds the agent socket.
+          work=$(mktemp -d /tmp/hv.XXXXXX)
+          mkdir -p "$work/srv/good" "$work/srv/bad" "$work/home" "$work/fake"
+          echo test > "$work/THIRD-PARTY-LICENSES.html"
+          zip -j "$work/srv/good/herdvia-macos-arm64.zip" target/release/herdvia \
+            README.md LICENSE-MIT LICENSE-APACHE "$work/THIRD-PARTY-LICENSES.html"
+          cp scripts/install.sh scripts/install.ps1 "$work/srv/good/"
+          (cd "$work/srv/good" && shasum -a 256 herdvia-macos-arm64.zip install.sh install.ps1 > SHA256SUMS)
+          # A changed archive under the good archive's checksum.
+          printf '#!/bin/sh\necho fake\n' > "$work/fake/herdvia"
+          chmod +x "$work/fake/herdvia"
+          zip -j "$work/srv/bad/herdvia-macos-arm64.zip" "$work/fake/herdvia"
+          cp "$work/srv/good/SHA256SUMS" "$work/srv/bad/"
+
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory "$work/srv" > "$work/http.log" 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          base=http://127.0.0.1:8765
+          for _ in $(seq 50); do
+            if curl -fs -o /dev/null "$base/good/SHA256SUMS"; then break; fi
+            sleep 0.2
+          done
+          curl -fsS -o /dev/null "$base/good/SHA256SUMS"
+
+          home=$work/home
+          exe=$home/.local/bin/herdvia
+          line='export PATH="$HOME/.local/bin:$PATH"'
+          check() {
+            if "$@"; then echo "ok: $*"; else echo "::error::check failed: $*"; exit 1; fi
+          }
+          # run_install <release folder> <command...>: a clean environment like a new login.
+          run_install() {
+            release=$1
+            shift
+            env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin SHELL=/bin/zsh \
+              HERDVIA_RELEASE_BASE="$base/$release" HERDVIA_DIR="$work/d" HERDVIA_NO_AGENT=1 "$@"
+          }
+
+          echo "--- new install"
+          run_install good sh scripts/install.sh > "$work/out1" 2>&1 || { cat "$work/out1"; exit 1; }
+          cat "$work/out1"
+          check test -f "$exe"
+          check test "$(stat -f %Lp "$exe")" = 755
+          check test "$(ls -A "$home/.local/bin")" = herdvia
+          check test "$("$exe" --version)" = "herdvia $version"
+          check grep -qx "Installed herdvia $version at $exe" "$work/out1"
+          check test "$(grep -cxF "$line" "$home/.zprofile")" = 1
+          check grep -qF "releases.herdr.dev/core/install.sh" "$work/out1"
+          id=$(HERDVIA_DIR="$work/d" "$exe" id)
+          check grep -qxF "$(echo "$id" | head -n 1)" "$work/out1"
+
+          echo "--- upgrade through curl | sh"
+          run_install good sh -c "curl -fsSL '$base/good/install.sh' | sh" > "$work/out2" 2>&1 || { cat "$work/out2"; exit 1; }
+          cat "$work/out2"
+          check grep -qx "Upgraded herdvia $version at $exe" "$work/out2"
+          check test "$(grep -cxF "$line" "$home/.zprofile")" = 1
+          check test "$(ls -A "$home/.local/bin")" = herdvia
+          check test "$(HERDVIA_DIR="$work/d" "$exe" id)" = "$id"
+
+          echo "--- checksum mismatch"
+          if run_install bad sh scripts/install.sh > "$work/out3" 2>&1; then
+            cat "$work/out3"
+            echo "::error::install succeeded despite a checksum mismatch"
+            exit 1
+          fi
+          cat "$work/out3"
+          check grep -q "checksum mismatch" "$work/out3"
+          check cmp -s "$exe" target/release/herdvia
+          check test "$(ls -A "$home/.local/bin")" = herdvia
+
+          echo "--- HOME with a space and a single quote"
+          home="$work/it's home"
+          exe=$home/.local/bin/herdvia
+          mkdir "$home"
+          run_install good sh scripts/install.sh > "$work/out4" 2>&1 || { cat "$work/out4"; exit 1; }
+          cat "$work/out4"
+          check grep -qxF "Installed herdvia $version at $exe" "$work/out4"
+          # The printed commands, run as printed. Without an agent, herdvia itself fails with 255.
+          pending=$(grep -x '  .* pending' "$work/out4" || true)
+          via=$(grep -x '  hc machine add --via .* --name <name>' "$work/out4" | sed 's/<name>/B/g' || true)
+          check test -n "$pending"
+          check test -n "$via"
+          code=0
+          HERDVIA_DIR="$work/d" sh -c "$pending" > "$work/pending.out" 2>&1 || code=$?
+          cat "$work/pending.out"
+          check test "$code" = 255
+          check grep -q '^herdvia: ' "$work/pending.out"
+          # hc runs the --via value as an sh line, with its remote line appended as one argument.
+          value=$(sh -c 'hc() { printf "%s" "$4"; }; '"$via")
+          echo "--via value: $value"
+          check test "$(sh -c "set -- $value; \"\$1\" --version")" = "herdvia $version"
+          code=0
+          HERDVIA_DIR="$work/d" sh -c "$value 'true'" > "$work/via.out" 2>&1 || code=$?
+          cat "$work/via.out"
+          check test "$code" = 255
+          check grep -q '^herdvia: ' "$work/via.out"
+
+  install-ps1:
+    needs: windows-cross
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: herdvia-windows-x64
+          path: bin
+
+      # Serves a release built like release.yml's from a local server and runs install.ps1 under
+      # Windows PowerShell 5.1 and PowerShell 7, both with a Restricted execution policy. The
+      # runner is elevated, so install.ps1 must skip herdvia agent install.
+      - name: Test scripts/install.ps1
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$')[0].Matches[0].Groups[1].Value
+          $work = Join-Path $env:RUNNER_TEMP "hv"
+          $good = Join-Path $work "srv\good"
+          $bad = Join-Path $work "srv\bad"
+          $pkg = Join-Path $work "pkg"
+          $fake = Join-Path $work "fake"
+          New-Item -ItemType Directory -Force $good, $bad, $pkg, $fake | Out-Null
+          Copy-Item bin\herdvia.exe, README.md, LICENSE-MIT, LICENSE-APACHE $pkg
+          Set-Content (Join-Path $pkg "THIRD-PARTY-LICENSES.html") "test"
+          Compress-Archive -Path "$pkg\*" -DestinationPath "$good\herdvia-windows-x64.zip"
+          Copy-Item scripts\install.sh, scripts\install.ps1 $good
+          $sums = foreach ($name in "herdvia-windows-x64.zip", "install.sh", "install.ps1") {
+            "$((Get-FileHash (Join-Path $good $name) -Algorithm SHA256).Hash.ToLowerInvariant())  $name"
+          }
+          [IO.File]::WriteAllText("$good\SHA256SUMS", (($sums -join "`n") + "`n"))
+          Get-Content "$good\SHA256SUMS"
+          # A changed archive under the good archive's checksum.
+          Copy-Item (Join-Path $env:SystemRoot "System32\where.exe") (Join-Path $fake "herdvia.exe")
+          Compress-Archive -Path "$fake\*" -DestinationPath "$bad\herdvia-windows-x64.zip"
+          Copy-Item "$good\SHA256SUMS", "$good\install.ps1" $bad
+          # A release folder from which nothing else can be downloaded.
+          $missing = Join-Path $work "srv\missing"
+          New-Item -ItemType Directory -Force $missing | Out-Null
+          Copy-Item "$good\install.ps1" $missing
+
+          $server = Start-Process python -ArgumentList "-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", (Join-Path $work "srv") `
+            -PassThru -NoNewWindow -RedirectStandardOutput "$work\http.out" -RedirectStandardError "$work\http.err"
+          $base = "http://127.0.0.1:8765"
+          for ($i = 0; $i -lt 50; $i++) {
+            try { Invoke-WebRequest "$base/good/SHA256SUMS" -UseBasicParsing | Out-Null; break } catch { Start-Sleep -Milliseconds 200 }
+          }
+          Invoke-WebRequest "$base/good/SHA256SUMS" -UseBasicParsing | Out-Null
+
+          # Children see a fresh profile; the user PATH in the registry does change.
+          $user = Join-Path $work "user"
+          $env:USERPROFILE = $user
+          $env:LOCALAPPDATA = Join-Path $user "AppData\Local"
+          $env:APPDATA = Join-Path $user "AppData\Roaming"
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+          $env:HERDVIA_DIR = Join-Path $work "d"
+          $dir = Join-Path $env:LOCALAPPDATA "Programs\herdvia"
+          $exe = Join-Path $dir "herdvia.exe"
+
+          function Check($ok, $what) {
+            if (-not $ok) { throw "check failed: $what" }
+            Write-Host "ok: $what"
+          }
+          function Invoke-Install($shell, $release) {
+            $ErrorActionPreference = "Continue"
+            $env:HERDVIA_RELEASE_BASE = "$base/$release"
+            $log = Join-Path $work ("out-" + [IO.Path]::GetRandomFileName() + ".txt")
+            & $shell -NoProfile -ExecutionPolicy Restricted -Command "Get-ExecutionPolicy; irm $base/$release/install.ps1 | iex" *> $log
+            $code = $LASTEXITCODE
+            $text = Get-Content -Raw $log
+            Write-Host "--- $shell, $release (exit $code)"
+            Write-Host $text
+            Check ($text -match "(?m)^Restricted\r?$") "$shell ran with a Restricted execution policy"
+            [pscustomobject]@{ Code = $code; Text = $text }
+          }
+          function Get-PathCount {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment")
+            $raw = [string]$key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $key.Close()
+            @($raw -split ";" | Where-Object { $_ -ieq $dir }).Count
+          }
+          $built = (Get-FileHash bin\herdvia.exe -Algorithm SHA256).Hash
+
+          try {
+            $r = Invoke-Install powershell good
+            Check ($r.Code -eq 0) "new install with Windows PowerShell 5.1 succeeds"
+            Check (Test-Path -LiteralPath $exe) "herdvia.exe is at $exe"
+            Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "herdvia.exe is the built executable"
+            foreach ($name in "README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-LICENSES.html") {
+              Check (Test-Path -LiteralPath (Join-Path $dir $name)) "$name is installed"
+            }
+            Check ($r.Text -match "Installed herdvia $([regex]::Escape($version)) at") "reports the new install"
+            Check ($r.Text -match "running as administrator") "skips herdvia agent install when elevated"
+            Check ($r.Text -match "releases\.herdr\.dev/core/install\.ps1") "explains how to install herdr-core"
+            Check ((& $exe --version) -eq "herdvia $version") "herdvia --version"
+            $id = & $exe id
+            Check ($LASTEXITCODE -eq 0 -and $id.Count -eq 2 -and $id[0] -match "^[0-9a-f]{64}$") "herdvia id"
+            Check ($r.Text.Contains($id[0])) "install output shows the EndpointId"
+            Check ((Get-PathCount) -eq 1) "user PATH lists the folder once"
+
+            $r = Invoke-Install pwsh good
+            Check ($r.Code -eq 0) "upgrade with PowerShell 7 succeeds"
+            Check ($r.Text -match "Upgraded herdvia") "reports the upgrade"
+            Check ((Get-PathCount) -eq 1) "user PATH still lists the folder once"
+            Check (((& $exe id) -join "`n") -eq ($id -join "`n")) "identity is kept"
+
+            # A running herdvia.exe cannot be overwritten; install.ps1 renames it aside.
+            $agent = Start-Process $exe -ArgumentList "agent" -PassThru -NoNewWindow `
+              -RedirectStandardOutput "$work\agent.out" -RedirectStandardError "$work\agent.err"
+            Start-Sleep -Seconds 3
+            if ($agent.HasExited) { Get-Content "$work\agent.err" }
+            Check (-not $agent.HasExited) "agent is running from $exe"
+            $r = Invoke-Install powershell good
+            Check ($r.Code -eq 0) "upgrade while herdvia.exe is running succeeds"
+            Check (-not $agent.HasExited) "agent is still running"
+            Check (Test-Path -LiteralPath "$exe.old") "the running executable was renamed to herdvia.exe.old"
+            Check ((& $exe --version) -eq "herdvia $version") "new herdvia.exe runs"
+            Stop-Process -Id $agent.Id
+            $agent.WaitForExit()
+            $r = Invoke-Install pwsh good
+            Check ($r.Code -eq 0) "upgrade after the agent stopped succeeds"
+            Check (@(Get-ChildItem -LiteralPath $dir -Filter "herdvia.exe*.old").Count -eq 0) "herdvia.exe.old was removed"
+
+            $r = Invoke-Install powershell bad
+            Check ($r.Code -ne 0) "checksum mismatch fails"
+            Check ($r.Text -match "checksum mismatch") "reports the checksum mismatch"
+            Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "installed herdvia.exe is unchanged"
+            Check (@(Get-ChildItem -LiteralPath $dir -Filter "herdvia.exe*.old").Count -eq 0) "nothing was renamed"
+            Check (-not (Test-Path -LiteralPath (Join-Path $dir "herdvia.new.exe"))) "no herdvia.new.exe is left"
+
+            # An upgrade cut short: herdvia.exe is broken and the working one is herdvia.exe.old.
+            Move-Item -LiteralPath $exe -Destination "$exe.old"
+            Set-Content -LiteralPath $exe -Value "broken"
+            $r = Invoke-Install powershell missing
+            Check ($r.Code -ne 0) "a failed download after an interrupted upgrade fails"
+            Check ($r.Text -match "download failed") "reports the failed download"
+            Check ((Test-Path -LiteralPath "$exe.old") -and (Get-FileHash "$exe.old" -Algorithm SHA256).Hash -eq $built) "herdvia.exe.old is kept"
+            Check (-not (Test-Path -LiteralPath (Join-Path $dir "herdvia.new.exe"))) "no herdvia.new.exe is left"
+            $r = Invoke-Install pwsh good
+            Check ($r.Code -eq 0) "installing again after an interrupted upgrade succeeds"
+            Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "herdvia.exe is the built executable again"
+            Check (@(Get-ChildItem -LiteralPath $dir -Filter "herdvia.exe*.old").Count -eq 0) "the renamed executables were removed"
+
+            # The manual install in README.md, with its commands. Its own LOCALAPPDATA; System32
+            # first, as on a PC without Git's Unix tools (whose tar cannot read zip) on PATH.
+            $env:LOCALAPPDATA = Join-Path $work "manual\AppData\Local"
+            New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+            $env:Path = "$env:SystemRoot\System32;$env:Path"
+            Check (@(Get-Command tar.exe)[0].Source -ieq "$env:SystemRoot\System32\tar.exe") "tar.exe is the one in Windows"
+            $tmp = Join-Path $env:TEMP "herdvia-$(Get-Random)"
+            New-Item -ItemType Directory $tmp
+            Set-Location $tmp
+            curl.exe -fLO "$base/good/herdvia-windows-x64.zip"
+            Check ($LASTEXITCODE -eq 0) "curl.exe downloads the archive"
+            curl.exe -fLO "$base/good/SHA256SUMS"
+            Check ($LASTEXITCODE -eq 0) "curl.exe downloads SHA256SUMS"
+            $hash = certutil -hashfile herdvia-windows-x64.zip SHA256
+            Check ($LASTEXITCODE -eq 0) "certutil hashes the archive"
+            $hash | Write-Host
+            $listed = Select-String herdvia-windows-x64.zip SHA256SUMS
+            $listed | Write-Host
+            Check ($hash[1] -cmatch "^[0-9a-f]{64}$") "certutil prints the hash in the form SHA256SUMS uses"
+            Check ($listed.Line -ceq "$($hash[1])  herdvia-windows-x64.zip") "the hash certutil prints is the one SHA256SUMS lists"
+            New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
+            tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+            Check ($LASTEXITCODE -eq 0) "tar.exe extracts the archive"
+            Check ((Get-FileHash "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" -Algorithm SHA256).Hash -eq $built) "the extracted herdvia.exe is the built executable"
+            Check ((& "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" --version) -eq "herdvia $version") "the extracted herdvia.exe runs"
+          } finally {
+            if ($agent -and -not $agent.HasExited) { Stop-Process -Id $agent.Id }
+            Stop-Process -Id $server.Id
+          }
+          exit 0

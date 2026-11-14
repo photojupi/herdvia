@@ -138,8 +138,9 @@ jobs:
             README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html
           zip -j dist/herdvia-windows-x64.zip bin/windows-x64/herdvia.exe \
             README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html
+          cp scripts/install.sh scripts/install.ps1 dist/
           cd dist
-          sha256sum herdvia-macos-arm64.zip herdvia-windows-x64.zip > SHA256SUMS
+          sha256sum herdvia-macos-arm64.zip herdvia-windows-x64.zip install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/upload-artifact@v7
@@ -169,4 +170,5 @@ jobs:
             --title "$TAG" \
             --verify-tag \
             --generate-notes \
-            dist/herdvia-macos-arm64.zip dist/herdvia-windows-x64.zip dist/SHA256SUMS
+            dist/herdvia-macos-arm64.zip dist/herdvia-windows-x64.zip \
+            dist/install.sh dist/install.ps1 dist/SHA256SUMS

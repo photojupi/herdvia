@@ -1,0 +1,184 @@
+#!/bin/sh
+# Installs herdvia on macOS (Apple Silicon), or upgrades it:
+#
+#   curl -fsSL https://github.com/photojupi/herdvia/releases/latest/download/install.sh | sh
+#
+# Puts the executable at ~/.local/bin/herdvia, adds ~/.local/bin to PATH in
+# ~/.zprofile if it is missing, and starts the agent at login (herdvia agent
+# install). It does not install herdr-core; it only says how. The identity
+# and peer list are in the data folder, so upgrading keeps them.
+#
+# Environment variables:
+#   HERDVIA_VERSION=0.1.0       install this release instead of the latest
+#   HERDVIA_NO_AGENT=1          do not run herdvia agent install
+#   HERDVIA_NO_MODIFY_PATH=1    do not change ~/.zprofile
+#   HERDVIA_RELEASE_BASE=<url>  download <url>/<file> instead (mirrors, tests)
+set -eu
+
+repo=https://github.com/photojupi/herdvia/releases
+archive=herdvia-macos-arm64.zip
+# The herdr-core version herdvia was verified with.
+herdr_version=0.1.21
+
+say() { printf '%s\n' "$*"; }
+fail() { say "herdvia install: $*" >&2; exit 1; }
+# Quotes $1 for sh, unless it has nothing a shell would treat specially.
+quote() {
+  case $1 in
+    '' | *[!A-Za-z0-9._/:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+tmp=
+staged=
+cleanup() {
+  if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
+  if [ -n "$staged" ]; then rm -f "$staged"; fi
+}
+
+# Everything runs from main, called on the last line: under `curl | sh`, a
+# download cut short then ends in a syntax error before anything has run.
+main() {
+  [ -n "${HOME:-}" ] || fail "HOME is not set"
+  [ "$(id -u)" != 0 ] || fail "do not run this as root; herdvia refuses to run as root"
+
+  arm64=0
+  if [ "$(uname -s)" = Darwin ]; then
+    # A shell running under Rosetta reports x86_64 on Apple Silicon.
+    if [ "$(uname -m)" = arm64 ] || [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+      arm64=1
+    fi
+  fi
+  if [ "$arm64" != 1 ]; then
+    say "herdvia install: there is a prebuilt herdvia only for macOS on Apple Silicon; this is $(uname -s) $(uname -m). Nothing was changed." >&2
+    say "Build it from source instead (Rust 1.91 or later):" >&2
+    say "  cargo install --locked --git https://github.com/photojupi/herdvia" >&2
+    say "See https://github.com/photojupi/herdvia#from-source" >&2
+    exit 1
+  fi
+
+  for tool in curl unzip shasum; do
+    command -v "$tool" >/dev/null 2>&1 || fail "needs $tool"
+  done
+
+  if [ -n "${HERDVIA_RELEASE_BASE:-}" ]; then
+    base=${HERDVIA_RELEASE_BASE%/}
+  elif [ -n "${HERDVIA_VERSION:-}" ]; then
+    version=${HERDVIA_VERSION#v}
+    case $version in
+      '' | *[!0-9A-Za-z.-]*) fail "invalid HERDVIA_VERSION: $HERDVIA_VERSION" ;;
+    esac
+    base=$repo/download/v$version
+  else
+    base=$repo/latest/download
+  fi
+
+  bin=$HOME/.local/bin
+  exe=$bin/herdvia
+  trap cleanup EXIT
+  trap 'exit 1' HUP INT TERM
+  tmp=$(mktemp -d)
+
+  # Commands below read from /dev/null: under `curl | sh`, standard input is
+  # the rest of this script.
+  say "Downloading $base/$archive"
+  curl -fsSL "$base/$archive" -o "$tmp/$archive" </dev/null || fail "download failed: $base/$archive; nothing was installed"
+  curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" </dev/null || fail "download failed: $base/SHA256SUMS; nothing was installed"
+  want=$(tr -d '\r' <"$tmp/SHA256SUMS" | awk -v f="$archive" '$2 == f || $2 == "*" f { print tolower($1); exit }')
+  [ -n "$want" ] || fail "SHA256SUMS has no line for $archive; nothing was installed"
+  got=$(shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)
+  [ "$got" = "$want" ] || fail "checksum mismatch for $archive (the download is damaged or was changed); nothing was installed"
+
+  mkdir "$tmp/x"
+  unzip -q "$tmp/$archive" herdvia -d "$tmp/x" </dev/null || fail "cannot extract herdvia from $archive; nothing was installed"
+  [ -f "$tmp/x/herdvia" ] || fail "$archive holds no herdvia; nothing was installed"
+
+  action=Installed
+  [ ! -e "$exe" ] || action=Upgraded
+  mkdir -p "$bin" || fail "cannot create $bin"
+  # Stage beside the target and move it into place: copying over the file a
+  # running agent was started from makes macOS kill the next start of it.
+  staged=$(mktemp "$bin/.herdvia.XXXXXX") || fail "cannot write to $bin"
+  cp "$tmp/x/herdvia" "$staged" || fail "cannot write to $bin"
+  chmod 755 "$staged"
+  if xattr -p com.apple.quarantine "$staged" >/dev/null 2>&1; then
+    xattr -d com.apple.quarantine "$staged"
+  fi
+  "$staged" --version </dev/null >/dev/null || fail "the downloaded herdvia does not run on this machine; nothing was installed"
+  mv -f "$staged" "$exe" || fail "cannot replace $exe"
+  staged=
+  installed=$("$exe" --version </dev/null) || fail "$exe was installed, but herdvia --version failed"
+  say "$action $installed at $exe"
+
+  line='export PATH="$HOME/.local/bin:$PATH"'
+  case ":$PATH:" in
+    *":$bin:"*) ;;
+    *)
+      shell=${SHELL:-}
+      if [ "${HERDVIA_NO_MODIFY_PATH:-}" = 1 ]; then
+        say "$bin is not on your PATH, and HERDVIA_NO_MODIFY_PATH=1 left it that way. Run herdvia by its full path, or add this line to your shell's startup file:"
+        say "  $line"
+      elif [ "${shell##*/}" = zsh ]; then
+        profile=$HOME/.zprofile
+        if [ -f "$profile" ] && grep -qxF "$line" "$profile"; then
+          say "$profile already adds $bin to your PATH. Open a new terminal to use herdvia."
+        else
+          # Do not join the line to a last line that has no newline.
+          if [ -s "$profile" ] && [ -n "$(tail -c 1 "$profile")" ]; then
+            printf '\n' >>"$profile"
+          fi
+          printf '%s\n' "$line" >>"$profile"
+          say "Added $bin to your PATH in $profile. Open a new terminal to use herdvia."
+        fi
+      else
+        say "$bin is not on your PATH. Your login shell is not zsh (${shell:-unknown}), so this script did not change it. Add this line to your shell's startup file and open a new terminal:"
+        say "  $line"
+      fi
+      ;;
+  esac
+
+  # herdvia runs herdr-core; it does not install it, and neither does this script.
+  if [ -x "$bin/herdr-core" ]; then
+    say "herdr-core: found at $bin/herdr-core"
+  elif found=$(command -v herdr-core 2>/dev/null); then
+    say "herdr-core is at $found, but the agent that starts at login searches only $bin:/usr/bin:/bin:/usr/sbin:/sbin, so it will not find it. Link it into $bin:"
+    say "  ln -s $(quote "$found") $(quote "$bin/herdr-core")"
+  else
+    say "herdr-core is not installed. herdvia needs it on both machines. This script does not install it; Herdr's own install script does:"
+    say "  curl -fsSL https://releases.herdr.dev/core/install.sh | sh"
+    say "To install $herdr_version, the version herdvia was verified with:"
+    say "  curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=$herdr_version sh"
+  fi
+
+  say "This machine's EndpointId and fingerprint:"
+  "$exe" id </dev/null || fail "herdvia is installed at $exe, but herdvia id failed (see above)"
+
+  # The commands below, quoted to paste into a shell.
+  run=$(quote "$exe")
+  if [ "${HERDVIA_NO_AGENT:-}" = 1 ]; then
+    say "The agent was not started (HERDVIA_NO_AGENT=1). To start it now and at every login, or to restart it with this version:"
+    say "  $run agent install"
+  else
+    say "Starting the agent now and at every login (herdvia agent install)"
+    if ! "$exe" agent install </dev/null; then
+      say "herdvia install: herdvia is installed at $exe, but herdvia agent install failed (see the error above). Fix the problem, then run:" >&2
+      say "  $run agent install" >&2
+      exit 1
+    fi
+  fi
+
+  say ""
+  say "Next steps"
+  say "To connect from this machine to another one, run here:"
+  say "  $run allow <name> <EndpointId of the other machine> --outbound"
+  say "Then accept this machine on the other one (herdvia pending and herdvia accept, as below), and run here:"
+  # hc runs --via as an sh line, so the path inside it is quoted too.
+  say "  hc machine add --via $(quote "$run via <name>") --name <name>"
+  say "To let another machine connect to this one, allow this machine on it with --outbound and run its agent. Its connection attempts then show up here:"
+  say "  $run pending"
+  say "  $run accept <name> <fingerprint> --inbound"
+  say "Check each fingerprint against what herdvia id prints on the other machine, in person or over a channel other than the one you copied it through."
+}
+
+main "$@"
