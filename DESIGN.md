@@ -134,10 +134,16 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 
 - `secret.key`: 비밀키. 권한 0600. 권한이 더 넓으면 에이전트와 `id`는 시작을 거부한다.
 - `peers`: 피어 목록. 권한 0600. 한 줄에 `이름 EndpointId 권한`(권한은 `in`, `out`, `both`).
+- Unix의 데이터 폴더 준비(`prepare_dir`): 없으면 0700으로 만든 뒤 `O_NOFOLLOW | O_DIRECTORY`로 한 번 열고, 그 디스크립터 하나로 소유자 검사(fstat), `chmod 700`(fchmod), macOS ACL 검사를 한다.
+  경로로 따로 보고 바꾸면 그 사이에 폴더가 링크로 바뀔 수 있기 때문이다. 링크이거나 디렉터리가 아니면 `data path must be a real directory`다.
+  이 사용자 소유인데 이 사용자가 읽을 수 없는 폴더(모드 0000 등, 열기가 EACCES)는 열 수 없으므로 예전처럼 경로로 확인하고 0700으로 고친 뒤 다시 연다.
+  다시 열 때 링크나 디렉터리가 아닌 것으로 바뀌어 있어도 OS 오류 문구가 아니라 같은 `data path must be a real directory`로 거부한다.
 - macOS에서는 데이터 폴더(chmod 700 뒤), `secret.key`, `peers`에 allow 항목이 있는 확장 ACL이 있으면
   `<경로> has an access control list (ACL) entry that allows access; remove the ACL with chmod -N '<경로>'`로 거부한다.
   ACL은 권한 비트와 따로 접근을 허용하고, 상속 ACL이 걸린 폴더에서는 새로 만든 `secret.key`도 그 ACL을 받기 때문이다.
-  deny 항목만 있는 ACL은 받는다. Linux는 ACL을 검사하지 않는다.
+  deny 항목만 있는 ACL은 받는다. `acl_get_fd_np`가 ENOENT, ENOTSUP, EOPNOTSUPP로 실패하면 ACL이 없는 것으로 본다.
+  ACL을 지원하지 않는 파일 시스템에는 allow 항목도 있을 수 없으므로, 그런 볼륨을 오류(`Operation not supported`)로 막을 이유가 없다. 다른 errno는 오류다.
+  Linux는 ACL을 검사하지 않는다.
 
 ### 에이전트
 
@@ -172,10 +178,16 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - iroh의 로그는 기본으로 끈다. 에이전트의 로그에는 접속·거부·종료 같은 사건만 남기고 스트림 내용은 남기지 않는다.
 - 에이전트가 실행 중에 쓰는 로그 줄은 UTC 시각으로 시작한다(`2026-11-14T14:17:03Z herdvia: connected <id>`).
   시작하다 실패할 때의 마지막 오류 줄은 CLI와 같은 출력이라 시각이 없다.
-- 실행 중의 로그 줄은 모두 한 함수(`log::line`)를 거친다. 형식은 그대로 `<UTC 시각> herdvia: <내용>`이고, 내용의 제어 문자(`char::is_control`)는
-  Rust `escape_default` 표기(`\n`, `\r`, `\t`, `\u{1b}`, `\u{0}`, `\u{7f}`, `\u{85}` 등)로 바꿔 호출 한 번이 반드시 한 줄이 되게 한다.
+- 실행 중의 로그 줄은 모두 한 함수(`log::line`)를 거친다. 형식은 그대로 `<UTC 시각> herdvia: <내용>`이고, 내용의 제어 문자(`char::is_control`),
+  Unicode 줄·문단 구분자(U+2028, U+2029), 양방향 제어 문자 12자(Bidi_Control: U+061C, U+200E, U+200F, U+202A~U+202E, U+2066~U+2069)는
+  Rust `escape_default` 표기(`\n`, `\r`, `\t`, `\u{1b}`, `\u{0}`, `\u{7f}`, `\u{85}`, `\u{2028}`, `\u{202e}`, `\u{61c}` 등)로 바꾼다.
+  그래서 호출 한 번은 Unicode 줄 구분자로 줄을 나누는 리더에서도 반드시 한 줄이고, 로그 뷰어의 표시 순서를 바꾸지 못한다.
   이스케이프 뒤 300자(char)를 넘으면 300자에서 자르고 `... [truncated, <N> bytes]`(N은 정화 전 내용의 바이트 수)를 붙인다.
-  QUIC 종료 사유나 거부한 OPEN처럼 원격이 정하는 글이 가짜 줄을 만들거나 한 줄로 로그를 채우지 못하게 하려는 것이다.
+  QUIC 종료 사유나 거부한 OPEN처럼 원격이 정하는 글이 가짜 줄을 만들거나, 줄의 보이는 순서를 뒤집거나, 한 줄로 로그를 채우지 못하게 하려는 것이다.
+- 로그 줄은 앞의 요약 줄(아래)과 함께 한 번의 write로 표준 오류에 쓴다. 쓰기가 실패하면(디스크가 가득 참, 읽는 쪽이 닫힌 파이프) 그 줄은 버리고 계속한다.
+  예전에는 `eprint!`가 panic해서 세션이 명령을 실행하기 전에 끊기거나, `session ended`를 쓰는 Drop 안에서 panic이 났다.
+  로그를 쓰지 못한다고 세션과 에이전트를 멈출 이유는 없어서 버리는 쪽을 택했다. 버린 줄은 흔적 없이 사라진다(세지도, 나중에 알리지도 않는다).
+  시작하다 실패할 때의 마지막 오류 줄도 쓰지 못하면 버린다(종료 코드 255는 그대로다).
 - 속도 제한은 단조 시계 기준의 토큰 버킷 둘이다. 미인증 버킷(`rejected peer <id>`, `incoming connection failed: <오류>`)은 한꺼번에 30줄, 그 뒤 10초에 1줄,
   나머지 줄의 버킷은 한꺼번에 60줄, 그 뒤 1초에 1줄이다. 버킷이 차 있는 동안에는 토큰이 더 쌓이지 않는다.
   EndpointId만 알면 누구나 미인증 줄을 만들 수 있으므로, 버킷을 나눠 그쪽 홍수가 인가된 피어의 줄을 밀어내지 못하게 한다.
@@ -195,11 +207,12 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - 자동 시작의 로그 파일(M4, M5b)은 크기와 기간으로 관리한다. 시작 직후(로컬 통신 통로를 연 뒤)와 그 뒤 한 시간마다 크기를 본다.
   10 MiB(10*1024*1024 바이트)를 넘으면 끝의 5 MiB만 읽어 그 안의 온전한 줄만 남기고 같은 파일을 제자리에서 다시 쓴다(잘린 첫 줄은 버리고,
   그 안에 개행이 없으면 빈 파일이 된다). 기간만으로는 줄이 쏟아질 때 며칠 안에 디스크가 차는 것을 막지 못하기 때문이다.
-  크기 처리 뒤, 24시간이 지났을 때만(시작 직후 한 번 포함) 180일이 지난 줄을 지운다.
+  크기 처리 뒤, 마지막으로 성공한 기간 정리에서 24시간이 지났을 때만(시작 직후 한 번 포함) 180일이 지난 줄을 지운다.
   macOS의 타이머는 잠자기 동안 멈추므로 24시간을 기다리지 않고 한 시간마다 깨어나 벽시계로 24시간이 지났는지 본다.
   앞에서부터 읽어, 180일 안의 시각이 붙은 첫 줄보다 앞에 있는 마지막 만료 줄까지 지운다. 시각이 없는 줄(이전 버전이 쓴 줄, 시작 실패의 오류 줄 등)은 그다음 시각이 붙은 줄을 따른다.
   지울 것이 없으면 쓰지 않는다. 있으면 남길 내용을 파일 앞으로 옮겨 쓰고 길이를 줄인다. 파일을 새로 만들지 않으므로 이어 쓰는 핸들이 그대로 유효하다.
-  고쳐 쓰는 동안 자기 표준 오류를 잠가 그사이의 로그 줄을 잃지 않는다. 실패하면 시각 붙은 한 줄을 남기고 다음 차례에 다시 한다.
+  고쳐 쓰는 동안 자기 표준 오류를 잠가 그사이의 로그 줄을 잃지 않는다. 실패하면 시각 붙은 한 줄(`cannot remove old lines from <경로>: <오류>`)을 남기고
+  다음 시간별 점검(한 시간 뒤)에 다시 한다. 24시간 주기는 정리가 성공했을 때만 새로 시작한다. 실패를 실행한 것으로 치면 24시간 동안 다시 하지 않기 때문이다.
   정리는 에이전트 루프 안에서 끝까지 기다리므로, 정상 종료와 리스너 해제는 진행 중인 정리가 끝난 뒤에 일어난다.
   다만 강제 종료(Windows의 `agent install` 재실행·`uninstall`이 쓰는 `TerminateProcess`, SIGKILL)가 고쳐 쓰는 도중에 오면 파일 끝에 옛 내용 일부가 겹쳐 남을 수 있고, 같은 로그 파일에 다른 프로세스가 동시에 이어 쓰면 그 순간의 줄이 잘릴 수 있다(프로세스 사이에는 잠그지 않는다).
   macOS는 표준 오류가 `~/Library/Logs/herdvia.log`에 이어 쓰고 있을 때만(O_APPEND, 연 파일과 dev/ino 비교), Windows는 `agent --log`로 연 파일일 때만 지운다.
@@ -269,8 +282,12 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
     (즉시 실패 방식. FILE_SHARE_DELETE 없이 열어 쥔 동안 이름을 지울 수 없다). 잠겨 있으면 "agent is already running"이다.
     파이프 이름은 바꾸지 않았으므로 via와 다른 버전의 에이전트도 같은 이름을 쓴다.
   - 첫 파이프 인스턴스를 만들지 못하면(ERROR_ACCESS_DENIED) 그 이름에 익명 클라이언트(SECURITY_ANONYMOUS)로 접속해 소유자 SID를 읽는다.
+    익명으로 접속하는 것은 남의 서버가 이 사용자를 가장하지 못하게 하려는 것이다. 접속할 때는 `READ_CONTROL`만 요청한다. 읽기를 막은 파이프도 소유자는 알려 주게 하려는 것이다.
+    모든 인스턴스가 사용 중이면(ERROR_PIPE_BUSY, 에이전트가 접속을 받고 다음 인스턴스를 만들기 전) 최대 1초 동안 다시 시도한다.
+    자기 것이면 "agent is already running"이다(agent.lock을 이미 쥐었으므로 잠금을 모르는 이전 버전 에이전트다).
     다른 계정이면 `another account (<SID>) holds this agent's pipe name; the agent cannot start until that account's process closes it`,
-    자기 것이거나 알 수 없으면 "agent is already running"이다. 익명으로 접속하는 것은 남의 서버가 이 사용자를 가장하지 못하게 하려는 것이다.
+    소유자를 읽을 수 없으면 `another process holds this agent's pipe name, and its owner cannot be read (<OS 오류>); the agent cannot start until that process closes it`이다.
+    예전에는 읽을 수 없는 소유자도 "agent is already running"으로 보아, 에이전트가 없는데 떠 있다고 안내했다.
   - via·관리 명령은 접속한 파이프의 소유자 SID가 자신과 같은지 확인하고, 다르면 접속을 끊고 오류를 낸다.
   - 파이프가 없으면 Unix의 "에이전트 없음"과 같은 오류·종료 코드(255)를 낸다.
 - 실행 쪽(Windows 에이전트가 OPEN을 받았을 때):
@@ -295,11 +312,27 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   `data path must be a real directory, not a junction, symbolic link, or other reparse point`로, 소유자가 현재 사용자, Administrators(S-1-5-32-544),
   LocalSystem(S-1-5-18)이 아니면 `data directory must be owned by this user, Administrators, or SYSTEM, not <SID>; use a directory that this user created`로 거부한다.
   소유자는 언제든 DACL을 되돌릴 수 있으므로 소유자부터 본다. Administrators를 받는 것은 상승된 사용자가 만든 객체의 소유자가 Administrators이기 때문이다.
-  통과하면 매번 보호 DACL `D:P(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`를 건다. 상위 폴더에서 상속받지 않고,
-  안에 만드는 파일(임시 파일로 쓰는 `secret.key`, `peers` 포함)이 상속한다. 검사부터 설정까지 같은 핸들로 해서 경로를 다시 여는 사이의 바꿔치기를 피한다.
+  - 안전 규칙(폴더와 파일 공통): DACL이 NULL이 아니고, 허용 항목이 상속용 항목까지 모두 이 사용자, SYSTEM(S-1-5-18), Administrators(S-1-5-32-544) 중 하나를 가리켜야 한다.
+    deny 항목은 문제 삼지 않는다. 검사하지 않는 허용 형식(object, callback, compound allow)은 열린 것으로 본다.
+  - 폴더가 이미 herdvia가 거는 상태(보호되어 있고, 안전하고, 세 계정 각각에게 하위 파일과 폴더로 상속되는 모든 권한 `OICI FA`를 주는 상태)이면 DACL을 다시 쓰지 않는다.
+    그 밖에는 보호 DACL `D:P(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`를 건다(내용은 v0.1.2와 같다). 상위 폴더에서 상속받지 않고,
+    안에 만드는 파일(임시 파일로 쓰는 `secret.key`, `peers` 포함)이 상속한다. v0.1.2는 통과할 때마다 이 DACL을 걸었는데,
+    그러려면 WRITE_DAC가 필요해서, 이미 안전해도 이 사용자가 DACL을 바꿀 수 없는 폴더(SYSTEM 소유 등)는 맨 `Access is denied`로 실패했다. 그래서 이미 그 상태면 건너뛴다.
+    보호되어 있고 신뢰 계정만 있어도 상속 항목(OI)이 없는 DACL은 안의 파일이 이 사용자 권한을 물려받는다고 볼 수 없으므로 다시 쓴다.
+  - 폴더가 그 상태이거나 방금 그렇게 만들었으면, `secret.key`와 `peers` 중 DACL이 열린 파일을 고친다. 명시 항목과 파일 자체의 보호를 없애
+    폴더에서 상속받는 항목만 남긴다(`icacls /reset`과 같은 효과). v0.1.2는 파일의 DACL을 보지 않아, 다른 계정이 들어오는 항목(실측: 상속된 CodexSandboxUsers)이 남은 파일도 받았다.
+  - 폴더가 열려 있는데 이 사용자가 DACL을 바꿀 수 없으면
+    `data directory allows access to accounts other than this user, SYSTEM, and Administrators, and this user cannot change its permissions; in an administrator terminal run icacls "<폴더>" /grant *<사용자 SID>:(OI)(CI)F and run herdvia again, or use a directory that this user created`로 거부한다.
+  - 폴더가 그 상태가 아니고 이 사용자가 바꿀 수도 없지만 안전하면(예: SYSTEM이 소유하고 이 사용자에게 Modify만 준 폴더) 그대로 쓴다. 이때는 파일을 고치지 않는다.
+    그 폴더가 물려주는 항목이 이 사용자를 들이는지 알 수 없어서, 파일의 명시 항목을 지우면 이 사용자가 키를 못 읽게 될 수 있기 때문이다. 열린 파일은 아래 문구로 거부한다.
+    보호되지 않은 폴더라면 부모에서 상속이 계속 들어오고, 에이전트가 도는 동안 부모에 더해진 항목은 다음 시작 때에야 검사된다.
+  - 검사는 한 핸들로 하고, WRITE_DAC가 필요할 때만 경로로 다시 연다(ReOpenFile로는 WRITE_DAC를 받지 못한다). 다시 연 항목의 파일 ID(볼륨 일련번호와 파일 인덱스)가
+    처음 연 것과 다르면 `<경로> was replaced while herdvia checked it`으로 거부해, 그 사이의 바꿔치기를 막는다.
   프로필의 기본 권한에 기대지 않는 것은 `HERDVIA_DIR`이 프로필 밖을 가리켜도 같은 보호를 받게 하려는 것이다.
 - `secret.key`와 `peers`는 재분석 지점이나 일반 파일이 아닌 것을 `<경로> must be a regular file, not a directory, link, or other reparse point`로,
-  소유자가 위 셋이 아니면 `<경로> must be owned by this user, Administrators, or SYSTEM, not <SID>`로 거부한다. 파일이 없을 때의 동작(키 생성, 빈 목록)은 그대로다.
+  소유자가 위 셋이 아니면 `<경로> must be owned by this user, Administrators, or SYSTEM, not <SID>`로 거부한다.
+  위의 수리 뒤에도 DACL이 열려 있으면 `<경로> allows access to accounts other than this user, SYSTEM, and Administrators, and herdvia cannot restrict it; in an administrator terminal run icacls "<경로>" /reset`으로 거부한다.
+  에이전트, CLI, 실행 중의 `peers` 다시 읽기, doctor가 같은 문구를 쓴다. 파일이 없을 때의 동작(키 생성, 빈 목록)은 그대로다.
 - `agent install`/`uninstall`은 M5a의 Windows에서 "지원하지 않음" 오류를 낸다.
 - 기존 통합 테스트(`tests/`)는 Unix 전용으로 둔다. Windows 쪽은 줄 판정 등 순수 로직만 단위 테스트한다.
   CI의 windows 잡이 windows-latest에서 MSVC 툴체인으로 단위 테스트(`cargo test --locked --lib --bins`)를 돌린다.
@@ -438,7 +471,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 | `herdvia doctor` | 설치와 연결이 왜 안 되는지를 한 번에 보여 준다 |
 
 - 읽기 전용이다. 데이터 폴더, `secret.key`, `peers`, 자동 시작 등록, 에이전트 상태를 만들거나 바꾸지 않는다.
-  키가 없어도 만들지 않는다(키를 만드는 `peers::load_key` 대신 `ipc::private_file`로 열어 읽기만 한다).
+  키가 없어도 만들지 않는다(키를 만드는 `peers::load_key` 대신 `ipc::private_file`, Windows는 `ipc::inspect_file`로 열어 읽기만 한다).
   실행하는 외부 프로그램은 `herdr-core --version`(2초 제한) 하나다. 출력은 앞 4096바이트만 읽고, 해석하지 못한 출력은 첫 줄 80자까지만 쓴다.
   Unix에서는 새 프로세스 그룹으로 띄워 시간이 넘으면 그룹 전체를 죽인다(Windows는 직접 자식만 죽는다). root 실행은 다른 명령처럼 거부한다.
 - 출력: 표준 출력에 점검 결과 한 줄씩. 줄 머리는 `ok`, `warn`, `fail`(4칸에 맞추고 공백 하나)이고, warn과 fail 줄에는 할 일을 같은 줄에 쓴다.
@@ -448,12 +481,21 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   2. 데이터 폴더. `HERDVIA_DIR`에서 왔으면 그렇다고 쓴다(자동 시작은 기본 폴더만 쓴다). 없으면 warn(`herdvia id`가 만든다).
      `HERDVIA_DIR`이 절대 경로가 아니면 `fail data directory: HERDVIA_DIR must be an absolute path, not "<값>"; set it to a full path, or unset it`이다.
      디렉터리가 아니거나(폴더를 `symlink_metadata`로 보므로 심볼릭 링크도, Windows는 정션도) 다른 사용자 소유이거나 읽을 수 없으면 fail. 이 사용자 소유여도 목록을 읽거나 안을 탐색할 수 없으면 fail이다(`read_dir`와 `폴더/.` 조회로 판정하고, Unix는 `chmod 700`을 안내한다). Unix는 `agent.sock` 경로가 소켓 주소 한도를 넘으면 fail.
-     에이전트가 거부하는 폴더도 fail이고 그 오류 문구를 그대로 쓴다(`ipc::check_dir`). macOS는 allow 항목이 있는 ACL(`chmod -N` 안내),
-     Windows는 다른 소유자나 그 밖의 재분석 지점이다.
+     에이전트가 거부하는 폴더도 fail이고 그 오류 문구를 그대로 쓴다(Unix는 `ipc::check_dir`, Windows는 `ipc::inspect_dir`). macOS는 allow 항목이 있는 ACL(`chmod -N` 안내),
+     Windows는 다른 소유자, 그 밖의 재분석 지점, 이 사용자가 바꿀 수 없는 열린 DACL(`icacls … /grant` 안내)이다.
+     Windows에서 안전한 폴더는 보호 여부와 관계없이 ok다. 다른 계정에 열려 있지만 이 사용자가 DACL을 바꿀 수 있으면(다음 실행에서 herdvia가 제한한다) warn이고,
+     줄은 `warn data directory: <경로>; it allows access to accounts other than this user, SYSTEM, and Administrators; herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`이다.
+     이 warn에서도 3, 4는 이어서 한다. doctor는 아무것도 바꾸지 않으므로 v0.1.2에서 올린 PC(상속된 CodexSandboxUsers 등)는 새 버전의 첫 명령 전까지 이 warn을 보이고,
+     첫 명령 뒤에는 ok다(폴더는 보호되고, 파일에는 세 신뢰 계정의 상속 항목만 남는다).
      폴더 자체가 fail이면 3, 4를 건너뛰고, 이 줄이 fail이면(소켓 경로 포함) 7~9도 건너뛴다. 원인은 이 줄에 있으므로 뒤 줄에서 틀린 안내를 하지 않는다.
-  3. `secret.key`. 없으면 warn. 에이전트와 같은 권한 검사(Unix는 이 사용자 소유, 0600 이하, macOS는 allow ACL 없음. Windows는 링크가 아닌 일반 파일, 위 세 소유자)에 어긋나거나 32바이트가 아니면 fail. 있으면 지문만 쓴다.
+  3. `secret.key`. 없으면 warn. 에이전트와 같은 권한 검사(Unix는 이 사용자 소유, 0600 이하, macOS는 allow ACL 없음. Windows는 링크가 아닌 일반 파일, 위 세 소유자, 안전한 DACL)에 어긋나거나 32바이트가 아니면 fail. 있으면 지문만 쓴다.
+     Windows에서 DACL이 열려 있어도 다음 실행에서 herdvia가 고칠 수 있으면(폴더가 herdvia의 상태이거나 이 사용자가 폴더 DACL을 바꿀 수 있고, 파일 DACL도 바꿀 수 있으면)
+     `warn secret.key: present, fingerprint <지문>; <2와 같은 안내>`이고, 고칠 수 없으면 에이전트와 같은 `/reset` 문구로 fail이다.
   4. `peers`. 에이전트와 같은 로더로 읽는다. 형식·권한 오류는 로더의 문구를 넣어 fail(그 줄을 고치라는 안내는 형식 오류일 때만). 방향별 개수를 쓰고, 파일이 없으면 0개다.
-     권한 안내(소유자와 `chmod 600`)는 Unix에서만 쓰고, Windows에서는 링크가 아니고 이 사용자가 읽을 수 있는 일반 파일인지 보라고 쓴다. 3도 같다.
+     Windows에서 3과 같은 조건의 열린 DACL은 `warn peers: <2와 같은 안내>`이고 개수는 쓰지 않는다.
+     3, 4의 거부에 붙이는 일반 안내는 거부 문구에 해법이 없을 때만 붙인다. 해법이 이미 있는 문구에 다른 해법을 덧붙이면 무엇을 해야 할지 흐려지기 때문이다.
+     Unix는 `make this user its owner and run chmod 600 on it`이고, 소유자·0600 거부와 OS 오류에는 붙이고 macOS ACL 거부(`chmod -N`이 든 문구)에는 붙이지 않는다.
+     Windows는 `check that it is a regular file, not a link, that this user can read`이고, OS 오류(예: Access is denied)에만 붙이며 herdvia 자신의 종류·소유자·DACL 거부에는 붙이지 않는다.
   5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
      macOS는 LaunchAgent가 주는 PATH(`~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)의 실행 가능한 파일, 그 밖의 Unix는 현재 PATH와 `~/.local/bin`이다.
      macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. PATH의 상대 경로 항목은 현재 폴더 기준 절대 경로로 바꿔 찾으므로, 표시하는 경로와 링크 대상은 절대 경로다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).

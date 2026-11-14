@@ -480,8 +480,8 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 `herdvia doctor` 会按顺序检查以下项目：
 
 1. **当前可执行文件：** 版本与路径（若从临时目录或 Cargo `target` 编译目录运行会发出警告，因为 `agent install` 会记录该路径）。
-2. **数据目录：** 路径（包括是否来自 `HERDVIA_DIR`；`HERDVIA_DIR` 必须为绝对路径）、是否存在、是否为目录（不接受符号链接，Windows 上也不接受目录联接 junction），以及当前用户是否能够打开（macOS/Unix 上还会校验所有者；若无法打开则判为 `fail`，并在 macOS/Unix 上提示运行 `chmod 700`）。在 macOS 上，若目录带有允许访问的 ACL（访问控制列表）条目，也判为 `fail` 并提示 `chmod -N`；在 Windows 上，若它是其他类型的重解析点（reparse point），或所有者不是当前用户、Administrators 或 SYSTEM，也判为 `fail`。在 macOS/Unix 上还会检查代理套接字路径是否超出 Unix 套接字长度上限。
-3. **`secret.key`：** 是否存在，以及能否通过与代理相同的检查（macOS/Unix：归当前用户所有、权限不宽于 `0600`，macOS 上还不得有允许访问的 ACL 条目；Windows：不是链接的普通文件，所有者为当前用户、Administrators 或 SYSTEM）。输出中仅显示短指纹。
+2. **数据目录：** 路径（包括是否来自 `HERDVIA_DIR`；`HERDVIA_DIR` 必须为绝对路径）、是否存在、是否为目录（不接受符号链接，Windows 上也不接受目录联接 junction），以及当前用户是否能够打开（macOS/Unix 上还会校验所有者；若无法打开则判为 `fail`，并在 macOS/Unix 上提示运行 `chmod 700`）。在 macOS 上，若目录带有允许访问的 ACL（访问控制列表）条目，也判为 `fail` 并提示 `chmod -N`；在 Windows 上，若它是其他类型的重解析点（reparse point），或所有者不是当前用户、Administrators 或 SYSTEM，或它向其他账户授予了访问权限而当前用户无法修改其权限，也判为 `fail`（最后一种情况会给出需在管理员终端中运行的 `icacls … /grant` 命令）。在 Windows 上，若目录向这三者以外的账户授予了访问权限但当前用户可以修改其权限，则判为 `warn`，因为 herdvia 会在下次运行时加以限制。在 macOS/Unix 上还会检查代理套接字路径是否超出 Unix 套接字长度上限。
+3. **`secret.key`：** 是否存在，以及能否通过与代理相同的检查（macOS/Unix：归当前用户所有、权限不宽于 `0600`，macOS 上还不得有允许访问的 ACL 条目；Windows：不是链接的普通文件，所有者为当前用户、Administrators 或 SYSTEM，且不向其他账户授予访问权限）。在 Windows 上，向其他账户授予了访问权限的文件，若 herdvia 能在下次运行时加以限制则判为 `warn`，否则判为 `fail` 并给出 `icacls … /reset` 命令。输出中仅显示短指纹。
 4. **`peers`：** 是否可读（与 `secret.key` 相同的检查）且格式有效，并统计各方向已注册的对端数量。
 5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。
 6. **自动启动：** 是否已注册（macOS 的 LaunchAgent plist、Windows 的注册表 `Run` 值）且指向当前可执行文件。在 Windows 上若以管理员身份运行也会发出警告。
@@ -491,7 +491,7 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 
 输出行写往标准输出（`stdout`），以 `ok`、`warn` 或 `fail` 开头；`warn` 与 `fail` 行会在同一行给出处理建议。对端连接按每个对端输出一行，当前置步骤失败时会省略依赖它的后续检查：若数据目录检查为 `fail`，将跳过代理检查及其后的所有行（除非仅因 Unix 套接字路径过长而失败，否则 `secret.key` 与 `peers` 也会一并跳过）；若代理无响应，则跳过 `relay`、对端连接与 `pending` 行。没有任何 `fail` 时退出码为 `0`（仅有 `warn` 仍为 `0`），存在任一 `fail` 时退出码为 `1`。命令参数错误等情况仍输出一行 `herdvia:` 并以 `255` 结束。
 
-`doctor` 是只读命令：不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态，唯一运行的程序是 `herdr-core --version`（限时 2 秒）。向代理发送的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，则对应行记为 `warn`（`status` 超时后跳过 `pending`）。`herdvia doctor` 自 `v0.1.2` 起提供；更早版本的代理不认识该请求，此时 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理日志中会记录一行 `unknown CONTROL request`。
+`doctor` 是只读命令：不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直显示 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到某个使用数据目录的命令将其限制；从 `v0.1.2` 升级的电脑在运行新版本的第一条命令之前可能显示这些行（安装脚本会运行 `herdvia id`）。唯一运行的程序是 `herdr-core --version`（限时 2 秒）。向代理发送的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，则对应行记为 `warn`（`status` 超时后跳过 `pending`）。`herdvia doctor` 自 `v0.1.2` 起提供；更早版本的代理不认识该请求，此时 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理日志中会记录一行 `unknown CONTROL request`。
 
 请在**两台电脑**上都运行一次：电脑 B 上的问题（例如缺少 `herdr-core` 或尚未 `accept` 对端）会显示在 B 的输出中。电脑 A 上的运行示例：
 
@@ -573,8 +573,8 @@ ok   pending: no rejected connection attempts
 - **连接限制：** 已连接的对端在一个连接上最多同时打开 16 个流（每个 `hc` 会话一个），且不能打开单向流或发送数据报。打开流后 10 秒内未发送首个请求的流会被关闭。
 - **用户隔离的本地 IPC：**
   - **macOS / Unix：** 位于 `0700` 数据目录内的 `0600` 域套接字，并校验连接进程的 UID。
-  - **Windows：** 通过 DACL 将命名管道限制为仅当前用户 SID 可访问，并拒绝远程网络管道客户端。代理会锁定数据目录中的 `agent.lock`，因此针对同一目录启动第二个代理会被拒绝；若其他账户已占用该管道名，代理会报出该账户的 SID 并拒绝启动。
-- **数据目录、`secret.key` 与 `peers`：** 在 macOS/Unix 上，数据目录权限设为 `0700`，`secret.key` 以 `0600` 权限创建；若 `secret.key` 或 `peers` 属于其他用户或权限过宽，会报错停止；在 macOS 上，若目录或这两个文件带有允许访问的 ACL（访问控制列表）条目也会停止（错误信息会给出删除该 ACL 的 `chmod -N` 命令）。在 Windows 上，若数据目录是目录联接（junction）等重解析点，或所有者不是当前用户、Administrators 或 SYSTEM，则拒绝使用，并为目录设置仅允许这三者访问的受保护 DACL，由其中的文件继承。若 `secret.key` 或 `peers` 是链接或所有者不同，也会拒绝。
+  - **Windows：** 通过 DACL 将命名管道限制为仅当前用户 SID 可访问，并拒绝远程网络管道客户端。代理会锁定数据目录中的 `agent.lock`，因此针对同一目录启动第二个代理会被拒绝；若其他账户已占用该管道名，代理会报出该账户的 SID（无法读取所有者时则如实说明）并拒绝启动。
+- **数据目录、`secret.key` 与 `peers`：** 在 macOS/Unix 上，数据目录权限设为 `0700`，`secret.key` 以 `0600` 权限创建；若 `secret.key` 或 `peers` 属于其他用户或权限过宽，会报错停止；在 macOS 上，若目录或这两个文件带有允许访问的 ACL（访问控制列表）条目也会停止（错误信息会给出删除该 ACL 的 `chmod -N` 命令；不支持 ACL 的文件系统视为没有 ACL）。在 Windows 上，若数据目录是目录联接（junction）等重解析点，或所有者不是当前用户、Administrators 或 SYSTEM，则拒绝使用。若目录尚未设置，herdvia 会为其设置仅向这三者授予完全访问权限的受保护 DACL，由其中的文件继承，并让向其他账户授予了访问权限的 `secret.key` 或 `peers` 只从该目录继承权限。若 `secret.key` 或 `peers` 是链接、所有者不同，或仍向其他账户授予访问权限，则拒绝（错误信息会给出需在管理员终端中运行的 `icacls … /reset` 命令）。若目录向其他账户授予了访问权限而当前用户无法修改其权限，则拒绝该目录并给出 `icacls … /grant` 命令。仅向这三者授予访问权限、但当前用户无法修改其权限的目录会按原样使用：此时不会修复其中的 `secret.key` 或 `peers`，且未受保护的目录会继续从父目录继承权限。
 - **`secret.key` 即本机身份：** 任何拿到它的人都可向信任本机的对端冒充本机。若它可能已泄露，或你从备份中恢复了它、把它复制到了另一台电脑，请更换密钥：
   1. 在所有对端上用 `herdvia revoke <名称>` 删除本机的记录。
   2. 停止代理（`herdvia agent uninstall`，前台运行时按 `Ctrl-C`）。
@@ -636,9 +636,9 @@ ok   pending: no rejected connection attempts
 | **日志（Windows 自动启动）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **日志（`herdvia agent` 前台运行）** | 标准错误输出（`stderr`） |
 
-*注：代理在运行期间写入日志的每一行都以 UTC 时间开头，例如 `2026-11-14T14:17:03Z herdvia: connected <id>`，并且始终只占一行：换行、ESC 等控制字符会被转义（`\n`、`\u{1b}`），超过 300 个字符的文本会被截断并以 `... [truncated, <N> bytes]` 结尾。有关未认证连接的行（被拒绝的对端、失败的入站握手）一次最多写 30 行，之后每 10 秒 1 行；其他行一次最多写 60 行，之后每秒 1 行。若有行被丢弃，代理会在该类的下一行之前写出丢弃的行数，例如 `suppressed 71 log lines about unauthenticated connections` 或 `suppressed 3 other log lines`。在接收端，对端运行的每个会话都会留下 `session started: <名称> (fingerprint <指纹>), herdr session <会话>` 行（`hc` 未指定会话时没有 `herdr session` 部分）和 `session ended: <相同说明>: <原因>` 行，原因例如 `exit code 0`、`closed`（在本机执行了 `revoke` 或权限变更）或 `the agent stopped`。*
+*注：代理在运行期间写入日志的每一行都以 UTC 时间开头，例如 `2026-11-14T14:17:03Z herdvia: connected <id>`，并且始终只占一行：换行、ESC 等控制字符、Unicode 行分隔符与段落分隔符（U+2028、U+2029）以及 12 个双向控制字符（如 U+202E）会被转义（`\n`、`\u{1b}`、`\u{2028}`、`\u{202e}`），超过 300 个字符的文本会被截断并以 `... [truncated, <N> bytes]` 结尾。有关未认证连接的行（被拒绝的对端、失败的入站握手）一次最多写 30 行，之后每 10 秒 1 行；其他行一次最多写 60 行，之后每秒 1 行。若有行被丢弃，代理会在该类的下一行之前写出丢弃的行数，例如 `suppressed 71 log lines about unauthenticated connections` 或 `suppressed 3 other log lines`。在接收端，对端运行的每个会话都会留下 `session started: <名称> (fingerprint <指纹>), herdr session <会话>` 行（`hc` 未指定会话时没有 `herdr session` 部分）和 `session ended: <相同说明>: <原因>` 行，原因例如 `exit code 0`、`closed`（在本机执行了 `revoke` 或权限变更）或 `the agent stopped`。若某一行无法写入日志（例如磁盘已满），代理会丢弃该行，代理与会话照常继续；这样丢弃的行不会留下任何痕迹。*
 
-*通过自动启动运行的代理会在启动后立即、此后每小时检查日志文件大小，超过 10 MiB 时只保留最后 5 MiB 中的完整行；还会在启动后立即、此后每 24 小时删除超过 180 天的行；不会轮转（rotate）拆分文件，而是直接删除同一文件的开头部分。没有时间的行（例如旧版本写入的行，或代理启动失败时输出的错误行）会与其后第一条带时间的行一并删除。前台运行的 `herdvia agent` 的 `stderr` 若输出到终端或其他文件，则不受影响；在 macOS 上，即使是前台运行，只要 `stderr` 追加写入 `~/Library/Logs/herdvia.log`，也会同样删除。*
+*通过自动启动运行的代理会在启动后立即、此后每小时检查日志文件大小，超过 10 MiB 时只保留最后 5 MiB 中的完整行；还会在启动后立即、此后每 24 小时删除超过 180 天的行（失败时会在下一次每小时检查时重试）；不会轮转（rotate）拆分文件，而是直接删除同一文件的开头部分。没有时间的行（例如旧版本写入的行，或代理启动失败时输出的错误行）会与其后第一条带时间的行一并删除。前台运行的 `herdvia agent` 的 `stderr` 若输出到终端或其他文件，则不受影响；在 macOS 上，即使是前台运行，只要 `stderr` 追加写入 `~/Library/Logs/herdvia.log`，也会同样删除。*
 
 ---
 
