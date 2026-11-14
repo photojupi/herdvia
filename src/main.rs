@@ -2,6 +2,7 @@ use herdvia::{
     control, ipc,
     peers::{self, Peer, Permission},
 };
+use iroh::EndpointId;
 use std::io;
 
 enum Command {
@@ -18,10 +19,18 @@ enum Command {
     Allow(Peer),
     Revoke(String),
     Status,
+    Pending,
+    Accept {
+        name: String,
+        fingerprint: String,
+        permission: Permission,
+    },
+    Version,
 }
 
 fn parse(args: Vec<String>) -> io::Result<Command> {
     match args.as_slice() {
+        [flag] if flag == "--version" => Ok(Command::Version),
         [cmd] if cmd == "agent" => Ok(Command::Agent),
         #[cfg(windows)]
         [cmd, flag] if cmd == "agent" && flag == "--log" => Ok(Command::AgentLog),
@@ -29,6 +38,7 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd, action] if cmd == "agent" && action == "uninstall" => Ok(Command::AgentUninstall),
         [cmd] if cmd == "id" => Ok(Command::Id),
         [cmd] if cmd == "status" => Ok(Command::Status),
+        [cmd] if cmd == "pending" => Ok(Command::Pending),
         [cmd, name] if cmd == "revoke" && peers::valid_name(name) => {
             Ok(Command::Revoke(name.clone()))
         }
@@ -52,6 +62,25 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
                 permission,
             }))
         }
+        [cmd, name, fingerprint, flag] if cmd == "accept" && peers::valid_name(name) => {
+            let permission = match flag.as_str() {
+                "--inbound" => Permission::In,
+                "--both" => Permission::Both,
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "accept requires --inbound or --both",
+                    ));
+                }
+            };
+            Ok(Command::Accept {
+                name: name.clone(),
+                fingerprint: peers::parse_fingerprint(fingerprint).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid fingerprint")
+                })?,
+                permission,
+            })
+        }
         [cmd, peer, line] if cmd == "via" => Ok(Command::Via {
             peer: peer.clone(),
             line: line.clone(),
@@ -59,9 +88,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | --version"
             } else {
-                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | --version"
             },
         )),
     }
@@ -89,6 +118,10 @@ async fn main() {
         #[cfg(windows)]
         Ok(Command::AgentUninstall) => herdvia::launchd::uninstall().await.map(|()| 0),
         Ok(Command::Via { peer, line }) => herdvia::via::run(&peer, &line).await,
+        Ok(Command::Version) => {
+            println!("herdvia {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
         Ok(command) => manage(command).await.map(|()| 0),
         Err(err) => Err(err),
     };
@@ -119,9 +152,59 @@ async fn manage(command: Command) -> io::Result<()> {
             control::reload_if_running(&dir).await?;
         }
         Command::Status => print!("{}", control::request(&dir, "status").await?),
-        _ => unreachable!("agent and via are handled separately"),
+        Command::Pending => print!("{}", control::request(&dir, "pending").await?),
+        Command::Accept {
+            name,
+            fingerprint,
+            permission,
+        } => {
+            let id = pending_match(&control::request(&dir, "pending").await?, &fingerprint)?;
+            peers::accept(
+                &dir,
+                Peer {
+                    name: name.clone(),
+                    id,
+                    permission,
+                },
+            )?;
+            control::reload_if_running(&dir).await?;
+            println!("{name} {id} {}", permission.as_str());
+        }
+        _ => unreachable!("agent, via and version are handled separately"),
     }
     Ok(())
+}
+
+/// Finds the one entry of a `pending` response whose EndpointId has this fingerprint.
+fn pending_match(pending: &str, fingerprint: &str) -> io::Result<EndpointId> {
+    let mut found = Vec::new();
+    for line in pending.lines().skip(1) {
+        let id: EndpointId = line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|id| id.parse().ok())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid pending response")
+            })?;
+        if peers::fingerprint(id) == fingerprint {
+            found.push(id);
+        }
+    }
+    match found.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no connection attempt with fingerprint {fingerprint}; check that the other PC allowed this PC with --outbound and its agent is running"
+            ),
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "several connection attempts have fingerprint {fingerprint}; use herdvia allow with the full EndpointId"
+            ),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -214,5 +297,79 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    fn args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|&a| a.to_owned()).collect()
+    }
+
+    #[test]
+    fn version_takes_no_other_arguments() {
+        assert!(matches!(
+            parse(args(&["--version"])).unwrap(),
+            Command::Version
+        ));
+        for a in [
+            &["--version", "extra"][..],
+            &["version"],
+            &["-V"],
+            &["id", "--version"],
+        ] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn parses_pending_and_accept_with_inbound_directions_only() {
+        assert!(matches!(
+            parse(args(&["pending"])).unwrap(),
+            Command::Pending
+        ));
+        assert!(parse(args(&["pending", "extra"])).is_err());
+        for (typed, flag, expected) in [
+            ("0123-4567-89ab-cdef", "--inbound", Permission::In),
+            ("0123456789ABCDEF", "--both", Permission::Both),
+        ] {
+            match parse(args(&["accept", "work", typed, flag])).unwrap() {
+                Command::Accept {
+                    name,
+                    fingerprint,
+                    permission,
+                } => {
+                    assert_eq!(name, "work");
+                    assert_eq!(fingerprint, "0123-4567-89ab-cdef");
+                    assert_eq!(permission, expected);
+                }
+                _ => panic!("expected accept"),
+            }
+        }
+        for a in [
+            &["accept", "work", "0123-4567-89ab-cdef", "--outbound"][..],
+            &["accept", "work", "0123-4567-89ab-cdef", "--sideways"],
+            &["accept", "work", "0123-4567-89ab-cdef"],
+            &["accept", "work", "0123-4567-89ab-cde", "--both"],
+            &["accept", "bad/name", "0123-4567-89ab-cdef", "--both"],
+            &["accept", "work", "0123-4567-89ab-cdef", "--both", "extra"],
+            &["accept"],
+        ] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn accept_needs_exactly_one_pending_match() {
+        let a = iroh::SecretKey::generate().public();
+        let b = iroh::SecretKey::generate().public();
+        let row = |id: &str| format!("x {id} 1 0s\n");
+        let header = "fingerprint id attempts last-seen\n";
+        let pending = format!("{header}{}{}", row(&a.to_string()), row(&b.to_string()));
+        assert_eq!(pending_match(&pending, &peers::fingerprint(a)).unwrap(), a);
+        let err = pending_match(header, &peers::fingerprint(a)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        // Two keys sharing a fingerprint cannot be generated here; a repeated row stands in.
+        let pending = format!("{pending}{}", row(&a.to_string()));
+        let err = pending_match(&pending, &peers::fingerprint(a)).unwrap_err();
+        assert!(err.to_string().contains("herdvia allow"), "{err}");
+        assert!(pending_match(&format!("{header}x bad 1 0s\n"), "0000-0000-0000-0000").is_err());
     }
 }

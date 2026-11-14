@@ -29,7 +29,10 @@ fn validate_header(tag: u8, len: usize) -> io::Result<()> {
     if len > MAX_PAYLOAD || (tag == OPEN && len > MAX_OPEN) {
         return Err(invalid("frame payload too long"));
     }
-    if (tag == STDIN_EOF && len != 0) || (tag == EXIT && len != 4) || (tag == CONTROL && len != 6) {
+    if (tag == STDIN_EOF && len != 0)
+        || (tag == EXIT && len != 4)
+        || (tag == CONTROL && !(6..=7).contains(&len))
+    {
         return Err(invalid("invalid frame payload length"));
     }
     Ok(())
@@ -39,7 +42,7 @@ fn validate_text(tag: u8, payload: &[u8]) -> io::Result<()> {
     if tag == OPEN || tag == ERROR || tag == CONTROL {
         std::str::from_utf8(payload).map_err(|_| invalid("frame payload is not UTF-8"))?;
     }
-    if tag == CONTROL && payload != b"reload" && payload != b"status" {
+    if tag == CONTROL && ![b"reload".as_slice(), b"status", b"pending"].contains(&payload) {
         return Err(invalid("unknown CONTROL request"));
     }
     Ok(())
@@ -143,8 +146,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_only_reload_and_status_controls() {
-        for payload in [b"reload".as_slice(), b"status".as_slice()] {
+    async fn accepts_only_reload_status_and_pending_controls() {
+        for payload in [
+            b"reload".as_slice(),
+            b"status".as_slice(),
+            b"pending".as_slice(),
+        ] {
             let mut bytes = Vec::new();
             write(&mut bytes, CONTROL, payload).await.unwrap();
             assert_eq!(
@@ -152,7 +159,13 @@ mod tests {
                 payload
             );
         }
-        for payload in [b"".as_slice(), b"status\n".as_slice(), b"delete".as_slice()] {
+        for payload in [
+            b"".as_slice(),
+            b"status\n".as_slice(),
+            b"delete".as_slice(),
+            b"pendinG".as_slice(),
+            b"pendings".as_slice(),
+        ] {
             assert!(write(&mut Vec::new(), CONTROL, payload).await.is_err());
         }
     }

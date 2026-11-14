@@ -110,6 +110,7 @@ async fn connection(mut stream: ipc::ServerStream, network: Arc<Network>) -> io:
             let result = match command.as_str() {
                 "reload" => network.reload().map(|()| "reloaded\n".to_owned()),
                 "status" => Ok(network.status()),
+                "pending" => Ok(network.pending()),
                 _ => Err(frame::invalid("unknown control request")),
             };
             let text = match result {

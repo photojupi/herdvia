@@ -105,12 +105,12 @@ pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
     Ok(peers)
 }
 
-fn update(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>)) -> io::Result<()> {
+fn update(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>) -> io::Result<()>) -> io::Result<()> {
     load_key(dir)?;
     let lock = ipc::private_file(&dir.join("secret.key"))?;
     ipc::lock_file(&lock)?;
     let mut peers = load(dir)?;
-    edit(&mut peers);
+    edit(&mut peers)?;
     peers.sort_by(|a, b| a.name.cmp(&b.name));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     for peer in peers {
@@ -134,6 +134,29 @@ pub fn allow(dir: &Path, peer: Peer) -> io::Result<()> {
     update(dir, |peers| {
         peers.retain(|p| p.name != peer.name);
         peers.push(peer);
+        Ok(())
+    })
+}
+
+/// Like `allow`, but refuses a name that is registered with another EndpointId.
+/// The check runs under the same lock as the write.
+pub fn accept(dir: &Path, peer: Peer) -> io::Result<()> {
+    if !valid_name(&peer.name) {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    update(dir, |peers| {
+        if peers.iter().any(|p| p.name == peer.name && p.id != peer.id) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "peer {} is already registered with a different EndpointId; revoke it first or use another name",
+                    peer.name
+                ),
+            ));
+        }
+        peers.retain(|p| p.name != peer.name);
+        peers.push(peer);
+        Ok(())
     })
 }
 
@@ -141,12 +164,36 @@ pub fn revoke(dir: &Path, name: &str) -> io::Result<()> {
     if !valid_name(name) {
         return Err(frame::invalid("invalid peer name"));
     }
-    update(dir, |peers| peers.retain(|peer| peer.name != name))
+    update(dir, |peers| {
+        peers.retain(|peer| peer.name != name);
+        Ok(())
+    })
 }
 
 pub fn fingerprint(id: EndpointId) -> String {
     let id = id.to_string();
     format!("{}-{}-{}-{}", &id[..4], &id[4..8], &id[8..12], &id[12..16])
+}
+
+/// Normalizes a fingerprint typed by hand: 16 hex digits in any case, with or without the dashes.
+pub fn parse_fingerprint(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let hex = if bytes.len() == 19 && [4, 9, 14].iter().all(|&i| bytes[i] == b'-') {
+        input.replace('-', "")
+    } else {
+        input.to_owned()
+    };
+    if hex.len() != 16 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex = hex.to_ascii_lowercase();
+    Some(format!(
+        "{}-{}-{}-{}",
+        &hex[..4],
+        &hex[4..8],
+        &hex[8..12],
+        &hex[12..]
+    ))
 }
 
 #[cfg(test)]
@@ -186,6 +233,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn typed_fingerprints_ignore_case_and_optional_dashes() {
+        let id = SecretKey::generate().public();
+        let fp = fingerprint(id);
+        for typed in [
+            fp.clone(),
+            fp.to_uppercase(),
+            fp.replace('-', ""),
+            fp.replace('-', "").to_uppercase(),
+        ] {
+            assert_eq!(parse_fingerprint(&typed).as_deref(), Some(fp.as_str()));
+        }
+        for typed in [
+            "",
+            "0123-4567-89ab-cde",
+            "0123-4567-89ab-cdef0",
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "0123-456789ab-cdef",
+            "01234-567-89ab-cdef",
+            "0123-4567-89ab-cdeg",
+            "0123 4567 89ab cdef",
+            "+123-4567-89ab-cdef",
+            "한글한글한글한글",
+        ] {
+            assert_eq!(parse_fingerprint(typed), None, "{typed:?}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn allow_updates_and_revoke_persists() {
@@ -211,6 +287,29 @@ mod tests {
         );
         revoke(dir.path(), "work").unwrap();
         assert!(load(dir.path()).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accept_refuses_a_name_with_another_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut peer = Peer {
+            name: "work".into(),
+            id: SecretKey::generate().public(),
+            permission: Permission::Out,
+        };
+        allow(dir.path(), peer.clone()).unwrap();
+        let other = Peer {
+            id: SecretKey::generate().public(),
+            permission: Permission::In,
+            ..peer.clone()
+        };
+        let err = accept(dir.path(), other).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(load(dir.path()).unwrap(), vec![peer.clone()]);
+        peer.permission = Permission::In;
+        accept(dir.path(), peer.clone()).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), vec![peer]);
     }
 
     #[cfg(unix)]

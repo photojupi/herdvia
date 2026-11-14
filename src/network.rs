@@ -14,7 +14,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -43,20 +43,83 @@ fn changed_peers(old: &[Peer], new: &[Peer]) -> HashSet<EndpointId> {
         .collect()
 }
 
+const MAX_ATTEMPTS: usize = 16;
+const ATTEMPT_TTL: Duration = Duration::from_secs(600);
+
+/// Inbound connections rejected for lacking inbound permission: attempts and last seen.
+/// Kept in memory only, so that `accept` can pick a peer by its fingerprint.
+#[derive(Debug, Default)]
+struct Attempts(HashMap<EndpointId, (u64, Instant)>);
+
+impl Attempts {
+    fn expire(&mut self, now: Instant) {
+        self.0
+            .retain(|_, (_, seen)| now.saturating_duration_since(*seen) < ATTEMPT_TTL);
+    }
+
+    fn record(&mut self, id: EndpointId, now: Instant) {
+        self.expire(now);
+        if !self.0.contains_key(&id)
+            && self.0.len() >= MAX_ATTEMPTS
+            && let Some(oldest) = self
+                .0
+                .iter()
+                .min_by_key(|(_, (_, seen))| *seen)
+                .map(|(id, _)| *id)
+        {
+            self.0.remove(&oldest);
+        }
+        let (count, seen) = self.0.entry(id).or_insert((0, now));
+        *count += 1;
+        *seen = now;
+    }
+
+    fn forget_permitted(&mut self, peers: &[Peer]) {
+        self.0.retain(|id, _| !permitted(peers, *id, true));
+    }
+
+    /// Most recently seen first.
+    fn list(&mut self, now: Instant) -> Vec<(EndpointId, u64, Duration)> {
+        self.expire(now);
+        let mut list: Vec<_> = self
+            .0
+            .iter()
+            .map(|(id, (count, seen))| (*id, *count, now.saturating_duration_since(*seen)))
+            .collect();
+        list.sort_by_key(|(_, _, age)| *age);
+        list
+    }
+}
+
+/// Seconds to wait before the next outbound attempt. Only a connection that stayed up resets
+/// the backoff: a receiver that rejects us right after the handshake still counts as a failure.
+fn retry_delay(previous: u64, connected_for: Duration) -> u64 {
+    if previous == 0 || connected_for >= Duration::from_secs(10) {
+        1
+    } else {
+        (previous * 2).min(30)
+    }
+}
+
 #[derive(Debug)]
-struct Policy(watch::Receiver<Vec<Peer>>);
+struct Policy {
+    peers: watch::Receiver<Vec<Peer>>,
+    attempts: Arc<Mutex<Attempts>>,
+}
 
 impl EndpointHooks for Policy {
     async fn after_handshake<'a>(&'a self, conn: &'a Connection) -> AfterHandshakeOutcome {
-        if conn.alpn() == ALPN
-            && permitted(
-                &self.0.borrow(),
-                conn.remote_id(),
-                conn.side() == Side::Server,
-            )
-        {
+        let server = conn.side() == Side::Server;
+        if conn.alpn() == ALPN && permitted(&self.peers.borrow(), conn.remote_id(), server) {
             AfterHandshakeOutcome::Accept
         } else {
+            if server && conn.alpn() == ALPN {
+                let mut attempts = self.attempts.lock().expect("attempts poisoned");
+                // Checked again under the lock: a reload may have granted inbound meanwhile.
+                if !permitted(&self.peers.borrow(), conn.remote_id(), true) {
+                    attempts.record(conn.remote_id(), Instant::now());
+                }
+            }
             eprintln!("herdvia: rejected peer {}", conn.remote_id());
             AfterHandshakeOutcome::Reject {
                 error_code: 403u32.into(),
@@ -71,6 +134,7 @@ pub struct Network {
     dir: PathBuf,
     peers: watch::Sender<Vec<Peer>>,
     connections: Mutex<HashMap<usize, Connection>>,
+    attempts: Arc<Mutex<Attempts>>,
     changed: watch::Sender<u64>,
 }
 
@@ -78,10 +142,14 @@ impl Network {
     pub async fn bind(dir: PathBuf) -> io::Result<Arc<Self>> {
         let key = peers::load_key(&dir)?;
         let (peers, policy) = watch::channel(peers::load(&dir)?);
+        let attempts = Arc::new(Mutex::new(Attempts::default()));
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(key)
             .alpns(vec![ALPN.to_vec()])
-            .hooks(Policy(policy))
+            .hooks(Policy {
+                peers: policy,
+                attempts: attempts.clone(),
+            })
             .bind()
             .await
             .map_err(io::Error::other)?;
@@ -91,6 +159,7 @@ impl Network {
             dir,
             peers,
             connections: Mutex::new(HashMap::new()),
+            attempts,
             changed: watch::channel(0).0,
         }))
     }
@@ -112,7 +181,11 @@ impl Network {
         let connections = self.connections.lock().expect("connections poisoned");
         let new = peers::load(&self.dir)?;
         let changed = changed_peers(&self.peers.borrow(), &new);
-        self.peers.send_replace(new);
+        self.peers.send_replace(new.clone());
+        self.attempts
+            .lock()
+            .expect("attempts poisoned")
+            .forget_permitted(&new);
         for conn in connections
             .values()
             .filter(|c| changed.contains(&c.remote_id()))
@@ -163,18 +236,39 @@ impl Network {
         text
     }
 
+    pub fn pending(&self) -> String {
+        let mut text = String::from("fingerprint id attempts last-seen\n");
+        for (id, attempts, age) in self
+            .attempts
+            .lock()
+            .expect("attempts poisoned")
+            .list(Instant::now())
+        {
+            text.push_str(&format!(
+                "{} {id} {attempts} {}s\n",
+                peers::fingerprint(id),
+                age.as_secs()
+            ));
+        }
+        text
+    }
+
     pub async fn outbound(self: Arc<Self>, id: EndpointId) {
-        let mut delay = 1;
+        let mut delay = 0;
         loop {
-            match self.endpoint.connect(id, ALPN).await {
+            let connected_for = match self.endpoint.connect(id, ALPN).await {
                 Ok(conn) => {
-                    delay = 1;
+                    let connected = Instant::now();
                     self.clone().serve_connection(conn).await;
+                    connected.elapsed()
                 }
-                Err(err) => eprintln!("herdvia: connection to {id} failed: {err}"),
-            }
+                Err(err) => {
+                    eprintln!("herdvia: connection to {id} failed: {err}");
+                    Duration::ZERO
+                }
+            };
+            delay = retry_delay(delay, connected_for);
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            delay = (delay * 2).min(30);
         }
     }
 
@@ -419,5 +513,109 @@ mod tests {
             changed_peers(&[old], &[new.clone()]),
             HashSet::from([id, new.id])
         );
+    }
+
+    #[test]
+    fn attempts_count_repeats_and_list_most_recent_first() {
+        let start = Instant::now();
+        let (a, b) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let mut attempts = Attempts::default();
+        attempts.record(a, start);
+        attempts.record(b, start + Duration::from_secs(1));
+        attempts.record(a, start + Duration::from_secs(2));
+        assert_eq!(
+            attempts.list(start + Duration::from_secs(5)),
+            vec![
+                (a, 2, Duration::from_secs(3)),
+                (b, 1, Duration::from_secs(4))
+            ]
+        );
+    }
+
+    #[test]
+    fn attempts_keep_at_most_16_and_drop_the_least_recently_seen() {
+        let start = Instant::now();
+        let ids: Vec<_> = (0..17).map(|_| SecretKey::generate().public()).collect();
+        let mut attempts = Attempts::default();
+        for (i, id) in ids.iter().enumerate().take(16) {
+            attempts.record(*id, start + Duration::from_secs(i as u64));
+        }
+        // Seeing the oldest again makes ids[1] the least recently seen.
+        attempts.record(ids[0], start + Duration::from_secs(20));
+        attempts.record(ids[16], start + Duration::from_secs(21));
+        let listed: HashSet<_> = attempts
+            .list(start + Duration::from_secs(22))
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(listed.len(), 16);
+        assert!(listed.contains(&ids[0]) && listed.contains(&ids[16]));
+        assert!(!listed.contains(&ids[1]));
+    }
+
+    #[test]
+    fn attempts_expire_ten_minutes_after_last_seen() {
+        let start = Instant::now();
+        let (a, b) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let mut attempts = Attempts::default();
+        attempts.record(a, start);
+        attempts.record(b, start + Duration::from_secs(60));
+        let listed = attempts.list(start + Duration::from_secs(599));
+        assert_eq!(listed.len(), 2);
+        let listed = attempts.list(start + ATTEMPT_TTL);
+        assert_eq!(listed, vec![(b, 1, Duration::from_secs(540))]);
+        // An expired entry starts over instead of resuming its old count.
+        attempts.record(a, start + ATTEMPT_TTL + Duration::from_secs(1));
+        assert!(
+            attempts
+                .list(start + ATTEMPT_TTL + Duration::from_secs(1))
+                .contains(&(a, 1, Duration::ZERO))
+        );
+    }
+
+    #[test]
+    fn attempts_forget_peers_that_gained_inbound_permission() {
+        let start = Instant::now();
+        let (a, b) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let mut attempts = Attempts::default();
+        attempts.record(a, start);
+        attempts.record(b, start);
+        let peers = [
+            Peer {
+                name: "a".into(),
+                id: a,
+                permission: Permission::Out,
+            },
+            Peer {
+                name: "b".into(),
+                id: b,
+                permission: Permission::Both,
+            },
+        ];
+        attempts.forget_permitted(&peers);
+        assert_eq!(attempts.list(start), vec![(a, 1, Duration::ZERO)]);
+    }
+
+    #[test]
+    fn retry_delay_backs_off_until_a_connection_stays_up() {
+        let mut delay = 0;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            delay = retry_delay(delay, Duration::ZERO);
+            seen.push(delay);
+        }
+        assert_eq!(seen, [1, 2, 4, 8, 16, 30, 30]);
+        // Rejected right after the handshake: still a failure.
+        assert_eq!(retry_delay(4, Duration::from_millis(9_999)), 8);
+        assert_eq!(retry_delay(30, Duration::from_secs(10)), 1);
     }
 }
