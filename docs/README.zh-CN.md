@@ -96,7 +96,7 @@
   ```powershell
   powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
   ```
-  安装至 `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（及 `hc.exe`），并自动将该目录加入当前用户的 `PATH`。
+  安装至 `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（若尚无 `hc.exe` 则一并安装），并自动将该目录加入当前用户的 `PATH`。
 
 如需安装经 `herdvia` 实测验证的 **`0.1.21`** 版本：
 
@@ -292,7 +292,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 2. **安装可执行文件：** macOS 放置到 `~/.local/bin/herdvia`；Windows 放置到 `%LOCALAPPDATA%\Programs\herdvia\herdvia.exe`（连同 README 与许可证文件）。
 3. **配置 `PATH`：** macOS 在登录 shell 为 `zsh` 时向 `~/.zprofile` 追加 `export PATH="$HOME/.local/bin:$PATH"`（其他 shell 仅打印提示行）；Windows 自动将该目录添加到用户 `PATH`。
 4. **检查 `herdr-core`：** **不会自动安装 `herdr-core`。** 若未安装则打印官方安装命令；在 macOS 上若 `herdr-core` 位于其他路径而非 `~/.local/bin/herdr-core`，会打印 `ln -s` 软链接命令以便后台代理找到它。
-5. **生成并打印身份标识：** 运行 `herdvia id`（首次运行时创建密钥）显示本机 `EndpointId` 与指纹。
+5. **生成并打印身份标识：** 运行 `herdvia id` 初始化 `secret.key`（若需要）并显示本机 `EndpointId` 与指纹。
 6. **注册并启动后台代理：** 运行 `herdvia agent install` 使代理立即启动并在每次登录时自动运行（若在 Windows 管理员 PowerShell 中运行，会跳过此步并提示改用普通窗口执行）。
 
 **脚本平台要求：**
@@ -306,7 +306,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_VERSION` | 安装指定版本（如 `0.1.0` 或 `v0.1.0`），而非最新版 |
 | `HERDVIA_NO_AGENT=1` | 跳过运行 `herdvia agent install` |
 | `HERDVIA_NO_MODIFY_PATH=1` | 不修改 `~/.zprofile` 或 Windows 用户 `PATH` |
-| `HERDVIA_RELEASE_BASE` | 改从 `<url>/<文件名>` 下载发布文件（优先级高于 `HERDVIA_VERSION`） |
+| `HERDVIA_RELEASE_BASE` | 改从 `<url>/<文件名>` 而非 GitHub Releases 下载发布文件（优先级高于 `HERDVIA_VERSION`） |
 
 安装指定版本（即使从特定版本标签 URL 下载脚本，也需显式设置 `HERDVIA_VERSION`，否则默认安装最新版）：
 
@@ -365,7 +365,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
 ```
 
 - 若 `~/.local/bin` 已在 `PATH` 中，请跳过最后一行 `echo ... >> ~/.zprofile`。
-- 请直接移动可执行文件本身到 `~/.local/bin`，不要软链接到下载目录中的文件。
+- 请直接移动可执行文件本身到 `~/.local/bin`（不要软链接到下载目录中的文件，因为 `launchd` 会记录软链接路径，一旦源文件被删除就会失效）。
 - 打开新终端并运行 `herdvia id` 验证。
 - 若通过浏览器下载压缩包，macOS Gatekeeper 会附加隔离属性导致无法运行，可执行以下命令移除：
   ```sh
@@ -419,9 +419,9 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | 命令 | 说明 |
 |---|---|
-| `herdvia id` | 打印本机 `EndpointId`（第 1 行）与 16 位短指纹（第 2 行）。若密钥不存在则自动生成。 |
+| `herdvia id` | 打印本机 `EndpointId`（第 1 行）与 16 位短指纹（第 2 行）。若 `secret.key` 不存在则自动生成。 |
 | `herdvia allow <名称> <EndpointId> (--inbound \| --outbound \| --both)` | 添加或更新对端节点。运行中的代理会立即生效；未运行时在下次启动生效。 |
-| `herdvia revoke <名称>` | 移除对端节点，并立即断开与该节点的所有活动连接。 |
+| `herdvia revoke <名称>` | 移除对端节点，并立即断开与该节点的所有活动连接与会话。 |
 | `herdvia status` | 显示各对端的名称、权限、连接状态、`direct`/`relay` 路径及往返时延（RTT）。需要代理正在运行。 |
 | `herdvia pending` | 按最近时间倒序列出因缺少 `inbound` 权限而被拒的连入请求（指纹、`EndpointId`、尝试次数、距上次尝试秒数）。仅保存在内存中，最多保留 16 台设备，末次尝试 10 分钟后过期。需要代理正在运行。 |
 | `herdvia accept <名称> <指纹> (--inbound \| --both)` | 将 `pending` 中唯一匹配该指纹的设备以其完整 `EndpointId` 加入授权列表。若匹配数为 0 或多于 1，或 `<名称>` 已绑定其他 ID，则拒绝操作。需要代理正在运行。 |
@@ -442,11 +442,11 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install` 会创建当前用户的 LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在异常退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`。
+`herdvia agent install` 会创建当前用户的 LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在进程退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`。
 
-- 若设置了 `HERDVIA_DIR` 环境变量，或已有手动启动的前台代理在运行，则会拒绝安装。
+- 若设置了 `HERDVIA_DIR` 环境变量（自动启动始终使用默认数据目录），或已有手动启动的前台代理在运行，则会拒绝安装。
 - 再次运行 `herdvia agent install` 会更新为当前可执行文件路径并重启代理。
-- 若可执行文件位于临时目录或 `target` 编译目录中，会打印警告但仍完成注册。
+- 若从临时目录或 Cargo `target` 编译目录运行，会打印警告但仍完成注册。
 
 > [!IMPORTANT]
 > **macOS 15+ 本地网络权限：** 在 macOS 15（Sequoia）及更新版本上，自动启动的后台代理在获得授权前无法直连局域网地址。请在系统弹窗中点击**允许**，或前往 **系统设置 > 隐私与安全性 > 本地网络** 开启 `herdvia`。未开启前，同一局域网内的设备也会走 `relay` 中继而非 `direct` 直连（跨公网设备以及在终端前台手动运行的 `herdvia agent` 不受影响）。
@@ -456,7 +456,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 `herdvia agent install` 会在当前用户的注册表 `Run` 键（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）下写入启动项，登录时通过 `conhost.exe --headless "<herdvia.exe路径>" agent --log` 无窗口后台启动，并在安装当下立即拉起。全程无需管理员权限，不创建系统服务或计划任务。
 
 - **必须在普通（非管理员）PowerShell 窗口中运行**——管理员窗口中会拒绝执行。
-- 若设置了 `HERDVIA_DIR`，或尚未注册自启时已有代理正在运行，则会拒绝安装（若已注册过自启，再次运行 `install` 会自动停止旧代理并启动新代理）。
+- 若设置了 `HERDVIA_DIR`，或尚未注册自启时已有前台代理正在运行，则会拒绝安装（若已注册过自启，再次运行 `install` 会停止正在运行的默认数据目录代理并启动新代理）。
 - 可执行文件路径不能包含 `%`，且完整注册命令行长度不得超过 259 个 UTF-16 代码单元。
 - 日志写入 `%LOCALAPPDATA%\herdvia\herdvia.log`。若代理意外退出，Windows 不会自动重启，将在下次登录时重新启动。
 
@@ -512,7 +512,7 @@ ok   pending: no rejected connection attempts
 |---|---|---|
 | 在 B 上运行 `herdvia pending` 列表为空 | A 的代理未启动、A 未配置 `--outbound`，或正处于重试间隔内 | 确认 A 上 `herdvia status` 正常且已执行 `herdvia allow B <B_ID> --outbound`，等待最多 30 秒后再运行 `herdvia pending` |
 | 两台电脑连同一 Wi-Fi，`status` 却一直是 `relay` | macOS 15+ 拦截了后台 LaunchAgent 的局域网访问 | 在 Mac 的 **系统设置 > 隐私与安全性 > 本地网络** 中开启 `herdvia` |
-| Mac 上已通过 Homebrew 安装 `herdr-core`，但提示未安装 | macOS 自启代理的 `PATH` 仅搜索 `~/.local/bin` 与系统基础路径 | 运行 `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` |
+| Mac 上已通过 Homebrew 安装 `herdr-core`，但 Herdr 显示 `herdr-core is not installed here` | macOS LaunchAgent 仅搜索 `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | 运行 `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` |
 | `hc machine add --install` 或 `hc machine update` 失败 | `herdvia` 拒绝除 `herdr-core connect` 以外的一切命令 | 请直接在各台电脑上运行 Herdr 官方的 `herdr-core` 安装脚本 |
 | 刚装完提示找不到 `herdvia` 命令 | 当前终端或 Herdr 应用尚未加载更新后的 `PATH` | 打开全新的终端窗口；Windows 上同时重启 Herdr 应用 |
 | Windows 上 `herdvia agent install` 提示管理员错误 | 在“以管理员身份运行”的 PowerShell 中执行了命令 | 打开普通（非管理员）PowerShell 窗口重新运行 `herdvia agent install` |
@@ -523,7 +523,7 @@ ok   pending: no rejected connection attempts
 <a id="upgrading-and-uninstalling"></a>
 ## 升级与卸载
 
-本机密钥（`secret.key`）与对端列表（`peers`）保存在独立的数据目录中，不在可执行文件旁，因此替换可执行文件不会丢失身份与配对配置。可随时运行 `herdvia --version` 查看当前版本。
+本机密钥（`secret.key`）与对端列表（`peers`）保存在独立的数据目录中，不在可执行文件旁，因此替换或删除可执行文件不会丢失身份与配对配置。可随时运行 `herdvia --version` 查看当前版本。
 
 <a id="upgrading"></a>
 ### 升级
@@ -534,7 +534,7 @@ ok   pending: no rejected connection attempts
 *（若有手动启动的前台代理正在运行或设置了 `HERDVIA_DIR`，请停止该代理或取消 `HERDVIA_DIR` 后运行 `herdvia agent install`，或传入 `HERDVIA_NO_AGENT=1` 并自行重启代理。）*
 
 **手动升级：**
-- **macOS：** 重新执行 [macOS (Apple Silicon)](#macos-apple-silicon) 中的下载、校验与 `mv` 命令（省略 `.zprofile` 那行）。**切勿用 `cp` 直接覆盖正在运行的二进制文件**（否则下次启动会触发 `Killed: 9`），务必使用 `mv` 替换后再运行 `herdvia agent install`。
+- **macOS：** 重新执行 [macOS (Apple Silicon)](#macos-apple-silicon) 中的下载、校验与 `mv` 命令（省略 `.zprofile` 那行）。**切勿用 `cp` 直接覆盖正在运行的二进制文件**（否则下次启动会触发 `Killed: 9`），务必使用 `mv` 替换后再运行 `herdvia agent install`（或重启前台运行的 `herdvia agent`）。
 - **Windows：** 由于运行中的 `.exe` 无法被 `tar.exe` 覆盖，请先运行 `herdvia agent uninstall`（前台运行则按 `Ctrl-C`）停止代理，按 [Windows (x64)](#windows-x64) 步骤解压替换后，再运行 `herdvia agent install`。
 
 升级完成后，若正在运行的代理仍是旧的可执行文件或旧版本，`herdvia doctor` 会发出警告。
@@ -547,7 +547,7 @@ ok   pending: no rejected connection attempts
    - Windows (PowerShell)：`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\herdvia"`
 3. **彻底清除身份密钥、对端列表与日志（可选）：** 按[配置与文件路径](#configuration-and-files)删除数据目录与日志文件。
 4. **清理 `PATH`：**
-   - Windows：在用户环境变量 `Path` 中删除 `herdvia` 目录。
+   - Windows：从用户环境变量 `Path` 中移除 `%LOCALAPPDATA%\Programs\herdvia`。
    - macOS：`~/.zprofile` 中的 `~/.local/bin` 可能还被 `hc`、`herdr-core` 等工具共用，仅在确认无其他程序依赖时再移除。
 5. **在对端设备上解除配对：** 在曾授权本机的设备上运行 `herdvia revoke <名称>`，并在运行 Herdr 的设备上执行 `hc machine rm <名称>`。
 
@@ -565,8 +565,8 @@ ok   pending: no rejected connection attempts
 - **用户隔离的本地 IPC：**
   - **macOS / Unix：** 位于 `0700` 数据目录内的 `0600` 域套接字，并校验连接进程的 UID。
   - **Windows：** 命名管道仅向当前用户 SID 授予访问权限，并拒绝远程网络管道客户端。
-- **私钥保护 (`secret.key`)：** macOS/Unix 上以 `0600` 权限创建，若权限过宽则拒绝启动；Windows 上沿用用户配置文件夹的默认权限。任何拿到 `secret.key` 的人都可向信任本机的对端冒充本机——一旦泄露，请立即在所有对端上执行 `revoke`，并删除 `secret.key` 以重新生成新身份。
-- **短指纹与 `pending` / `accept`：** 指纹仅取 `EndpointId` 的前 16 个十六进制字符（64 位），供人工肉眼比对与 `accept` 输入；底层存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成握手认证的连接，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
+- **私钥保护 (`secret.key`)：** macOS/Unix 上以 `0600` 权限创建，若权限过宽则拒绝启动；Windows 上沿用用户配置文件夹的默认权限。任何拿到 `secret.key` 的人都可向信任本机的对端冒充本机——一旦泄露，请立即在所有对端上运行 `herdvia revoke <名称>`，并删除 `secret.key` 以重新生成新身份。
+- **短指纹与 `pending` / `accept`：** 指纹仅取 256 位 `EndpointId` 的前 16 个十六进制字符（64 位），供人工肉眼比对与 `accept` 输入；底层存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成已认证 `iroh` 握手的对端，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
 
 **报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交；非敏感的 bug 请新建普通 Issue。
 
@@ -580,7 +580,7 @@ ok   pending: no rejected connection attempts
 - **公共中继服务器 ([n0](https://n0.computer))：** 每个代理会连接一个归属中继（home relay）用于信令协商与初始连接建立；当两端无法建立直连路径时，加密流量也会通过中继转发。
 - **DNS 地址发现 (`dns.iroh.link`)：** 每个代理会向该服务发布一条包含本机 **`EndpointId` 与归属中继 URL** 的签名记录，以便对端通过 `EndpointId` 寻址。
 - **路由器端口映射：** 默认开启 UPnP、PCP 与 NAT-PMP，在路由器支持时辅助打洞直连。
-- **加密与元数据：** 所有会话流量均经端到端加密，中继服务器无法解密内容；但据 n0 说明，中继可观测到 IP 地址、连接时间与传输字节量等连接元数据。
+- **加密与元数据：** 所有会话流量均通过 QUIC/TLS 端到端加密，中继服务器无法解密内容；但据 n0 说明，中继可观测到 IP 地址、连接时间与传输字节量等连接元数据。
 - **服务等级说明：** n0 将其公共中继定位为**仅供开发与个人业余使用（development and hobby use only）**，无 SLA 可用性承诺且设有速率限制。详见 iroh 文档中的 [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) 与 [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup)。
 - **日志隐私：** 已关闭 `iroh` 内部日志；代理仅记录连接、拒绝、断开等事件，绝不记录会话内容。
 
@@ -612,7 +612,7 @@ ok   pending: no rejected connection attempts
 | **数据目录（Linux）** | `$XDG_DATA_HOME/herdvia`（默认为 `~/.local/share/herdvia`） |
 | **覆盖数据目录环境变量** | `HERDVIA_DIR=<路径>` 可替换默认数据目录（包含 `hc` 拉起的 `via` 在内的所有命令必须看到相同值；设置后无法使用 `agent install`） |
 | **`secret.key`** | 本机 32 字节 Ed25519 私钥（位于数据目录内） |
-| **`peers`** | 对端授权列表（每行 `名称 EndpointId 权限`，通过 `allow`、`accept`、`revoke` 管理） |
+| **`peers`** | 对端授权列表（每行 `<名称> <EndpointId> <in\|out\|both>`，通过 `allow`、`accept`、`revoke` 管理） |
 | **`agent.sock`** | macOS/Unix 本地套接字（Windows 使用按用户 SID 隔离的命名管道） |
 | **日志（macOS 自动启动）** | `~/Library/Logs/herdvia.log` |
 | **日志（Windows 自动启动）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |

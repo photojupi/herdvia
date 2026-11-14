@@ -96,7 +96,7 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
   ```powershell
   powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
   ```
-  `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（および `hc.exe`）をインストールし、ユーザー `PATH` に自動で追加します。
+  `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（および未作成なら `hc.exe`）をインストールし、ユーザー `PATH` に自動で追加します。
 
 `herdvia` で動作確認済みのバージョン **`0.1.21`** を指定して入れる場合：
 
@@ -229,7 +229,7 @@ fingerprint id attempts last-seen
 herdvia accept A <Aのfingerprint> --inbound
 ```
 
-- `accept` は一致した試行の完全な `EndpointId` を登録し、`A <EndpointId> in` と出力します。
+- `accept` は一致した試行の完全な `EndpointId` を（`herdvia allow A <AのEndpointId> --inbound` と同様に）登録し、`A <EndpointId> in` と出力します。
 - フィンガープリントはハイフン（`-`）の有無や大文字・小文字を問いません。B から A へも発信したい場合は `--both` を指定します（`accept` では `--outbound` は指定できません）。
 - A は拒否された接続を最大 **30 秒**間隔まで広げながら再試行するため、`pending` に出るまで最大約 30 秒、`accept` 後に接続されるまでさらに最大約 30 秒かかることがあります。
 - *（別解：A の 64 文字 `EndpointId` を B へコピーできるなら、B で `herdvia allow A <AのEndpointId> --inbound` を実行し手順 3 と同様に照合しても構いません。）*
@@ -292,7 +292,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 2. **バイナリの配置:** macOS は `~/.local/bin/herdvia`、Windows は `%LOCALAPPDATA%\Programs\herdvia\herdvia.exe`（README・ライセンス類と同梱）に配置します。
 3. **`PATH` の設定:** macOS ではログインシェルが `zsh` の場合に `~/.zprofile` へ `export PATH="$HOME/.local/bin:$PATH"` を追記します（他のシェルの場合は追記すべき行を表示）。Windows ではユーザー `PATH` に追加します。
 4. **`herdr-core` の確認:** **`herdr-core` 自体はインストールしません。** 未導入なら公式コマンドを表示し、macOS で `~/.local/bin/herdr-core` 以外の場所にのみある場合は `ln -s` コマンドを案内します。
-5. **ID の生成と表示:** `herdvia id` を実行し（初回は秘密鍵を作成）、`EndpointId` とフィンガープリントを表示します。
+5. **ID の生成と表示:** `herdvia id` を実行して `secret.key`（必要な場合）を初期化し、`EndpointId` とフィンガープリントを表示します。
 6. **エージェントの自動起動登録:** `herdvia agent install` を実行し、今すぐ起動するとともに次回ログイン時からの自動起動を登録します（Windows の管理者 PowerShell から実行された場合はスキップして通常ウィンドウでの実行を案内します）。
 
 **スクリプトの動作条件:**
@@ -365,7 +365,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
 ```
 
 - `~/.local/bin` がすでに `PATH` に含まれている場合は最後の `echo ... >> ~/.zprofile` を省略してください。
-- ダウンロードフォルダへのシンボリックリンクではなく、実行ファイル本体を `~/.local/bin` に移動してください。
+- ダウンロードフォルダへのシンボリックリンクではなく、実行ファイル本体を `~/.local/bin` に移動してください（`launchd` はシンボリックリンクのパスを記録するため、リンク先が削除されると起動できなくなります）。
 - 新しいターミナルを開いて `herdvia id` で動作確認します。
 - ブラウザで ZIP をダウンロードした場合、Gatekeeper の隔離属性が付与されることがあります。以下のコマンドで解除できます：
   ```sh
@@ -419,9 +419,9 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | コマンド | 説明 |
 |---|---|
-| `herdvia id` | このマシンの `EndpointId`（1 行目）と 16 文字のフィンガープリント（2 行目）を表示します。秘密鍵がなければ生成します。 |
+| `herdvia id` | このマシンの `EndpointId`（1 行目）と 16 文字のフィンガープリント（2 行目）を表示します。`secret.key` がなければ生成します。 |
 | `herdvia allow <名前> <EndpointId> (--inbound \| --outbound \| --both)` | ピアを追加または更新します。稼働中のエージェントには即座に反映されます（または次回エージェント起動時に反映）。 |
-| `herdvia revoke <名前>` | ピアを削除し、そのピアとの接続を即座に切断します。 |
+| `herdvia revoke <名前>` | ピアを削除し、そのピアとのアクティブな接続・セッションを即座に切断します。 |
 | `herdvia status` | 各ピアの名前、権限、接続状態、経路（`direct`/`relay`）、往復遅延（RTT）を表示します。エージェントの起動が必要です。 |
 | `herdvia pending` | `inbound` 権限がないために拒否された着信試行を新しい順に表示します（フィンガープリント、`EndpointId`、試行回数、最終試行からの経過秒数）。メモリ上のみ最大 16 件・最終試行から 10 分間保持。エージェントの起動が必要です。 |
 | `herdvia accept <名前> <fingerprint> (--inbound \| --both)` | `pending` 内で指定フィンガープリントに一致する 1 台を完全な `EndpointId` で登録します。一致が 0 件または複数件の場合、あるいは `<名前>` が別の ID で登録済みの場合は拒否します。エージェントの起動が必要です。 |
@@ -444,9 +444,9 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 `herdvia agent install` はユーザー単位の LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`）を作成し、`launchctl bootstrap` で起動します。ログイン時に自動起動し、終了しても `launchd` が再起動します。ログは `~/Library/Logs/herdvia.log` に出力されます。
 
-- `HERDVIA_DIR` が設定されている場合や、手動起動したエージェントが動作中の場合はインストールを拒否します。
+- `HERDVIA_DIR` が設定されている場合（自動起動は常にデフォルトのデータフォルダを使用します）や、フォアグラウンドのエージェントが動作中の場合はインストールを拒否します。
 - 再度 `herdvia agent install` を実行すると、現在の実行ファイルパスで登録を更新しエージェントを再起動します。
-- 一時フォルダや `target` フォルダから実行した場合は警告を表示しつつ登録します。
+- 一時フォルダや Cargo の `target` ディレクトリから実行した場合は警告を表示しつつ登録します。
 
 > [!IMPORTANT]
 > **macOS 15 以降のローカルネットワーク権限:** macOS 15（Sequoia）以降では、自動起動されたエージェントが同一 LAN 上のアドレスへ直接通信するには許可が必要です。macOS の確認ダイアログで**許可**を選ぶか、**システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` をオンにしてください。許可するまでは同一 LAN 内のピアとも `direct` ではなく `relay` 経由になります（別ネットワークのピアや、ターミナルから `herdvia agent` で手動起動した場合は影響ありません）。
@@ -512,7 +512,7 @@ ok   pending: no rejected connection attempts
 |---|---|---|
 | B で `herdvia pending` を実行しても空のまま | A のエージェント未起動、A で `--outbound` 未設定、または再試行の待機中 | A で `herdvia status` が動くか、`herdvia allow B <B_ID> --outbound` 済みかを確認し、最大 30 秒待ってから再度 `herdvia pending` を実行 |
 | 同じ Wi-Fi 内なのに `status` がずっと `relay` のまま | macOS 15+ で LaunchAgent のローカルネットワークアクセスが未許可 | Mac の **システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` をオンにする |
-| Homebrew で `herdr-core` を入れた Mac で未インストール扱いになる | macOS の自動起動エージェントは `~/.local/bin` と標準システムパスのみを検索する | `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` を実行 |
+| Homebrew で `herdr-core` を入れた Mac で Herdr に `herdr-core is not installed here` と表示される | macOS の LaunchAgent は `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` のみを検索する | `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` を実行 |
 | `hc machine add --install` や `hc machine update` が失敗する | `herdvia` は `herdr-core connect` 以外のコマンドをすべて拒否する仕様 | 各マシンで直接 Herdr 公式の `herdr-core` インストールスクリプトを実行する |
 | インストール直後に `herdvia` が見つからないと言われる | 開いているターミナルや Herdr アプリに新しい `PATH` がまだ反映されていない | 新しいターミナルを開き、Windows では起動中の Herdr アプリも再起動する |
 | Windows で `herdvia agent install` が管理者エラーになる | 管理者として実行した PowerShell でコマンドを打っている | 通常の（非管理者）PowerShell を開いて `herdvia agent install` を実行する |
@@ -523,7 +523,7 @@ ok   pending: no rejected connection attempts
 <a id="upgrading-and-uninstalling"></a>
 ## アップグレードとアンインストール
 
-マシンの秘密鍵（`secret.key`）とピアリスト（`peers`）は実行ファイルの隣ではなく専用のデータフォルダに保存されているため、実行ファイルを置き換えても ID やペアリング設定はそのまま維持されます。現在のバージョンは `herdvia --version` で確認できます。
+マシンの秘密鍵（`secret.key`）とピアリスト（`peers`）は実行ファイルの隣ではなく専用のデータフォルダに保存されているため、実行ファイルを置き換えたり削除したりしても ID やペアリング設定はそのまま維持されます。現在のバージョンは `herdvia --version` で確認できます。
 
 <a id="upgrading"></a>
 ### アップグレード
@@ -534,7 +534,7 @@ ok   pending: no rejected connection attempts
 *（手動起動したフォアグラウンドのエージェントが動作中、または `HERDVIA_DIR` が設定されている場合は、そのエージェントを止めるか `HERDVIA_DIR` を解除して `herdvia agent install` を実行するか、`HERDVIA_NO_AGENT=1` を渡してご自身でエージェントを再起動してください。）*
 
 **手動アップグレード:**
-- **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon) のダウンロード・検証・`mv` 手順を再実行します（`.zprofile` の行は不要）。**稼働中のバイナリを `cp` で上書きしないでください**（次回起動時に `Killed: 9` になります）。必ず `mv` で置き換えてから `herdvia agent install` を実行してください。
+- **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon) のダウンロード・検証・`mv` 手順を再実行します（`.zprofile` の行は不要）。**稼働中のバイナリを `cp` で上書きしないでください**（次回起動時に `Killed: 9` になります）。必ず `mv` で置き換えてから `herdvia agent install` を実行してください（またはフォアグラウンドの `herdvia agent` を再起動してください）。
 - **Windows:** 実行中の `.exe` は `tar.exe` で上書きできないため、先に `herdvia agent uninstall`（フォアグラウンドなら `Ctrl-C`）で停止してから [Windows (x64)](#windows-x64) の手順で展開し、再度 `herdvia agent install` を実行します。
 
 アップグレード後、稼働中のエージェントが古い実行ファイルやバージョンのままになっている場合、`herdvia doctor` が警告します。
@@ -547,7 +547,7 @@ ok   pending: no rejected connection attempts
    - Windows (PowerShell): `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\herdvia"`
 3. **鍵・ピアリスト・ログの削除（任意）:** [設定とファイルの保存場所](#configuration-and-files)を参照し、データフォルダとログファイルを削除します。
 4. **`PATH` の整理:**
-   - Windows: ユーザー環境変数 `Path` から `herdvia` のフォルダを削除します。
+   - Windows: ユーザー環境変数 `Path` から `%LOCALAPPDATA%\Programs\herdvia` を削除します。
    - macOS: `~/.zprofile` の `~/.local/bin` 行は `hc` や `herdr-core` 等も共有しているため、他に使うツールがない場合のみ削除してください。
 5. **相手マシン側の登録解除:** このマシンを許可していた他のマシンで `herdvia revoke <名前>`、Herdr を動かしていたマシンで `hc machine rm <名前>` を実行します。
 
@@ -559,14 +559,14 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`（または `--both`）で許可したピアは、このマシン上であなたのユーザー権限として `herdr-core` セッションを開けます — 実質的にシェル権限を与えるのと同等です。** 自分自身の端末と同等に信頼できる機器のみを許可してください。
 
-- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。セッションごとに再確認され、リストの変更は稼働中のエージェントに即時反映されます。
+- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。セッションごとに再確認され、`revoke` / `allow` の変更は稼働中のエージェントに即時反映されます。
 - **コマンド許可リストの位置づけ:** `hc` の正確な `herdr-core connect` 行のみを通し他を拒否・ログ記録する仕組みは、誤用を減らし異常を検知するためのものです。`herdr-core connect` 自体が任意のコマンドを実行できるため、**本来のセキュリティ境界はピアの鍵リスト（`peers`）です。**
 - **`root` 実行の拒否:** macOS/Unix では `root` での起動を拒否します。
 - **ユーザー分離されたローカル IPC:**
   - **macOS / Unix:** `0700` データフォルダ内の `0600` ソケットを使用し、接続元の UID を検証します。
   - **Windows:** 現在のユーザー SID のみにアクセスを許可した名前付きパイプを使用し、リモートクライアントを拒否します。
-- **秘密鍵（`secret.key`）の保護:** macOS/Unix では権限 `0600` で作成され、それより広い権限だと起動を拒否します（Windows ではユーザープロファイルの既定の権限を使用）。漏洩した場合はすべてのピアで直ちに `revoke` し、`secret.key` を削除して新しい ID を再生成してください。
-- **フィンガープリントと `pending` / `accept`:** フィンガープリントは `EndpointId` の先頭 16 文字（64 ビット）であり、目視確認と `accept` 入力用の短縮表記です。保存・検証されるのは常に完全な `EndpointId` です。`pending` はハンドシェイク認証を通過した試行のみをメモリ上に最大 16 件・10 分間保持し、`accept` は一致がただ 1 件のときのみ登録します。フィンガープリントは必ず**相手マシン自身の画面**から読み取ってください。
+- **秘密鍵（`secret.key`）の保護:** macOS/Unix では権限 `0600` で作成され、それより広い権限だと起動を拒否します（Windows ではユーザープロファイルの既定の権限を使用）。`secret.key` を持つ者は誰でも、このマシンを信頼しているピアに対してこのマシンになりすますことができます — 漏洩した場合はすべてのピアで直ちに `herdvia revoke <名前>` を実行し、`secret.key` を削除して新しい ID を再生成してください。
+- **フィンガープリントと `pending` / `accept`:** フィンガープリントは 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）であり、目視確認と `accept` 入力用の短縮表記です。保存・検証されるのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了した試行のみをメモリ上に最大 16 件・10 分間保持し、`accept` は一致がただ 1 件のときのみ登録します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
 
 **脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
 
@@ -580,7 +580,7 @@ ok   pending: no rejected connection attempts
 - **公開リレーサーバー（[n0](https://n0.computer)）:** 各エージェントはホームリレーに接続し、接続確立の仲介や、直接通信できない場合のフォールバック経路として使用します。
 - **DNS アドレス検索（`dns.iroh.link`）:** `EndpointId` から互いを見つけられるよう、各エージェントは自身の **`EndpointId` とホームリレー URL** を含む署名付きレコードを公開サービスへ登録します。
 - **ルーターのポートマッピング:** ルーターが対応していれば UPnP、PCP、NAT-PMP によるポート開放を要求し、直接接続を補助します。
-- **暗号化とメタデータ:** 通信内容はすべてエンドツーエンドで暗号化され、リレーサーバーが中身を読むことはできません。ただし n0 によれば、IP アドレス、接続時刻、転送データ量などのメタデータはリレー側から観測可能です。
+- **暗号化とメタデータ:** セッション通信はすべて QUIC/TLS によりエンドツーエンドで暗号化され、リレーサーバーが中身を読むことはできません。ただし n0 によれば、IP アドレス、接続時刻、転送データ量などのメタデータはリレー側から観測可能です。
 - **サービス品質に関する注意:** n0 の公開リレーは**開発および趣味用途（development and hobby use only）**とされており、SLA や稼働保証はなくレート制限があります。詳細は iroh ドキュメントの [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) と [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup) を参照してください。
 - **ログ出力:** `iroh` の内部ログは無効化されています。エージェントのログには接続・拒否・切断などのイベントのみが記録され、セッションの中身は記録されません。
 
@@ -610,9 +610,9 @@ ok   pending: no rejected connection attempts
 | **データフォルダ（macOS）** | `~/Library/Application Support/herdvia` |
 | **データフォルダ（Windows）** | `%APPDATA%\herdvia` |
 | **データフォルダ（Linux）** | `$XDG_DATA_HOME/herdvia`（既定値 `~/.local/share/herdvia`） |
-| **保存先の上書き環境変数** | `HERDVIA_DIR=<パス>` でデータフォルダを変更可能（`hc` が起動する `via` を含む全コマンドに同じ値を渡す必要あり。自動起動登録とは併用不可） |
+| **保存先の上書き環境変数** | `HERDVIA_DIR=<パス>` でデータフォルダを変更可能（`hc` が起動する `via` を含む全コマンドに同じ値を渡す必要あり。`agent install` とは併用不可） |
 | **`secret.key`** | このマシンの 32 バイト Ed25519 秘密鍵（データフォルダ内） |
-| **`peers`** | ピア許可リスト（1 行に `名前 EndpointId 権限`、`allow`・`accept`・`revoke` で管理） |
+| **`peers`** | ピア許可リスト（1 行に `<名前> <EndpointId> <in\|out\|both>`、`allow`・`accept`・`revoke` で管理） |
 | **`agent.sock`** | macOS/Unix のローカルソケット（Windows はユーザー SID 別の名前付きパイプを使用） |
 | **ログ（macOS 自動起動時）** | `~/Library/Logs/herdvia.log` |
 | **ログ（Windows 自動起動時）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
