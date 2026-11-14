@@ -145,9 +145,13 @@ enum DirState {
     Unreadable(String),
     /// This user's directory, but this user cannot list it or reach the files in it.
     Inaccessible(String),
-    /// The agent refuses it (`ipc::check_dir`): an ACL entry that allows access (macOS),
-    /// or another owner or a reparse point (Windows). The message says how to fix it.
+    /// The agent refuses it (`inspect_dir`): an ACL entry that allows access (macOS), or
+    /// another owner, a reparse point, or a DACL that lets other accounts in and that this
+    /// user cannot change (Windows). The message says how to fix it.
     Refused(String),
+    /// Its DACL lets other accounts in, and herdvia restricts it the next time it runs
+    /// (Windows). The note says so.
+    Loose(String),
 }
 
 /// The agent socket path on Unix, its length in bytes, and whether it fits in a socket address.
@@ -204,6 +208,7 @@ fn data_dir_check(dir: &Path, from_env: bool, state: &DirState, socket: Option<&
             format!("{text}; this user cannot open it ({err}); {DIR_FIX}"),
         ),
         DirState::Refused(err) => check(Level::Fail, format!("{text}; {err}")),
+        DirState::Loose(note) => check(Level::Warn, format!("{text}; {note}")),
     }
 }
 
@@ -211,6 +216,8 @@ fn data_dir_check(dir: &Path, from_env: bool, state: &DirState, socket: Option<&
 enum KeyState {
     Missing,
     Present(EndpointId),
+    /// Present, and herdvia restricts its DACL the next time it runs (Windows).
+    Loose(EndpointId, String),
     BadPermissions(String),
     Unreadable(String),
 }
@@ -225,6 +232,13 @@ fn key_check(state: &KeyState) -> Check {
             Level::Ok,
             format!(
                 "secret.key: present, fingerprint {}",
+                peers::fingerprint(*id)
+            ),
+        ),
+        KeyState::Loose(id, note) => check(
+            Level::Warn,
+            format!(
+                "secret.key: present, fingerprint {}; {note}",
                 peers::fingerprint(*id)
             ),
         ),
@@ -578,10 +592,16 @@ pub async fn run() -> io::Result<i32> {
             report.add(dir_check);
             // A data directory that the agent refuses explains the key, peers, and agent
             // checks too, so they are left out rather than given misleading advice.
-            if matches!(state, DirState::Missing | DirState::Directory) {
+            if matches!(
+                state,
+                DirState::Missing | DirState::Directory | DirState::Loose(_)
+            ) {
                 report.add(key_check(&key_state(&dir.join("secret.key"))));
-                let peers = peers::load(&dir);
-                report.add(peers_check(&dir.join("peers"), peers.as_deref()));
+                let path = dir.join("peers");
+                report.add(match open_private(&path) {
+                    Ok((_, Some(note))) => check(Level::Warn, format!("peers: {note}")),
+                    _ => peers_check(&path, peers::load(&dir).as_deref()),
+                });
             }
             usable.then_some(dir)
         }
@@ -770,8 +790,9 @@ fn dir_state(dir: &Path) -> DirState {
         Ok(metadata) if !owned(&metadata) => DirState::ForeignOwner,
         // Reads its entries, then looks up a name inside it (which needs search permission).
         Ok(_) => match fs::read_dir(dir).and_then(|_| fs::metadata(dir.join("."))) {
-            Ok(_) => match ipc::check_dir(dir) {
-                Ok(()) => DirState::Directory,
+            Ok(_) => match inspect_dir(dir) {
+                Ok(None) => DirState::Directory,
+                Ok(Some(note)) => DirState::Loose(note),
                 Err(err) => DirState::Refused(err.to_string()),
             },
             Err(err) => DirState::Inaccessible(err.to_string()),
@@ -785,7 +806,7 @@ fn owned(metadata: &Metadata) -> bool {
     metadata.uid() == ipc::uid()
 }
 
-/// The owner is checked by ipc::check_dir on Windows.
+/// The owner is checked by ipc::inspect_dir on Windows.
 #[cfg(windows)]
 fn owned(_metadata: &Metadata) -> bool {
     true
@@ -793,8 +814,8 @@ fn owned(_metadata: &Metadata) -> bool {
 
 /// Opens the key read-only with the agent's own checks. Never creates it.
 fn key_state(path: &Path) -> KeyState {
-    let mut file = match ipc::private_file(path) {
-        Ok(file) => file,
+    let (mut file, note) = match open_private(path) {
+        Ok(opened) => opened,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return KeyState::Missing,
         Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
             return KeyState::BadPermissions(err.to_string());
@@ -806,9 +827,38 @@ fn key_state(path: &Path) -> KeyState {
         return KeyState::Unreadable(format!("{}: {err}", path.display()));
     }
     match <[u8; 32]>::try_from(bytes.as_slice()) {
-        Ok(bytes) => KeyState::Present(SecretKey::from_bytes(&bytes).public()),
+        Ok(bytes) => {
+            let id = SecretKey::from_bytes(&bytes).public();
+            match note {
+                None => KeyState::Present(id),
+                Some(note) => KeyState::Loose(id, note),
+            }
+        }
         Err(_) => KeyState::Unreadable("secret.key must contain exactly 32 bytes".into()),
     }
+}
+
+/// The agent's checks of the data directory, without changing it. On Windows, a note when
+/// its DACL lets other accounts in and herdvia restricts it the next time it runs.
+#[cfg(unix)]
+fn inspect_dir(dir: &Path) -> io::Result<Option<String>> {
+    ipc::check_dir(dir).map(|()| None)
+}
+
+#[cfg(windows)]
+fn inspect_dir(dir: &Path) -> io::Result<Option<String>> {
+    ipc::inspect_dir(dir)
+}
+
+/// The agent's checks of the key or peers, without changing it, with that note (Windows).
+#[cfg(unix)]
+fn open_private(path: &Path) -> io::Result<(fs::File, Option<String>)> {
+    ipc::private_file(path).map(|file| (file, None))
+}
+
+#[cfg(windows)]
+fn open_private(path: &Path) -> io::Result<(fs::File, Option<String>)> {
+    ipc::inspect_file(path)
 }
 
 #[cfg(unix)]
@@ -1097,6 +1147,16 @@ mod tests {
             .text,
             "data directory: /d; remove the ACL"
         );
+        let loose = data_dir_check(
+            dir,
+            false,
+            &DirState::Loose("restricted later".into()),
+            None,
+        );
+        assert_eq!(
+            (loose.level, loose.text.as_str()),
+            (Level::Warn, "data directory: /d; restricted later")
+        );
         let long = Socket {
             path: "/d/agent.sock".into(),
             len: 200,
@@ -1138,6 +1198,15 @@ mod tests {
         let wide = key_check(&KeyState::BadPermissions("k must be 0600".into()));
         assert_eq!(wide.level, Level::Fail);
         assert!(wide.text.ends_with(PRIVATE_FILE_FIX), "{}", wide.text);
+        let loose = key_check(&KeyState::Loose(key.public(), "restricted later".into()));
+        assert_eq!(loose.level, Level::Warn);
+        assert_eq!(
+            loose.text,
+            format!(
+                "secret.key: present, fingerprint {}; restricted later",
+                peers::fingerprint(key.public())
+            )
+        );
         assert_eq!(
             level(&key_check(&KeyState::Unreadable("short".into()))),
             Level::Fail
@@ -1205,6 +1274,44 @@ mod tests {
         );
         // Read-only: the ACL is still there.
         assert!(matches!(dir_state(&dir), DirState::Refused(_)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_open_dacl_warns_until_the_next_run_restricts_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        // As the parent of %APPDATA%\herdvia passes on a grant to another group.
+        let status = std::process::Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)R"])
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let key = SecretKey::generate();
+        let path = dir.join("secret.key");
+        fs::write(&path, key.to_bytes()).unwrap();
+        let state = dir_state(&dir);
+        let warn = data_dir_check(&dir, false, &state, None);
+        assert_eq!(warn.level, Level::Warn, "{}", warn.text);
+        assert!(
+            warn.text.contains("restricts it the next time it runs"),
+            "{}",
+            warn.text
+        );
+        let state = key_state(&path);
+        assert!(
+            matches!(&state, KeyState::Loose(id, _) if *id == key.public()),
+            "{state:?}"
+        );
+        assert_eq!(key_check(&state).level, Level::Warn);
+        // Read-only: the next look finds the same.
+        assert!(matches!(dir_state(&dir), DirState::Loose(_)));
+        peers::load_key(&dir).unwrap();
+        assert!(matches!(dir_state(&dir), DirState::Directory));
+        assert!(matches!(key_state(&path), KeyState::Present(id) if id == key.public()));
     }
 
     #[test]
