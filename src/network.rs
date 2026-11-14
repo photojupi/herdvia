@@ -15,7 +15,7 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -35,6 +35,15 @@ fn permitted(peers: &[Peer], id: EndpointId, inbound: bool) -> bool {
                 p.permission.outbound()
             }
     })
+}
+
+/// A peer for the log: the name of its first inbound entry and its fingerprint.
+fn describe(peers: &[Peer], id: EndpointId) -> String {
+    let name = peers
+        .iter()
+        .find(|p| p.id == id && p.permission.inbound())
+        .map_or("?", |p| p.name.as_str());
+    format!("{name} (fingerprint {})", peers::fingerprint(id))
 }
 
 fn changed_peers(old: &[Peer], new: &[Peer]) -> HashSet<EndpointId> {
@@ -320,15 +329,36 @@ impl Network {
                     let network = self.clone();
                     let conn = conn.clone();
                     streams.spawn(async move {
-                        if !permitted(&network.peers.borrow(), id, true) { return; }
+                        let who = {
+                            let peers = network.peers.borrow();
+                            if !permitted(&peers, id, true) { return; }
+                            describe(&peers, id)
+                        };
+                        let session = OnceLock::new();
+                        let started = |name: Option<&str>| {
+                            let text = match name {
+                                Some(name) => format!("{who}, herdr session {name}"),
+                                None => who.clone(),
+                            };
+                            log::line(Kind::Other, &format!("session started: {text}"));
+                            let _ = session.set(text);
+                        };
                         let stopped = send.stopped();
-                        tokio::select! {
+                        let ended = tokio::select! {
                             biased;
-                            _ = conn.closed() => {},
-                            _ = stopped => {},
-                            result = exec::serve(tokio::io::join(recv, send)) => {
-                                if let Err(err) = result { log::line(Kind::Other, &format!("stream from {id} ended: {err}")); }
-                            }
+                            err = conn.closed() => err.to_string(),
+                            _ = stopped => "the peer stopped the stream".to_owned(),
+                            result = exec::serve(tokio::io::join(recv, send), started) => match result {
+                                Ok(code) => format!("exit code {code}"),
+                                Err(err) if session.get().is_none() => {
+                                    log::line(Kind::Other, &format!("stream from {id} ended: {err}"));
+                                    return;
+                                }
+                                Err(err) => err.to_string(),
+                            },
+                        };
+                        if let Some(text) = session.get() {
+                            log::line(Kind::Other, &format!("session ended: {text}: {ended}"));
                         }
                     });
                 }
@@ -516,6 +546,25 @@ mod tests {
         peer.permission = Permission::Both;
         assert!(permitted(&[peer.clone()], id, true));
         assert!(permitted(&[peer], id, false));
+    }
+
+    #[test]
+    fn describes_a_peer_by_its_first_inbound_name_and_fingerprint() {
+        let id = SecretKey::generate().public();
+        let peer = |name: &str, permission| Peer {
+            name: name.into(),
+            id,
+            permission,
+        };
+        let peers = [
+            peer("out", Permission::Out),
+            peer("first", Permission::In),
+            peer("second", Permission::Both),
+        ];
+        assert_eq!(
+            describe(&peers, id),
+            format!("first (fingerprint {})", peers::fingerprint(id))
+        );
     }
 
     #[test]

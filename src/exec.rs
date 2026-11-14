@@ -1,8 +1,8 @@
 use crate::{
     frame::{self, *},
-    log,
+    log, template,
 };
-use std::{io, time::Duration};
+use std::{convert::Infallible, io, time::Duration};
 
 #[cfg(unix)]
 #[path = "exec/unix.rs"]
@@ -18,10 +18,14 @@ use tokio::{
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Receives a network-format OPEN (just the command line), independent of transport.
-pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    mut stream: S,
-) -> io::Result<()> {
+/// Receives a network-format OPEN (just the command line), independent of transport, and
+/// returns the exit code sent. Calls `started` with the session name, if any, right before
+/// running a command.
+pub async fn serve<S, F>(mut stream: S, started: F) -> io::Result<i32>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    F: FnOnce(Option<&str>),
+{
     // The caller sends OPEN right after opening the stream. A stream that sends nothing must not
     // hold a slot forever.
     let open = tokio::time::timeout(OPEN_TIMEOUT, frame::read(&mut stream))
@@ -33,11 +37,15 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     }
     let line = std::str::from_utf8(&open.payload).map_err(|_| frame::invalid("invalid OPEN"))?;
     match platform::prepare(line)? {
-        Launch::Run(command) => execute(stream, *command).await,
+        Launch::Run(command) => {
+            started(template::session(line));
+            execute(stream, *command).await
+        }
         #[cfg(windows)]
         Launch::Exit(message, code) => {
             frame::write(&mut stream, STDERR, message).await?;
-            frame::write(&mut stream, EXIT, &code.to_be_bytes()).await
+            frame::write(&mut stream, EXIT, &code.to_be_bytes()).await?;
+            Ok(code)
         }
         Launch::Reject => {
             log::line(log::Kind::Other, &format!("rejected command: {line:?}"));
@@ -55,7 +63,7 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut stream: S,
     command: Command,
-) -> io::Result<()> {
+) -> io::Result<i32> {
     let (mut child, mut group) = match platform::spawn(command) {
         Ok(spawned) => spawned,
         Err(err) => {
@@ -77,12 +85,13 @@ async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     input.spawn(receive_input(reader, stdin));
     let result = tokio::select! {
         result = input.join_next() => {
-            result.expect("input task exists").map_err(io::Error::other)?
+            result.expect("input task exists").map_err(io::Error::other)?.map(|never| match never {})
         }
         result = async {
             send_output(&mut writer, stdout, stderr).await?;
             let code = platform::wait(&mut child).await?;
-            frame::write(&mut writer, EXIT, &code.to_be_bytes()).await
+            frame::write(&mut writer, EXIT, &code.to_be_bytes()).await?;
+            Ok(code)
         } => result,
     };
     input.abort_all();
@@ -106,7 +115,7 @@ enum Launch {
 async fn receive_input<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut reader: R,
     stdin: W,
-) -> io::Result<()> {
+) -> io::Result<Infallible> {
     let mut stdin = Some(stdin);
     let mut eof = false;
     loop {
@@ -203,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unapproved_line_with_error_frame() {
         let (mut client, server) = tokio::io::duplex(1024);
-        let task = tokio::spawn(serve(server));
+        let task = tokio::spawn(serve(server, |_| panic!("a rejected line started")));
         frame::write(&mut client, OPEN, b"touch /must-not-run")
             .await
             .unwrap();
@@ -217,7 +226,7 @@ mod tests {
     async fn gives_up_when_open_does_not_arrive_within_10_seconds() {
         let (_client, server) = tokio::io::duplex(1024);
         let start = tokio::time::Instant::now();
-        let err = serve(server).await.unwrap_err();
+        let err = serve(server, |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         assert_eq!(start.elapsed(), OPEN_TIMEOUT);
     }
@@ -225,7 +234,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_open_just_before_the_limit_is_still_served() {
         let (mut client, server) = tokio::io::duplex(1024);
-        let task = tokio::spawn(serve(server));
+        let task = tokio::spawn(serve(server, |_| {}));
         tokio::time::sleep(OPEN_TIMEOUT - Duration::from_millis(1)).await;
         frame::write(&mut client, OPEN, b"touch /must-not-run")
             .await
@@ -241,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_missing_open() {
         let (mut client, server) = tokio::io::duplex(1024);
-        let task = tokio::spawn(serve(server));
+        let task = tokio::spawn(serve(server, |_| {}));
         frame::write(&mut client, STDIN, b"x").await.unwrap();
         assert!(task.await.unwrap().is_err());
     }

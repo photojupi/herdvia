@@ -2,25 +2,33 @@ const PREFIX: &str = "sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/he
 const SUFFIX: &str = "exec \"$p\" connect'";
 
 pub fn allowed(line: &str) -> bool {
-    let Some(middle) = line
+    unix_session(line).is_some()
+}
+
+/// The session name of an allowed Unix line: `Some(None)` without one, `None` if not allowed.
+fn unix_session(line: &str) -> Option<Option<&str>> {
+    let middle = line
         .strip_prefix(PREFIX)
-        .and_then(|s| s.strip_suffix(SUFFIX))
-    else {
-        return false;
-    };
+        .and_then(|s| s.strip_suffix(SUFFIX))?;
     if middle.is_empty() {
-        return true;
+        return Some(None);
     }
-    let Some(name) = middle
+    let name = middle
         .strip_prefix("HC_SESSION=")
-        .and_then(|s| s.strip_suffix(' '))
-    else {
-        return false;
-    };
-    (1..=64).contains(&name.len())
+        .and_then(|s| s.strip_suffix(' '))?;
+    ((1..=64).contains(&name.len())
         && name
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+    .then_some(Some(name))
+}
+
+/// The session name in a line that this platform runs, for the agent log.
+pub(crate) fn session(line: &str) -> Option<&str> {
+    #[cfg(windows)]
+    return windows_session(line).flatten();
+    #[cfg(not(windows))]
+    unix_session(line).flatten()
 }
 
 #[cfg(any(windows, test))]
@@ -75,6 +83,14 @@ mod tests {
         assert!(allowed(BASE));
         assert!(allowed(&session("Abc-09._")));
         assert!(allowed(&session(&"x".repeat(64))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn names_the_session_of_a_line_it_runs() {
+        assert_eq!(super::session(BASE), None);
+        assert_eq!(super::session(&session("Abc-09._")), Some("Abc-09._"));
+        assert_eq!(super::session(&session("a b")), None);
     }
 
     #[test]

@@ -102,6 +102,31 @@ fn nonzero_exit_code_is_forwarded() {
 }
 
 #[test]
+fn the_receiver_logs_who_ran_which_session_and_how_it_ended() {
+    // A new pair: the shared one may have used up its log rate limit.
+    let p = Pair::new();
+    let out = p.a.run_via("b", &session_line("exit7"), b"");
+    assert_eq!(out.code(), Some(7), "stderr: {}", out.err());
+    let who = format!(
+        "a (fingerprint {}), herdr session exit7",
+        fingerprint_of(&p.a_id)
+    );
+    let started = format!(" herdvia: session started: {who}\n");
+    let ended = format!(" herdvia: session ended: {who}: exit code 7\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let log = p.b.agent_log();
+        if log.contains(&started) && log.contains(&ended) {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("no session lines in B's log:\n{log}");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn signal_exit_is_forwarded_as_128_plus_n() {
     let p = shared();
     let out = p.a.run_via("b", &session_line("sigterm"), b"");
