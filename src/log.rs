@@ -112,12 +112,25 @@ fn summary(kind: Kind, count: u64) -> String {
     }
 }
 
-/// `text` with control characters such as newlines and ESC escaped, cut to 300 characters with
-/// the original length in bytes noted. Text that a remote chose cannot fake or flood lines.
+/// `text` with control characters such as newlines and ESC, the Unicode line and paragraph
+/// separators and the bidirectional controls escaped, cut to 300 characters with the original
+/// length in bytes noted. Text that a remote chose cannot fake or flood lines, or reorder what a
+/// log viewer shows.
 pub(crate) fn sanitize(text: &str) -> String {
     let mut clean = String::new();
     for c in text.chars() {
-        if c.is_control() {
+        if c.is_control()
+            || matches!(
+                c,
+                '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{061c}'
+                    | '\u{200e}'
+                    | '\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+            )
+        {
             clean.extend(c.escape_default());
         } else {
             clean.push(c);
@@ -142,13 +155,19 @@ pub(crate) fn line(kind: Kind, text: &str) {
     let Some(suppressed) = admitted else {
         return;
     };
+    write_line(&mut io::stderr().lock(), kind, suppressed, text);
+}
+
+/// Writes the line, preceded by the summary of `suppressed` lines if there are any, with one
+/// write. A failed write is ignored: a full disk or a closed log must not stop a session.
+fn write_line(out: &mut impl Write, kind: Kind, suppressed: u64, text: &str) {
     let stamp = stamp();
-    let mut out = String::new();
+    let mut lines = String::new();
     if suppressed > 0 {
-        out.push_str(&format!("{stamp} herdvia: {}\n", summary(kind, suppressed)));
+        lines.push_str(&format!("{stamp} herdvia: {}\n", summary(kind, suppressed)));
     }
-    out.push_str(&format!("{stamp} herdvia: {}\n", sanitize(text)));
-    eprint!("{out}");
+    lines.push_str(&format!("{stamp} herdvia: {}\n", sanitize(text)));
+    let _ = out.write_all(lines.as_bytes());
 }
 
 fn unix_now() -> u64 {
@@ -300,22 +319,21 @@ fn due(last: Option<u64>, now: u64) -> bool {
 
 /// Cuts the log at `path` down to its last 5 MiB if it is over 10 MiB. Then drops lines older
 /// than 180 days if 24 hours of wall-clock time have passed since the `last` such trim, or if
-/// there has been none.
+/// there has been none. A failed trim is tried again at the next check.
 pub(crate) async fn trim_if_due(path: &Path, last: &mut Option<u64>) {
     let now = unix_now();
     let expire = due(*last, now);
-    if expire {
-        *last = Some(now);
-    }
     let file = path.to_path_buf();
     let result = tokio::task::spawn_blocking(move || trim(&file, now, expire))
         .await
         .unwrap_or_else(|err| Err(io::Error::other(err)));
-    if let Err(err) = result {
-        line(
+    match result {
+        Ok(()) if expire => *last = Some(now),
+        Ok(()) => {}
+        Err(err) => line(
             Kind::Other,
             &format!("cannot remove old lines from {}: {err}", path.display()),
-        );
+        ),
     }
 }
 
@@ -504,6 +522,20 @@ mod tests {
             r"a\nb\r\n2026-11-14T14:17:03Z herdvia: fake\u{1b}[31m\u{0}\u{7f}\u{85}"
         );
         assert!(!sanitize(&"\n\u{1b}".repeat(500)).contains(['\n', '\u{1b}']));
+        assert_eq!(sanitize("a\u{2028}b\u{2029}c"), r"a\u{2028}b\u{2029}c");
+        let bidi = [
+            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ];
+        assert_eq!(
+            sanitize(&String::from_iter(bidi)),
+            r"\u{61c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}"
+        );
+        // Neighbours of the escaped ranges stay.
+        assert_eq!(
+            sanitize("\u{061b}\u{061d}\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"),
+            "\u{061b}\u{061d}\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"
+        );
     }
 
     #[test]
@@ -588,6 +620,54 @@ mod tests {
             "suppressed 71 log lines about unauthenticated connections"
         );
         assert_eq!(summary(Kind::Other, 1), "suppressed 1 other log line");
+    }
+
+    /// Records each write it is given, or fails every write.
+    struct Writes {
+        calls: Vec<Vec<u8>>,
+        fail: bool,
+    }
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.fail {
+                return Err(io::Error::from(io::ErrorKind::StorageFull));
+            }
+            self.calls.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_the_summary_and_the_line_with_one_write() {
+        let mut out = Writes {
+            calls: Vec::new(),
+            fail: false,
+        };
+        write_line(&mut out, Kind::Other, 2, "a\nb");
+        let [call] = &out.calls[..] else {
+            panic!("{} writes", out.calls.len());
+        };
+        let text = String::from_utf8(call.clone()).unwrap();
+        let lines: Vec<_> = text.lines().map(|line| &line[21..]).collect();
+        assert_eq!(
+            lines,
+            ["herdvia: suppressed 2 other log lines", r"herdvia: a\nb"]
+        );
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn a_failed_write_is_ignored() {
+        let mut out = Writes {
+            calls: Vec::new(),
+            fail: true,
+        };
+        write_line(&mut out, Kind::Other, 1, "session ended");
     }
 
     fn numbered(count: usize) -> String {
@@ -681,5 +761,20 @@ mod tests {
         trim(&path, CUTOFF, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), data);
         trim(&dir.path().join("missing.log"), CUTOFF, true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_trim_by_age_is_tried_again_at_the_next_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut last = None;
+        // A directory cannot be opened for writing.
+        trim_if_due(dir.path(), &mut last).await;
+        assert_eq!(last, None);
+        // A missing log needs no trim, which counts as done.
+        trim_if_due(&dir.path().join("herdvia.log"), &mut last).await;
+        let done = last.unwrap();
+        assert!(done.abs_diff(unix_now()) < 60);
+        trim_if_due(dir.path(), &mut last).await;
+        assert_eq!(last, Some(done));
     }
 }

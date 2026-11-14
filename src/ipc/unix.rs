@@ -88,11 +88,7 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
 /// entry that allows access. Mode bits do not limit what an ACL allows.
 #[cfg(target_os = "macos")]
 pub(crate) fn check_dir(dir: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-        .open(dir)?;
-    check_acl(&file, dir)
+    check_acl(&open_dir(dir)?, dir)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -113,8 +109,7 @@ fn check_acl(file: &File, path: &Path) -> io::Result<()> {
     let list = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
     if list.is_null() {
         let err = io::Error::last_os_error();
-        // No extended ACL at all.
-        return if err.raw_os_error() == Some(libc::ENOENT) {
+        return if no_acl(err.raw_os_error()) {
             Ok(())
         } else {
             Err(err)
@@ -144,6 +139,13 @@ fn check_acl(file: &File, path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether acl_get_fd_np failing with `errno` means that the file has no extended ACL: it has
+/// none, or its file system does not support ACLs and so cannot hold an allow entry either.
+#[cfg(target_os = "macos")]
+fn no_acl(errno: Option<i32>) -> bool {
+    matches!(errno, Some(libc::ENOENT | libc::ENOTSUP | libc::EOPNOTSUPP))
 }
 
 /// The macOS ACL API, from <sys/acl.h>. The libc crate does not declare it.
@@ -264,21 +266,49 @@ pub(crate) async fn disconnected(socket: OwnedFd) -> io::Error {
     }
 }
 
+fn open_dir(dir: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(dir)
+}
+
+/// Creates `dir` if it is missing, then checks and fixes it through one descriptor, so that it
+/// cannot be swapped between the checks and the chmod.
 pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
-    let metadata = fs::symlink_metadata(dir)?;
-    if !metadata.is_dir() {
-        return Err(io::Error::new(
+    let not_a_dir = || {
+        io::Error::new(
             io::ErrorKind::PermissionDenied,
             "data path must be a real directory",
-        ));
-    }
-    require_uid(metadata.uid())?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    check_dir(dir)
+        )
+    };
+    let open = || {
+        open_dir(dir).map_err(|err| match err.raw_os_error() {
+            // A symbolic link, or not a directory.
+            Some(libc::ELOOP | libc::ENOTDIR) => not_a_dir(),
+            _ => err,
+        })
+    };
+    let file = match open() {
+        // A directory that this user cannot read is fixed by path first, as before.
+        Err(err) if err.raw_os_error() == Some(libc::EACCES) => {
+            let metadata = fs::symlink_metadata(dir)?;
+            if !metadata.is_dir() {
+                return Err(not_a_dir());
+            }
+            require_uid(metadata.uid())?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            open()?
+        }
+        result => result?,
+    };
+    require_uid(file.metadata()?.uid())?;
+    file.set_permissions(fs::Permissions::from_mode(0o700))?;
+    check_acl(&file, dir)
 }
 
 pub(crate) fn lock_dir(dir: &Path) -> io::Result<File> {
@@ -433,6 +463,21 @@ mod tests {
         assert!(listen(&link).is_err());
     }
 
+    #[test]
+    fn prepare_dir_refuses_a_symlink_and_fixes_a_directory_this_user_cannot_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("link");
+        symlink(temp.path(), &link).unwrap();
+        let err = prepare_dir(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(err.to_string(), "data path must be a real directory");
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        prepare_dir(&dir).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+    }
+
     #[cfg(target_os = "macos")]
     fn assert_acl_refused(result: io::Result<impl std::fmt::Debug>, path: &Path) {
         let err = result.unwrap_err();
@@ -498,5 +543,16 @@ mod tests {
             key.to_bytes()
         );
         check_dir(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn treats_a_file_system_without_acls_as_having_no_acl() {
+        for errno in [libc::ENOENT, libc::ENOTSUP, libc::EOPNOTSUPP] {
+            assert!(no_acl(Some(errno)), "{errno}");
+        }
+        for errno in [None, Some(libc::EACCES), Some(libc::EBADF), Some(libc::EIO)] {
+            assert!(!no_acl(errno), "{errno:?}");
+        }
     }
 }
