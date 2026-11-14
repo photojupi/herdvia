@@ -105,12 +105,12 @@ pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
     Ok(peers)
 }
 
-fn update(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>) -> io::Result<()>) -> io::Result<()> {
+fn update<T>(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>) -> io::Result<T>) -> io::Result<T> {
     load_key(dir)?;
     let lock = ipc::private_file(&dir.join("secret.key"))?;
     ipc::lock_file(&lock)?;
     let mut peers = load(dir)?;
-    edit(&mut peers)?;
+    let result = edit(&mut peers)?;
     peers.sort_by(|a, b| a.name.cmp(&b.name));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     for peer in peers {
@@ -124,7 +124,32 @@ fn update(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>) -> io::Result<()>) -> io
     }
     tmp.as_file().sync_all()?;
     tmp.persist(dir.join("peers")).map_err(|err| err.error)?;
-    Ok(())
+    Ok(result)
+}
+
+/// Names other than `name` that are registered with `id`.
+fn other_names(peers: &[Peer], id: EndpointId, name: &str) -> Vec<String> {
+    peers
+        .iter()
+        .filter(|p| p.id == id && p.name != name)
+        .map(|p| p.name.clone())
+        .collect()
+}
+
+/// One EndpointId under two names would survive a revoke of either name.
+fn refuse_another_name(peers: &[Peer], peer: &Peer) -> io::Result<()> {
+    let others = other_names(peers, peer.id, &peer.name);
+    if others.is_empty() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "EndpointId {} is already registered as peer {}; revoke it first or use that name",
+            peer.id,
+            others.join(", ")
+        ),
+    ))
 }
 
 pub fn allow(dir: &Path, peer: Peer) -> io::Result<()> {
@@ -132,6 +157,7 @@ pub fn allow(dir: &Path, peer: Peer) -> io::Result<()> {
         return Err(frame::invalid("invalid peer name"));
     }
     update(dir, |peers| {
+        refuse_another_name(peers, &peer)?;
         peers.retain(|p| p.name != peer.name);
         peers.push(peer);
         Ok(())
@@ -154,19 +180,29 @@ pub fn accept(dir: &Path, peer: Peer) -> io::Result<()> {
                 ),
             ));
         }
+        refuse_another_name(peers, &peer)?;
         peers.retain(|p| p.name != peer.name);
         peers.push(peer);
         Ok(())
     })
 }
 
-pub fn revoke(dir: &Path, name: &str) -> io::Result<()> {
+/// Removes the named peer and returns it with the other names still registered with its EndpointId.
+/// An unknown name is an error and leaves the file untouched.
+pub fn revoke(dir: &Path, name: &str) -> io::Result<(Peer, Vec<String>)> {
     if !valid_name(name) {
         return Err(frame::invalid("invalid peer name"));
     }
     update(dir, |peers| {
-        peers.retain(|peer| peer.name != name);
-        Ok(())
+        let index = peers
+            .iter()
+            .position(|peer| peer.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("no peer named {name}"))
+            })?;
+        let peer = peers.remove(index);
+        let others = other_names(peers, peer.id, name);
+        Ok((peer, others))
     })
 }
 
@@ -310,6 +346,97 @@ mod tests {
         peer.permission = Permission::In;
         accept(dir.path(), peer.clone()).unwrap();
         assert_eq!(load(dir.path()).unwrap(), vec![peer]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoke_of_an_unknown_name_fails_and_leaves_the_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = revoke(dir.path(), "work").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(err.to_string(), "no peer named work");
+        assert!(!dir.path().join("peers").exists());
+        // Unsorted on purpose: a rewrite would sort it.
+        let (a, b) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        let text = format!("b {b} in\na {a} out\n");
+        fs::write(dir.path().join("peers"), &text).unwrap();
+        fs::set_permissions(dir.path().join("peers"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            revoke(dir.path(), "work").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read_to_string(dir.path().join("peers")).unwrap(), text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_endpoint_cannot_be_registered_under_two_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let peer = Peer {
+            name: "work".into(),
+            id: SecretKey::generate().public(),
+            permission: Permission::Out,
+        };
+        allow(dir.path(), peer.clone()).unwrap();
+        let other = Peer {
+            name: "home".into(),
+            permission: Permission::Both,
+            ..peer.clone()
+        };
+        for result in [
+            allow(dir.path(), other.clone()),
+            accept(dir.path(), other.clone()),
+        ] {
+            let err = result.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+            assert!(err.to_string().contains("as peer work"), "{err}");
+        }
+        assert_eq!(load(dir.path()).unwrap(), vec![peer.clone()]);
+        // The same name may still change its permission or, through allow, its EndpointId.
+        let changed = Peer {
+            permission: Permission::In,
+            ..peer.clone()
+        };
+        accept(dir.path(), changed.clone()).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), vec![changed]);
+        let replaced = Peer {
+            id: SecretKey::generate().public(),
+            ..peer
+        };
+        allow(dir.path(), replaced.clone()).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), vec![replaced]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoke_names_what_still_allows_the_same_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (k, other) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
+        // Written before duplicates were refused: such a file still loads.
+        fs::write(
+            dir.path().join("peers"),
+            format!("a {k} both\nb {k} in\nc {other} out\nd {k} out\n"),
+        )
+        .unwrap();
+        fs::set_permissions(dir.path().join("peers"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(load(dir.path()).unwrap().len(), 4);
+        let (peer, others) = revoke(dir.path(), "a").unwrap();
+        assert_eq!((peer.name.as_str(), peer.id), ("a", k));
+        assert_eq!(others, ["b", "d"]);
+        let (_, others) = revoke(dir.path(), "c").unwrap();
+        assert!(others.is_empty());
+        let names: Vec<_> = load(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["b", "d"]);
     }
 
     #[cfg(unix)]

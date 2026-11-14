@@ -147,12 +147,21 @@ async fn manage(command: Command) -> io::Result<()> {
             println!("{id}\n{}", peers::fingerprint(id));
         }
         Command::Allow(peer) => {
-            peers::allow(&dir, peer)?;
+            peers::allow(&dir, peer.clone())?;
             control::reload_if_running(&dir).await?;
+            println!("{} {} {}", peer.name, peer.id, peer.permission.as_str());
         }
         Command::Revoke(name) => {
-            peers::revoke(&dir, &name)?;
+            let (peer, others) = peers::revoke(&dir, &name)?;
             control::reload_if_running(&dir).await?;
+            println!("revoked {name} {}", peer.id);
+            if !others.is_empty() {
+                eprintln!(
+                    "herdvia: warning: {} is still allowed as peer {}; revoke each of those names to remove it",
+                    peer.id,
+                    others.join(", ")
+                );
+            }
         }
         Command::Status => {
             let status = control::request(&dir, "status").await?;

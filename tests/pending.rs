@@ -146,3 +146,39 @@ fn accept_refuses_a_name_registered_with_another_endpoint() {
     assert_eq!(o.out(), format!("a2 {a_id} both\n"));
     assert_eq!(pending_out(&b), HEADER);
 }
+
+#[test]
+fn accept_refuses_an_endpoint_id_registered_under_another_name() {
+    // B 는 A 를 outbound 로만 알고 있다. A 의 시도는 거부되어 pending 에 보인다.
+    let mut a = Node::new("A");
+    let mut b = Node::new("B");
+    let (a_id, _) = a.id();
+    let (b_id, _) = b.id();
+    a.allow("b", &b_id, "--outbound");
+    b.allow("z", &a_id, "--outbound");
+    b.start_agent();
+    a.start_agent();
+    let fp = fingerprint_of(&a_id);
+    wait_pending(&b, &a_id, Duration::from_secs(30));
+
+    let before = b.peers_text();
+    let o = b.herdvia(&["accept", "a", &fp, "--inbound"]);
+    assert_eq!(
+        o.code(),
+        Some(255),
+        "같은 EndpointId 를 다른 이름으로 받아들임"
+    );
+    assert!(
+        o.err().contains("already registered as peer z;"),
+        "stderr: {}",
+        o.err()
+    );
+    assert!(o.out().is_empty(), "stdout: {:?}", o.out());
+    assert_eq!(b.peers_text(), before);
+
+    // 그 이름으로는 받는다 (권한 변경).
+    let o = b.herdvia(&["accept", "z", &fp, "--both"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("z {a_id} both\n"));
+    assert_eq!(pending_out(&b), HEADER);
+}
