@@ -25,6 +25,8 @@ Download from [GitHub Releases](https://github.com/photojupi/herdvia/releases):
 
 Each archive contains the executable, this README, the license files (`LICENSE-MIT`, `LICENSE-APACHE`), and `THIRD-PARTY-LICENSES.html`. Put the executable in a stable location, for example `~/.local/bin/herdvia` on macOS or `%LOCALAPPDATA%\Programs\herdvia\herdvia.exe` on Windows. Automatic startup records the path of the executable you run it from, so do not leave it in a temporary or download folder.
 
+The commands in this README assume that folder is on your `PATH`. If it is not, add it (and reopen your terminal and Herdr), or run the executable by its full path, for example in PowerShell: `& "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" id`.
+
 The binaries are not signed or notarized.
 
 - **macOS:** Gatekeeper may refuse to run the file. Remove the quarantine attribute:
@@ -141,9 +143,10 @@ On errors, herdvia prints one line starting with `herdvia:` to standard error an
 `herdvia agent install` adds an entry to the current user's `Run` registry key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) that starts `conhost.exe --headless "<path to herdvia.exe>" agent --log` at sign-in, without a console window. It then starts the agent the same way immediately. No administrator rights are needed, and none are used: no service or scheduled task is created.
 
 - **Run it from a normal PowerShell window.** `install` refuses to run from an elevated (administrator) PowerShell.
-- It refuses while `HERDVIA_DIR` is set, or while an agent you started by hand is running.
+- It refuses while `HERDVIA_DIR` is set.
+- It refuses while an agent is running and automatic startup is not registered yet. Stop that agent first.
 - The executable path must not contain `%`, and the whole registered command line must fit in 259 UTF-16 code units.
-- Running `install` again stops the registered agent and starts the new one.
+- If automatic startup is already registered, `install` stops any agent running on the default data folder, including one you started by hand, and starts the new one.
 - If the agent exits, Windows does not restart it; it starts again at the next sign-in.
 - Output goes to `%LOCALAPPDATA%\herdvia\herdvia.log`. If the agent does not come up within 5 seconds, `install` reports an error and keeps the registration.
 
