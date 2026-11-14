@@ -584,7 +584,11 @@ pub async fn run() -> io::Result<i32> {
         Err(err) => {
             report.add(check(
                 Level::Fail,
-                format!("data directory: {err}; set it, or set HERDVIA_DIR"),
+                if from_env {
+                    format!("data directory: {err}; set it to a full path, or unset it")
+                } else {
+                    format!("data directory: {err}; set it, or set HERDVIA_DIR")
+                },
             ));
             None
         }

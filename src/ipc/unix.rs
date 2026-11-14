@@ -101,7 +101,7 @@ pub fn home_dir() -> io::Result<PathBuf> {
 
 pub fn data_dir() -> io::Result<PathBuf> {
     if let Some(dir) = env::var_os("HERDVIA_DIR") {
-        return Ok(PathBuf::from(dir));
+        return super::override_dir(dir);
     }
     if cfg!(target_os = "macos") {
         Ok(home_dir()?.join("Library/Application Support/herdvia"))

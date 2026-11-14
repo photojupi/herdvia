@@ -173,7 +173,7 @@ pub fn home_dir() -> io::Result<PathBuf> {
 
 pub fn data_dir() -> io::Result<PathBuf> {
     match env::var_os("HERDVIA_DIR") {
-        Some(dir) => Ok(PathBuf::from(dir)),
+        Some(dir) => super::override_dir(dir),
         None => Ok(env_path("APPDATA")?.join("herdvia")),
     }
 }
