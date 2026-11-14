@@ -138,6 +138,12 @@ fn accept_refuses_a_name_registered_with_another_endpoint() {
     let o = b.herdvia(&["accept", "c", "0000-0000-0000-0000", "--both"]);
     assert_eq!(o.code(), Some(255));
     assert!(o.err().contains("--outbound"), "stderr: {}", o.err());
+    assert!(
+        o.err()
+            .contains("herdvia allow <name> <EndpointId> --inbound"),
+        "stderr: {}",
+        o.err()
+    );
     assert!(!has_peer_name(&b.peers_text(), "c"));
 
     // 다른 이름으로는 받는다.
@@ -145,4 +151,110 @@ fn accept_refuses_a_name_registered_with_another_endpoint() {
     assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
     assert_eq!(o.out(), format!("a2 {a_id} both\n"));
     assert_eq!(pending_out(&b), HEADER);
+}
+
+#[test]
+fn accept_refuses_an_endpoint_id_registered_under_another_name() {
+    // B 는 A 를 outbound 로만 알고 있다. A 의 시도는 거부되어 pending 에 보인다.
+    let mut a = Node::new("A");
+    let mut b = Node::new("B");
+    let (a_id, _) = a.id();
+    let (b_id, _) = b.id();
+    a.allow("b", &b_id, "--outbound");
+    b.allow("z", &a_id, "--outbound");
+    b.start_agent();
+    a.start_agent();
+    let fp = fingerprint_of(&a_id);
+    wait_pending(&b, &a_id, Duration::from_secs(30));
+
+    let before = b.peers_text();
+    let o = b.herdvia(&["accept", "a", &fp, "--inbound"]);
+    assert_eq!(
+        o.code(),
+        Some(255),
+        "같은 EndpointId 를 다른 이름으로 받아들임"
+    );
+    assert!(
+        o.err().contains("already registered as peer z;"),
+        "stderr: {}",
+        o.err()
+    );
+    assert!(o.out().is_empty(), "stdout: {:?}", o.out());
+    assert_eq!(b.peers_text(), before);
+
+    // 그 이름으로는 받는다 (권한 변경).
+    let o = b.herdvia(&["accept", "z", &fp, "--both"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("z {a_id} both\n"));
+    assert_eq!(pending_out(&b), HEADER);
+}
+
+/// `pending` 에는 정해진 줄을, `reload` 에는 빈 성공을 돌려주는 가짜 에이전트.
+fn fake_agent_with_pending(node: &Node, body: String) {
+    use std::io::{Read, Write};
+    let listener = std::os::unix::net::UnixListener::bind(node.sock()).unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut header = [0; 5];
+            if stream.read_exact(&mut header).is_err() {
+                continue;
+            }
+            let mut payload = vec![0; u32::from_be_bytes(header[1..].try_into().unwrap()) as usize];
+            if stream.read_exact(&mut payload).is_err() {
+                continue;
+            }
+            let mut frames = Vec::new();
+            if payload == b"pending" {
+                frames.push(3); // STDOUT
+                frames.extend((body.len() as u32).to_be_bytes());
+                frames.extend(body.as_bytes());
+            }
+            frames.push(5); // EXIT
+            frames.extend(4u32.to_be_bytes());
+            frames.extend(0i32.to_be_bytes());
+            let _ = stream.write_all(&frames);
+        }
+    });
+}
+
+#[test]
+fn accept_refuses_a_full_pending_list() {
+    // 미인증 원격이 새 키로 계속 접속하면 목록이 차고 오래된 항목이 밀려난다.
+    // 그때는 지문이 맞더라도 받지 않고 전체 EndpointId 로 allow 하라고 안내한다.
+    let b = Node::new("B");
+    let _ = b.id();
+    let ids: Vec<String> = (0..16)
+        .map(|i| Node::new(&format!("X{i}")).id().0)
+        .collect();
+    let rows = |ids: &[String]| -> String {
+        ids.iter()
+            .map(|id| format!("{} {id} 1 0s\n", fingerprint_of(id)))
+            .collect()
+    };
+    let full = Node::new("C");
+    let _ = full.id();
+    fake_agent_with_pending(&full, format!("{HEADER}{}", rows(&ids)));
+    fake_agent_with_pending(&b, format!("{HEADER}{}", rows(&ids[..15])));
+
+    for fp in [fingerprint_of(&ids[0]), "0000-0000-0000-0000".to_string()] {
+        let o = full.herdvia(&["accept", "x", &fp, "--inbound"]);
+        assert_eq!(o.code(), Some(255), "[{fp}] 가득 찬 목록에서 받아들임");
+        assert_eq!(o.err().trim().lines().count(), 1, "stderr: {:?}", o.err());
+        assert!(o.err().contains("is full"), "[{fp}] stderr: {}", o.err());
+        assert!(
+            o.err()
+                .contains("herdvia allow <name> <EndpointId> --inbound"),
+            "[{fp}] stderr: {}",
+            o.err()
+        );
+        assert!(o.stdout.is_empty(), "stdout: {:?}", o.out());
+        assert!(!full.peers_file().exists(), "peers 가 만들어짐");
+    }
+
+    // 한 칸 모자라면 지문으로 받는다.
+    let o = b.herdvia(&["accept", "x", &fingerprint_of(&ids[0]), "--inbound"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("x {} in\n", ids[0]));
+    assert!(has_peer_line(&b.peers_text(), "x", &ids[0], "in"));
 }

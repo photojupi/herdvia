@@ -1,5 +1,5 @@
 use herdvia::{
-    control, ipc,
+    control, ipc, network,
     peers::{self, Peer, Permission},
 };
 use iroh::EndpointId;
@@ -152,12 +152,21 @@ async fn manage(command: Command) -> io::Result<()> {
             println!("{id}\n{}", peers::fingerprint(id));
         }
         Command::Allow(peer) => {
-            peers::allow(&dir, peer)?;
+            peers::allow(&dir, peer.clone())?;
             control::reload_if_running(&dir).await?;
+            println!("{} {} {}", peer.name, peer.id, peer.permission.as_str());
         }
         Command::Revoke(name) => {
-            peers::revoke(&dir, &name)?;
+            let (peer, others) = peers::revoke(&dir, &name)?;
             control::reload_if_running(&dir).await?;
+            println!("revoked {name} {}", peer.id);
+            if !others.is_empty() {
+                eprintln!(
+                    "herdvia: warning: {} is still allowed as peer {}; revoke each of those names to remove it",
+                    peer.id,
+                    others.join(", ")
+                );
+            }
         }
         Command::Status => {
             let status = control::request(&dir, "status").await?;
@@ -202,6 +211,7 @@ fn on_relay(status: &str) -> bool {
 /// Finds the one entry of a `pending` response whose EndpointId has this fingerprint.
 fn pending_match(pending: &str, fingerprint: &str) -> io::Result<EndpointId> {
     let mut found = Vec::new();
+    let mut entries = 0;
     for line in pending.lines().skip(1) {
         let id: EndpointId = line
             .split_whitespace()
@@ -210,16 +220,23 @@ fn pending_match(pending: &str, fingerprint: &str) -> io::Result<EndpointId> {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid pending response")
             })?;
+        entries += 1;
         if peers::fingerprint(id) == fingerprint {
             found.push(id);
         }
+    }
+    // A full list may have pushed out the real caller, or a second key with the same fingerprint.
+    if entries >= network::MAX_ATTEMPTS {
+        return Err(io::Error::other(
+            "the list of connection attempts is full (someone may be flooding this PC with connection attempts); use herdvia allow <name> <EndpointId> --inbound with the full EndpointId",
+        ));
     }
     match found.as_slice() {
         [id] => Ok(*id),
         [] => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "no connection attempt with fingerprint {fingerprint}; check that the other PC allowed this PC with --outbound and its agent is running"
+                "no connection attempt with fingerprint {fingerprint}; check that the other PC allowed this PC with --outbound and its agent is running, or use herdvia allow <name> <EndpointId> --inbound with the full EndpointId"
             ),
         )),
         _ => Err(io::Error::new(
@@ -423,5 +440,27 @@ mod tests {
         let err = pending_match(&pending, &peers::fingerprint(a)).unwrap_err();
         assert!(err.to_string().contains("herdvia allow"), "{err}");
         assert!(pending_match(&format!("{header}x bad 1 0s\n"), "0000-0000-0000-0000").is_err());
+    }
+
+    #[test]
+    fn accept_refuses_a_full_pending_list_even_with_one_match() {
+        let header = "fingerprint id attempts last-seen\n";
+        let ids: Vec<_> = (0..network::MAX_ATTEMPTS)
+            .map(|_| iroh::SecretKey::generate().public())
+            .collect();
+        let rows = |ids: &[EndpointId]| -> String {
+            ids.iter().map(|id| format!("x {id} 1 0s\n")).collect()
+        };
+        let below = format!("{header}{}", rows(&ids[1..]));
+        let fp = peers::fingerprint(ids[1]);
+        assert_eq!(pending_match(&below, &fp).unwrap(), ids[1]);
+        let err = pending_match(&below, "0000-0000-0000-0000").unwrap_err();
+        assert!(err.to_string().contains("--inbound"), "{err}");
+        let full = format!("{header}{}", rows(&ids));
+        for fingerprint in [fp.as_str(), "0000-0000-0000-0000"] {
+            let err = pending_match(&full, fingerprint).unwrap_err();
+            assert!(err.to_string().contains("is full"), "{err}");
+            assert!(err.to_string().contains("herdvia allow"), "{err}");
+        }
     }
 }

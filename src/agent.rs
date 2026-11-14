@@ -5,7 +5,12 @@ use crate::{
     peers,
 };
 use iroh::EndpointId;
-use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::task::{AbortHandle, JoinSet};
 
 /// `log_file`: the file that standard error was sent to, whose lines older than 180 days are removed.
@@ -15,7 +20,7 @@ pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
     let mut shutdown = ipc::Shutdown::new()?;
     let dir = ipc::data_dir()?;
     let network = Network::bind(dir.clone()).await?;
-    let mut listener = ipc::listen(&dir)?;
+    let mut listener = listen(&dir, &network)?;
     // The first tick is immediate, so the first trim comes right after listening.
     let mut trim_checks = tokio::time::interval(log::CHECK_EVERY);
     let mut last_trim = None;
@@ -65,6 +70,15 @@ pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
     while connectors.join_next().await.is_some() {}
     network.endpoint.close().await;
     result
+}
+
+/// Opens the local channel, then reads peers again. allow and revoke treat a missing channel as
+/// "no agent", so a change made after bind read peers would otherwise never reach this agent.
+/// Changes made after the channel opens queue a reload request instead.
+fn listen(dir: &Path, network: &Network) -> io::Result<ipc::Listener> {
+    let listener = ipc::listen(dir)?;
+    network.reload()?;
+    Ok(listener)
 }
 
 fn refresh_workers(
@@ -174,6 +188,32 @@ mod tests {
             }
             _ => panic!("expected OPEN"),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_revoke_before_the_local_channel_opens_still_takes_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = iroh::SecretKey::generate().public();
+        peers::allow(
+            dir.path(),
+            peers::Peer {
+                name: "p".into(),
+                id,
+                permission: peers::Permission::Both,
+            },
+        )
+        .unwrap();
+        let network = Network::bind(dir.path().to_owned()).await.unwrap();
+        assert!(network.outbound_ids().contains(&id));
+        // The agent has read peers but has no local channel yet: revoke finds no agent to tell.
+        peers::revoke(dir.path(), "p").unwrap();
+        crate::control::reload_if_running(dir.path()).await.unwrap();
+        assert!(network.outbound_ids().contains(&id));
+        let _listener = listen(dir.path(), &network).unwrap();
+        assert!(network.outbound_ids().is_empty());
+        assert_eq!(network.status(), "name permission connection path rtt\n");
+        network.endpoint.close().await;
     }
 
     #[test]

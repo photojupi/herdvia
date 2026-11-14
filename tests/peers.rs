@@ -536,7 +536,11 @@ fn allow_and_revoke_update_file_without_agent() {
         ("--outbound", "out"),
         ("--both", "both"),
     ] {
-        n.allow("x", &x, flag);
+        // 결과 한 줄은 accept 와 같은 형식이다.
+        let o = n.herdvia(&["allow", "x", &x, flag]);
+        assert_eq!(o.code(), Some(0), "[{flag}] stderr: {}", o.err());
+        assert_eq!(o.out(), format!("x {x} {perm}\n"), "[{flag}]");
+        assert!(o.err().is_empty(), "[{flag}] stderr: {}", o.err());
         let peers = n.peers_text();
         assert!(
             has_peer_line(&peers, "x", &x, perm),
@@ -553,7 +557,10 @@ fn allow_and_revoke_update_file_without_agent() {
         assert_eq!(mode_of(&n.peers_file()), 0o600, "[{flag}] peers 권한");
     }
     n.allow("y", &y, "--inbound");
-    n.revoke("x");
+    let o = n.herdvia(&["revoke", "x"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("revoked x {x}\n"));
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
     let peers = n.peers_text();
     assert!(
         !has_peer_name(&peers, "x"),
@@ -564,6 +571,77 @@ fn allow_and_revoke_update_file_without_agent() {
         "revoke 가 다른 피어까지 지움:\n{peers}"
     );
     assert_eq!(mode_of(&n.peers_file()), 0o600, "revoke 뒤 peers 권한");
+}
+
+#[test]
+fn revoke_of_an_unknown_name_fails_and_changes_nothing() {
+    let n = Node::new("A");
+    let _ = n.id();
+    let x = Node::new("X").id().0;
+    let o = n.herdvia(&["revoke", "nobody"]);
+    assert_eq!(o.code(), Some(255), "없는 이름 revoke 가 성공함");
+    assert_eq!(o.err(), "herdvia: no peer named nobody\n");
+    assert!(o.stdout.is_empty(), "stdout: {:?}", o.out());
+    assert!(!n.peers_file().exists(), "실패한 revoke 가 peers 를 만듦");
+
+    n.allow("x", &x, "--both");
+    let before = n.peers_text();
+    let o = n.herdvia(&["revoke", "X"]);
+    assert_eq!(o.code(), Some(255), "이름은 대소문자를 구분해야 함");
+    assert!(o.err().contains("no peer named X"), "stderr: {}", o.err());
+    assert_eq!(n.peers_text(), before, "실패한 revoke 가 peers 를 바꿈");
+}
+
+#[test]
+fn one_endpoint_id_cannot_take_a_second_name() {
+    let n = Node::new("A");
+    let _ = n.id();
+    let x = Node::new("X").id().0;
+    n.allow("x", &x, "--outbound");
+    let before = n.peers_text();
+    let o = n.herdvia(&["allow", "x2", &x, "--both"]);
+    assert_eq!(
+        o.code(),
+        Some(255),
+        "같은 EndpointId 를 다른 이름으로 받아들임"
+    );
+    assert_eq!(o.err().trim().lines().count(), 1, "stderr: {:?}", o.err());
+    assert!(
+        o.err().contains("already registered as peer x;"),
+        "stderr: {}",
+        o.err()
+    );
+    assert!(o.stdout.is_empty(), "stdout: {:?}", o.out());
+    assert_eq!(n.peers_text(), before);
+    // 같은 이름으로 권한을 바꾸는 것은 그대로 된다.
+    n.allow("x", &x, "--both");
+    assert!(has_peer_line(&n.peers_text(), "x", &x, "both"));
+}
+
+#[test]
+fn revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name() {
+    let n = Node::new("A");
+    let _ = n.id();
+    let x = Node::new("X").id().0;
+    // 중복을 막기 전에 만들어진 peers 파일도 그대로 읽힌다.
+    fs::write(n.peers_file(), format!("a {x} both\nb {x} in\n")).unwrap();
+    chmod(&n.peers_file(), 0o600);
+    let o = n.herdvia(&["revoke", "a"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("revoked a {x}\n"));
+    let err = o.err();
+    assert_eq!(err.lines().count(), 1, "stderr: {err:?}");
+    assert!(
+        err.starts_with("herdvia: warning: ") && err.contains("still allowed as peer b;"),
+        "stderr: {err}"
+    );
+    let peers = n.peers_text();
+    assert!(!has_peer_name(&peers, "a"), "peers:\n{peers}");
+    assert!(has_peer_line(&peers, "b", &x, "in"), "peers:\n{peers}");
+    // 마지막 이름을 지우면 경고가 없다.
+    let o = n.herdvia(&["revoke", "b"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
 }
 
 // ---------------------------------------------------------------------------
