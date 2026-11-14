@@ -1041,6 +1041,18 @@ mod tests {
         drop(next.join().unwrap());
     }
 
+    /// Sets a protected DACL exactly, replacing the explicit copies of its parent's entries
+    /// that a test directory may carry (icacls /inheritance:r keeps those).
+    fn set_test_dacl(path: &Path, sddl: &str) {
+        let entry = open_entry(path, READ_CONTROL | WRITE_DAC).unwrap();
+        set_dacl(
+            &entry,
+            sddl,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        )
+        .unwrap();
+    }
+
     fn icacls(path: &Path, args: &[&str]) {
         let status = std::process::Command::new("icacls")
             .arg(path)
@@ -1227,46 +1239,32 @@ mod tests {
 
     #[test]
     fn rewrites_a_protected_directory_that_passes_nothing_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
-        let user = format!("*{sid}");
-        for grants in [
-            // Private, but nothing in it inherits this user's access.
-            vec![
-                format!("{user}:F"),
-                "*S-1-5-18:F".into(),
-                "*S-1-5-32-544:F".into(),
-            ],
-            // No entry for this user at all: only the owner's implicit rights.
-            vec!["*S-1-5-18:(OI)(CI)F".into()],
-        ] {
-            let temp = tempfile::tempdir().unwrap();
-            let dir = temp.path().join("herdvia");
-            fs::create_dir(&dir).unwrap();
-            let mut args = vec!["/inheritance:r", "/grant:r"];
-            args.extend(grants.iter().map(String::as_str));
-            icacls(&dir, &args);
-            let before = dacl(&dir);
-            let state = read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid).unwrap();
-            assert!(before.starts_with("D:P"), "{before}");
-            assert!(state.private && !state.target, "{before}");
-            // Safe as it is, so doctor does not complain.
-            assert_eq!(inspect_dir(&dir).unwrap(), None);
-            prepare_dir(&dir).unwrap();
-            assert_private(&dir, &sid);
-            assert!(
-                dacl(&dir).contains(&format!("(A;OICI;FA;;;{sid})")),
-                "{}",
-                dacl(&dir)
-            );
-            // The new key inherits from it, and a second run still reads it.
-            let key = crate::peers::load_key(&dir).unwrap();
-            assert_eq!(
-                crate::peers::load_key(&dir).unwrap().to_bytes(),
-                key.to_bytes()
-            );
-            private_file(&dir.join("secret.key")).unwrap();
-            assert_private(&dir.join("secret.key"), &sid);
-        }
+        // Private, but nothing created inside inherits this user's access.
+        set_test_dacl(&dir, &format!("D:P(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)"));
+        let before = dacl(&dir);
+        let state = read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid).unwrap();
+        assert!(state.private && !state.target, "{before}");
+        // Safe as it is, so doctor does not complain.
+        assert_eq!(inspect_dir(&dir).unwrap(), None);
+        prepare_dir(&dir).unwrap();
+        assert_private(&dir, &sid);
+        assert!(
+            dacl(&dir).contains(&format!("(A;OICI;FA;;;{sid})")),
+            "{}",
+            dacl(&dir)
+        );
+        // The new key inherits from it, and a second run still reads it.
+        let key = crate::peers::load_key(&dir).unwrap();
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        private_file(&dir.join("secret.key")).unwrap();
+        assert_private(&dir.join("secret.key"), &sid);
     }
 
     #[test]
@@ -1275,24 +1273,11 @@ mod tests {
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
-        // As when SYSTEM owns it and this user may only modify it.
-        icacls(
+        // As when SYSTEM owns it and this user may only modify it: OWNER RIGHTS (OW) takes
+        // the owner's implicit WRITE_DAC away.
+        set_test_dacl(
             &dir,
-            &[
-                "/inheritance:r",
-                "/grant:r",
-                &format!("*{sid}:(OI)(CI)M"),
-                "*S-1-5-18:(OI)(CI)F",
-            ],
-        );
-        icacls(
-            &dir,
-            &[
-                "/deny",
-                &format!("*{sid}:(WDAC)"),
-                "/deny",
-                "*S-1-3-4:(WDAC)",
-            ],
+            &format!("D:P(D;;WD;;;{sid})(D;;WD;;;OW)(A;OICI;0x1301bf;;;{sid})(A;OICI;FA;;;SY)"),
         );
         let before = dacl(&dir);
         assert!(denied(
