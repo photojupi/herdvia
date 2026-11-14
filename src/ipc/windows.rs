@@ -921,7 +921,15 @@ mod tests {
             }
             std::slice::from_raw_parts(text, length)
         };
-        String::from_utf16(units).unwrap()
+        let text = String::from_utf16(units).unwrap();
+        // SDDL writes the built-in Administrator (RID 500) as LA, and GitHub's Windows runner
+        // signs in as that account. Spell the SID out so that the tests can look for it.
+        let sid = current_sid().unwrap();
+        if sid.ends_with("-500") {
+            text.replace(";;;LA)", &format!(";;;{sid})"))
+        } else {
+            text
+        }
     }
 
     #[test]
