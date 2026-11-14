@@ -141,6 +141,25 @@ tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 
 
 초대 코드, 자체 중계 서버 설정, 자동 시작, Windows, 키 교체, `hc machine add` 자동 실행.
 
+## M4: macOS 자동 시작
+
+| 명령 | 역할 |
+|---|---|
+| `hlink agent install` | 로그인 시 에이전트가 자동으로 뜨도록 등록하고 바로 시작한다 |
+| `hlink agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
+
+- 사용자별 LaunchAgent다. 파일은 `~/Library/LaunchAgents/dev.hlink.agent.plist`, 라벨은 `dev.hlink.agent`.
+  시스템 전체 데몬으로는 등록하지 않는다(herdr-core가 사용자 로그인 세션에서 돌아야 한다).
+- 실행 경로는 `install`을 실행한 그 실행 파일의 절대 경로다. 임시 폴더나 빌드 폴더(`target/`) 안에서 실행하면
+  경고를 stderr에 쓰되 등록은 한다.
+- `RunAtLoad`와 `KeepAlive`를 켠다. 로그는 `~/Library/Logs/hlink.log`에 표준 출력·오류를 모은다.
+- plist의 `EnvironmentVariables`에 `PATH`를 넣는다. 값은 `$HOME/.local/bin`을 앞에 둔 기본 경로다
+  (connect 줄은 `$HOME/.local/bin/herdr-core`로도 찾으므로 필수는 아니다).
+- `HLINK_DIR`이 설정된 채 `install`하면 거부한다. 자동 시작은 기본 데이터 폴더만 쓴다.
+- 등록·해제는 `launchctl bootstrap gui/<uid>` / `launchctl bootout gui/<uid>/dev.hlink.agent`를 쓴다.
+- `install`은 이미 등록돼 있으면 새 내용으로 바꾸고 다시 시작한다. `uninstall`은 등록이 없어도 성공한다.
+- 에이전트가 이미 수동으로 떠 있으면 `install`은 실패한다고 알리고 아무것도 바꾸지 않는다.
+
 ## 단계
 
 - M1 (완료): 가짜 via로 hc 동작 실측.

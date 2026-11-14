@@ -109,17 +109,26 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
 }
 
-pub fn listen(dir: &Path) -> io::Result<Listener> {
-    prepare_dir(dir)?;
+pub(crate) fn lock_dir(dir: &Path) -> io::Result<File> {
     let lock = File::open(dir)?;
     // Lock the directory so two agents cannot race when removing a stale socket.
-    // SAFETY: the file descriptor stays open for the lifetime of the listener.
+    // SAFETY: lock owns the descriptor; dropping it releases the lock.
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::WouldBlock {
+            return Err(err);
+        }
         return Err(io::Error::new(
             io::ErrorKind::AddrInUse,
             "agent is already running",
         ));
     }
+    Ok(lock)
+}
+
+pub fn listen(dir: &Path) -> io::Result<Listener> {
+    prepare_dir(dir)?;
+    let lock = lock_dir(dir)?;
     let path = dir.join("agent.sock");
     match fs::symlink_metadata(&path) {
         Ok(metadata) => {

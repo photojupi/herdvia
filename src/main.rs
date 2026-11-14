@@ -6,6 +6,8 @@ use std::io;
 
 enum Command {
     Agent,
+    AgentInstall,
+    AgentUninstall,
     Via { peer: String, line: String },
     Id,
     Allow(Peer),
@@ -16,6 +18,8 @@ enum Command {
 fn parse(args: Vec<String>) -> io::Result<Command> {
     match args.as_slice() {
         [cmd] if cmd == "agent" => Ok(Command::Agent),
+        [cmd, action] if cmd == "agent" && action == "install" => Ok(Command::AgentInstall),
+        [cmd, action] if cmd == "agent" && action == "uninstall" => Ok(Command::AgentUninstall),
         [cmd] if cmd == "id" => Ok(Command::Id),
         [cmd] if cmd == "status" => Ok(Command::Status),
         [cmd, name] if cmd == "revoke" && peers::valid_name(name) => {
@@ -47,7 +51,7 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         }),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: hlink agent | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status",
+            "usage: hlink agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status",
         )),
     }
 }
@@ -63,6 +67,8 @@ async fn main() {
         .collect();
     let result = match ipc::reject_root().and(args).and_then(parse) {
         Ok(Command::Agent) => hlink::agent::run().await.map(|()| 0),
+        Ok(Command::AgentInstall) => hlink::launchd::install().await.map(|()| 0),
+        Ok(Command::AgentUninstall) => hlink::launchd::uninstall().map(|()| 0),
         Ok(Command::Via { peer, line }) => hlink::via::run(&peer, &line).await,
         Ok(command) => manage(command).await.map(|()| 0),
         Err(err) => Err(err),
@@ -104,10 +110,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_agent_and_via_with_exact_argument_counts() {
+    fn accepts_agent_subcommands_and_via_with_exact_argument_counts() {
         assert!(matches!(
             parse(vec!["agent".into()]).unwrap(),
             Command::Agent
+        ));
+        assert!(matches!(
+            parse(vec!["agent".into(), "install".into()]).unwrap(),
+            Command::AgentInstall
+        ));
+        assert!(matches!(
+            parse(vec!["agent".into(), "uninstall".into()]).unwrap(),
+            Command::AgentUninstall
         ));
         match parse(vec!["via".into(), "peer".into(), "one entire line".into()]).unwrap() {
             Command::Via { peer, line } => {
@@ -119,7 +133,9 @@ mod tests {
         for args in [
             vec![],
             vec!["id", "extra"],
-            vec!["agent", "install"],
+            vec!["agent", "unknown"],
+            vec!["agent", "install", "extra"],
+            vec!["agent", "uninstall", "extra"],
             vec!["via", "peer"],
             vec!["via", "p", "l", "extra"],
         ] {
