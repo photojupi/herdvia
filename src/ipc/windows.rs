@@ -563,7 +563,8 @@ struct Dacl {
     private: bool,
     /// Private and protected (not inherited from the parent), and gives full control to this
     /// user, SYSTEM, and Administrators, passed on to everything inside, as `protect_dir`
-    /// sets it.
+    /// sets it. A deny entry passed on to what is inside could lock this user out of it, so
+    /// only deny entries that are not passed on are allowed.
     target: bool,
 }
 
@@ -607,6 +608,8 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
     }
     // Full control, passed on to files and directories, for this user, SYSTEM, Administrators.
     let mut granted = [false; 3];
+    let inherit = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+    let mut passes_deny = false;
     // SAFETY: acl is a valid ACL inside descriptor.
     for index in 0..u32::from(unsafe { (*acl).AceCount }) {
         let mut ace = null_mut();
@@ -615,12 +618,15 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: every entry starts with an ACE_HEADER.
-        let kind = unsafe { (*ace.cast::<ACE_HEADER>()).AceType };
-        let trusted = match kind {
+        let header = unsafe { *ace.cast::<ACE_HEADER>() };
+        let trusted = match header.AceType {
             ACCESS_DENIED_ACE_TYPE
             | ACCESS_DENIED_OBJECT_ACE_TYPE
             | ACCESS_DENIED_CALLBACK_ACE_TYPE
-            | ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE => true,
+            | ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE => {
+                passes_deny |= u32::from(header.AceFlags) & inherit != 0;
+                true
+            }
             ACCESS_ALLOWED_ACE_TYPE => {
                 let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
                 // SAFETY: an entry of this type is an ACCESS_ALLOWED_ACE, whose SID
@@ -628,7 +634,6 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
                 let trustee = sid_string(unsafe { &raw mut (*ace).SidStart }.cast())?;
                 // SAFETY: as above; the header and mask come first in the entry.
                 let (flags, mask) = unsafe { (u32::from((*ace).Header.AceFlags), (*ace).Mask) };
-                let inherit = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
                 if flags & (inherit | INHERIT_ONLY_ACE) == inherit && mask == FILE_ALL_ACCESS {
                     for (found, account) in
                         granted.iter_mut().zip([sid, LOCAL_SYSTEM, ADMINISTRATORS])
@@ -647,7 +652,7 @@ fn read_dacl(file: &File, sid: &str) -> io::Result<Dacl> {
     }
     Ok(Dacl {
         private: true,
-        target: protected && granted == [true; 3],
+        target: protected && granted == [true; 3] && !passes_deny,
     })
 }
 
@@ -1308,6 +1313,38 @@ mod tests {
             crate::peers::load_key(&dir).unwrap().to_bytes(),
             key.to_bytes()
         );
+    }
+
+    #[test]
+    fn rewrites_a_directory_that_passes_a_deny_entry_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // As protect_dir sets it, except for a deny of reading to Everyone that the files
+        // inside inherit, which would lock this user out of a new key.
+        set_test_dacl(
+            &dir,
+            &format!("D:P(D;OIIO;FR;;;WD)(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+        );
+        let state = read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid).unwrap();
+        assert!(state.private && !state.target, "{}", dacl(&dir));
+        assert_eq!(inspect_dir(&dir).unwrap(), None);
+        prepare_dir(&dir).unwrap();
+        let text = dacl(&dir);
+        assert!(!text.contains("(D;"), "{text}");
+        assert!(
+            read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid)
+                .unwrap()
+                .target,
+            "{text}"
+        );
+        let key = crate::peers::load_key(&dir).unwrap();
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        assert_private(&dir.join("secret.key"), &sid);
     }
 
     #[test]
