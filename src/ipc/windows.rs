@@ -24,8 +24,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY, HANDLE, LocalFree,
-        STATUS_SUCCESS,
+        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_LOCK_VIOLATION, ERROR_PIPE_BUSY,
+        HANDLE, LocalFree, STATUS_SUCCESS,
     },
     Security::{
         Authorization::{
@@ -39,8 +39,9 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, LOCKFILE_EXCLUSIVE_LOCK, LockFileEx,
-        READ_CONTROL, WRITE_DAC,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+        READ_CONTROL, SECURITY_ANONYMOUS, WRITE_DAC,
     },
     System::{
         IO::{IO_STATUS_BLOCK, OVERLAPPED},
@@ -56,6 +57,7 @@ pub struct Listener {
     next: NamedPipeServer,
     name: String,
     sid: String,
+    _lock: File,
 }
 
 impl Listener {
@@ -69,16 +71,67 @@ impl Listener {
 
 pub fn listen(dir: &Path) -> io::Result<Listener> {
     prepare_dir(dir)?;
+    // The pipe name follows how HERDVIA_DIR is spelled; this lock follows the directory.
+    let lock = lock_agent(dir)?;
     let sid = current_sid()?;
     let name = name_for_dir(&sid, dir)?;
     let next = create_pipe(&name, &sid, true).map_err(|err| {
         if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-            io::Error::new(io::ErrorKind::AddrInUse, "agent is already running")
+            in_use(pipe_owner(&name).ok().as_deref(), &sid)
         } else {
             err
         }
     })?;
-    Ok(Listener { next, name, sid })
+    Ok(Listener {
+        next,
+        name,
+        sid,
+        _lock: lock,
+    })
+}
+
+/// Holds agent.lock in the data directory for as long as the agent runs.
+fn lock_agent(dir: &Path) -> io::Result<File> {
+    // No FILE_SHARE_DELETE: the name cannot be removed while the lock is held.
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(dir.join("agent.lock"))?;
+    match lock_byte(&lock, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY) {
+        Ok(()) => Ok(lock),
+        Err(err) if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "agent is already running",
+        )),
+        Err(err) => Err(err),
+    }
+}
+
+/// The error for a pipe name that already has a first instance, given its owner SID if known.
+fn in_use(owner: Option<&str>, sid: &str) -> io::Error {
+    match owner {
+        Some(owner) if owner != sid => io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "another account ({owner}) holds this agent's pipe name; the agent cannot start until that account's process closes it"
+            ),
+        ),
+        _ => io::Error::new(io::ErrorKind::AddrInUse, "agent is already running"),
+    }
+}
+
+/// The owner SID of an existing pipe, connecting as an anonymous client: the server
+/// may belong to another account, so it must not be able to impersonate this one.
+fn pipe_owner(name: &str) -> io::Result<String> {
+    let pipe = OpenOptions::new()
+        .read(true)
+        .security_qos_flags(SECURITY_ANONYMOUS)
+        .open(name)?;
+    // GENERIC_READ includes READ_CONTROL.
+    owner_sid(pipe.as_raw_handle(), SE_KERNEL_OBJECT)
 }
 
 pub async fn connect(dir: &Path) -> io::Result<ClientStream> {
@@ -315,24 +368,18 @@ fn protect_dir(dir: &File, sid: &str) -> io::Result<()> {
 }
 
 pub(crate) fn lock_file(lock: &File) -> io::Result<()> {
+    lock_byte(lock, LOCKFILE_EXCLUSIVE_LOCK)
+}
+
+fn lock_byte(lock: &File, flags: LOCK_FILE_FLAGS) -> io::Result<()> {
     let mut overlapped = OVERLAPPED::default();
     // Windows locks are mandatory. Lock the fixed byte at 4 GiB, well beyond
     // the 32-byte key and read_to_end's read buffer, so id/agent can still read it.
     overlapped.Anonymous.Anonymous.Offset = 0;
     overlapped.Anonymous.Anonymous.OffsetHigh = 1;
     // SAFETY: lock owns a synchronous file handle and overlapped remains alive
-    // for this blocking call. Closing lock releases the byte-range lock.
-    if unsafe {
-        LockFileEx(
-            lock.as_raw_handle(),
-            LOCKFILE_EXCLUSIVE_LOCK,
-            0,
-            1,
-            0,
-            &mut overlapped,
-        )
-    } == 0
-    {
+    // for this synchronous call. Closing lock releases the byte-range lock.
+    if unsafe { LockFileEx(lock.as_raw_handle(), flags, 0, 1, 0, &mut overlapped) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -563,6 +610,22 @@ mod tests {
     }
 
     #[test]
+    fn names_another_account_that_holds_the_pipe_name() {
+        let running = "agent is already running";
+        assert_eq!(in_use(None, "S-1-5-21-1").to_string(), running);
+        assert_eq!(
+            in_use(Some("S-1-5-21-1"), "S-1-5-21-1").to_string(),
+            running
+        );
+        let other = in_use(Some("S-1-5-21-2"), "S-1-5-21-1");
+        assert_eq!(other.kind(), io::ErrorKind::AddrInUse);
+        assert!(
+            other.to_string().contains("another account (S-1-5-21-2)"),
+            "{other}"
+        );
+    }
+
+    #[test]
     fn protects_the_directory_and_its_new_files_inherit_that() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("herdvia");
@@ -635,5 +698,24 @@ mod tests {
             private_file(&temp.path().join("none")).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn agent_lock_follows_the_directory_not_its_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        prepare_dir(&dir).unwrap();
+        let lock = lock_agent(&dir).unwrap();
+        let spelled = dir.to_string_lossy();
+        for other in [
+            PathBuf::from(spelled.to_uppercase()),
+            PathBuf::from(format!("{spelled}\\")),
+        ] {
+            let err = lock_agent(&other).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{}", other.display());
+            assert_eq!(err.to_string(), "agent is already running");
+        }
+        drop(lock);
+        lock_agent(&dir).unwrap();
     }
 }
