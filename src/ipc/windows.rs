@@ -485,10 +485,11 @@ fn reopen(file: &File, path: &Path, access: u32) -> io::Result<File> {
 }
 
 /// The volume and file index, which name one entry. `file` needs FILE_READ_ATTRIBUTES.
-fn file_id(file: &File) -> io::Result<(u32, u32, u32)> {
+pub(crate) fn file_id(file: impl AsHandle) -> io::Result<(u32, u32, u32)> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: file owns a live handle; info is a writable output of the right type.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+    // SAFETY: file borrows a live handle (a null one fails); info is a writable output of the
+    // right type.
+    if unsafe { GetFileInformationByHandle(file.as_handle().as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok((
