@@ -35,7 +35,8 @@ use windows_sys::Win32::{
         },
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
-        TOKEN_QUERY, TOKEN_USER, TokenUser,
+        TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER, TokenElevationType, TokenElevationTypeFull,
+        TokenUser,
     },
     Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
@@ -243,15 +244,50 @@ pub fn reject_root() -> io::Result<()> {
     Ok(())
 }
 
-/// Refuses an elevated administrator token, as Unix refuses root.
+/// Refuses the elevated half of a token that UAC split, as Unix refuses root. Without UAC (or
+/// as the built-in Administrator) the token is always elevated and has no normal half to run
+/// from instead, so the agent runs.
 pub fn reject_elevated() -> io::Result<()> {
-    if crate::launchd::elevated()? {
+    if refused_elevation(elevation_type()?) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "herdvia agent must not run as administrator; run it from a normal terminal without administrator privileges",
         ));
     }
     Ok(())
+}
+
+fn refused_elevation(kind: TOKEN_ELEVATION_TYPE) -> bool {
+    kind == TokenElevationTypeFull
+}
+
+/// The elevation type of this process's token: default, full or limited.
+fn elevation_type() -> io::Result<TOKEN_ELEVATION_TYPE> {
+    let mut token = null_mut();
+    // SAFETY: GetCurrentProcess needs no arguments; token is writable and only
+    // TOKEN_QUERY access is requested for the current process's token.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcessToken succeeded and transfers one owned handle to us.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut kind: TOKEN_ELEVATION_TYPE = 0;
+    let mut returned = 0;
+    // SAFETY: token is live; kind is an aligned, writable TOKEN_ELEVATION_TYPE
+    // of the supplied size, and returned is a writable output pointer.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenElevationType,
+            (&mut kind as *mut TOKEN_ELEVATION_TYPE).cast(),
+            size_of_val(&kind) as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(kind)
 }
 
 const ADMINISTRATORS: &str = "S-1-5-32-544";
@@ -770,10 +806,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_elevated_token_only() {
+    fn rejects_only_the_elevated_half_of_a_split_token() {
+        use windows_sys::Win32::Security::{TokenElevationTypeDefault, TokenElevationTypeLimited};
+        assert!(refused_elevation(TokenElevationTypeFull));
+        // Without UAC, as the built-in Administrator, or as a standard user.
+        assert!(!refused_elevation(TokenElevationTypeDefault));
+        assert!(!refused_elevation(TokenElevationTypeLimited));
         assert_eq!(
             reject_elevated().is_err(),
-            crate::launchd::elevated().unwrap()
+            elevation_type().unwrap() == TokenElevationTypeFull
         );
     }
 }
