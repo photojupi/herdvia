@@ -318,22 +318,21 @@ fn due(last: Option<u64>, now: u64) -> bool {
 
 /// Cuts the log at `path` down to its last 5 MiB if it is over 10 MiB. Then drops lines older
 /// than 180 days if 24 hours of wall-clock time have passed since the `last` such trim, or if
-/// there has been none.
+/// there has been none. A failed trim is tried again at the next check.
 pub(crate) async fn trim_if_due(path: &Path, last: &mut Option<u64>) {
     let now = unix_now();
     let expire = due(*last, now);
-    if expire {
-        *last = Some(now);
-    }
     let file = path.to_path_buf();
     let result = tokio::task::spawn_blocking(move || trim(&file, now, expire))
         .await
         .unwrap_or_else(|err| Err(io::Error::other(err)));
-    if let Err(err) = result {
-        line(
+    match result {
+        Ok(()) if expire => *last = Some(now),
+        Ok(()) => {}
+        Err(err) => line(
             Kind::Other,
             &format!("cannot remove old lines from {}: {err}", path.display()),
-        );
+        ),
     }
 }
 
@@ -761,5 +760,20 @@ mod tests {
         trim(&path, CUTOFF, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), data);
         trim(&dir.path().join("missing.log"), CUTOFF, true).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_trim_by_age_is_tried_again_at_the_next_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut last = None;
+        // A directory cannot be opened for writing.
+        trim_if_due(dir.path(), &mut last).await;
+        assert_eq!(last, None);
+        // A missing log needs no trim, which counts as done.
+        trim_if_due(&dir.path().join("herdvia.log"), &mut last).await;
+        let done = last.unwrap();
+        assert!(done.abs_diff(unix_now()) < 60);
+        trim_if_due(dir.path(), &mut last).await;
+        assert_eq!(last, Some(done));
     }
 }
