@@ -30,6 +30,8 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
 `id`, `allow`, `revoke`, `status`, `agent install`은 M3 이후에 넣는다.
 
 데이터 폴더는 환경 변수 `HERDVIA_DIR`이 있으면 그 값, 없으면 OS 규약의 사용자별 로컬 데이터 폴더다.
+`HERDVIA_DIR`은 절대 경로여야 한다. 빈 값이나 상대 경로는 명령을 실행한 폴더에 따라 가리키는 곳이 달라지므로
+`HERDVIA_DIR must be an absolute path, not "<값>"`으로 거부한다(255).
 Unix에서는 폴더 권한 0700, 소켓 `agent.sock` 권한 0600이다.
 
 ## 프레임 형식
@@ -98,6 +100,11 @@ M2에는 네트워크가 없었다. 에이전트는 OPEN의 피어 이름과 무
 기본 설정(`presets::N0`)으로 n0의 공개 중계 서버와 주소 조회를 쓴다. 사용자 설정 옵션은 두지 않는다.
 ALPN은 `herdvia/1`이다.
 
+주소 조회에는 EndpointId와 홈 릴레이 URL만 게시한다. 다만 iroh는 핸드셰이크 직후 연결을 등록하면서 이 PC의 직접 연결용 주소 후보
+(LAN 주소, 포트 매핑된 공인 주소)를 상대에게 보낼 수 있고, herdvia의 거부 훅은 그 뒤에 돈다. 그래서 EndpointId를 아는 미인증 접속자도
+이 PC의 IP 주소를 알 수 있다(릴레이 없는 구성의 실험에서만 확인했다). 훅보다 먼저 EndpointId로 거를 수단이 없으므로,
+README에서 EndpointId를 공개 게시하지 말라고 안내한다.
+
 ### 명령
 
 | 명령 | 역할 |
@@ -111,20 +118,43 @@ ALPN은 `herdvia/1`이다.
 - 이름은 `[A-Za-z0-9._-]{1,32}`다.
 - inbound: 그 피어가 이 PC에서 명령을 실행해도 된다. outbound: 이 PC가 그 피어로 걸어도 된다.
 - `allow`, `revoke`는 에이전트가 떠 있으면 즉시 반영되고, 떠 있지 않아도 파일에는 반영된다.
+- 성공하면 `allow`는 `<이름> <EndpointId> <in|out|both>`(accept와 같은 형식), `revoke`는 `revoked <이름> <EndpointId>` 한 줄을 표준 출력에 쓴다.
+  에이전트 reload까지 성공한 뒤에 쓴다. 무엇이 바뀌었는지 눈으로 확인하게 하려는 것이다.
+- 없는 이름을 `revoke`하면 `no peer named <이름>`으로 실패하고 파일을 건드리지 않는다. 오타로 아무것도 지우지 않았는데 성공으로 보이면 안 되기 때문이다.
+- EndpointId 하나에는 이름 하나만 둔다. `allow`와 `accept`는 다른 이름에 이미 있는 EndpointId를
+  `EndpointId <id> is already registered as peer <이름>; revoke it first or use that name`으로 거부한다.
+  권한은 EndpointId로 판정하므로, 같은 키가 두 이름으로 있으면 한 이름을 revoke해도 다른 이름의 권한으로 계속 연결된다.
+  키가 새었을 때 revoke 한 번으로 끊기지 않는 것을 막으려고 별칭을 허용에서 거부로 바꿨다.
+  이전 버전이 쓴 중복 파일도 그대로 읽는다. 그중 한 이름을 revoke하면 성공하되 표준 오류에
+  `warning: <EndpointId> is still allowed as peer <남은 이름들>; revoke each of those names to remove it`을 쓴다.
+  그런 파일에서 중복된 이름 하나의 권한만 바꾸는 `allow`·`accept`도 거부되므로, 먼저 revoke로 정리해야 한다.
 - `status`는 에이전트가 떠 있어야 한다. 없으면 한 줄을 stderr에 쓰고 255로 끝낸다.
 
 ### 파일 (데이터 폴더 안)
 
 - `secret.key`: 비밀키. 권한 0600. 권한이 더 넓으면 에이전트와 `id`는 시작을 거부한다.
 - `peers`: 피어 목록. 권한 0600. 한 줄에 `이름 EndpointId 권한`(권한은 `in`, `out`, `both`).
+- macOS에서는 데이터 폴더(chmod 700 뒤), `secret.key`, `peers`에 allow 항목이 있는 확장 ACL이 있으면
+  `<경로> has an access control list (ACL) entry that allows access; remove the ACL with chmod -N '<경로>'`로 거부한다.
+  ACL은 권한 비트와 따로 접근을 허용하고, 상속 ACL이 걸린 폴더에서는 새로 만든 `secret.key`도 그 ACL을 받기 때문이다.
+  deny 항목만 있는 ACL은 받는다. Linux는 ACL을 검사하지 않는다.
 
 ### 에이전트
 
-- root로 실행하면 거부한다.
+- root로 실행하면 거부한다. Windows의 관리자 실행 거부는 M5a에 적는다.
+- 시작 순서: root·관리자 거부, 데이터 폴더 준비와 키·`peers` 읽기, iroh 바인드, 로컬 통신 통로 열기, 그 직후 `peers` 다시 읽기.
+  `allow`·`revoke`는 통로가 없으면 에이전트가 없다고 보고 파일만 바꾼다. 그래서 처음 읽은 뒤 통로가 열리기 전에 한 변경은
+  다시 읽지 않으면 반영되지 않는다(revoke한 피어가 계속 허용된다). 통로가 열린 뒤의 변경은 reload 요청으로 온다.
+  다시 읽기가 실패하면(`peers` 손상, 권한 문제) 시작이 실패한다.
+- QUIC 전송 설정은 iroh 기본값에서 세 가지만 바꾼다. 상대가 여는 단방향 스트림 0개, 동시 양방향 스트림 16개(기본 100), 데이터그램 수신 끔.
+  herdvia는 양방향 스트림만 쓰므로, 연결된 피어(outbound만 허용한 피어 포함)가 아무도 받지 않는 스트림이나 데이터그램에 데이터를 쌓아 두지 못하게 한다.
+  한 피어에 via 세션 16개가 열려 있으면 17번째는 자리를 기다리다 거는 쪽의 5초 제한에 걸려 끝날 수 있다.
 - **받는 쪽**: 연결의 상대 EndpointId가 inbound 피어가 아니면 연결을 끊는다. 처음 본 피어를 자동으로 믿지 않는다.
   끊은 시도는 `pending`을 위해 메모리에 기록만 한다(아래 "피어 등록: pending / accept").
   허용된 연결의 양방향 스트림 하나마다 M2의 실행 쪽 함수를 그대로 돌린다(네트워크 OPEN의 payload는 줄).
   스트림을 받을 때마다 권한을 다시 확인한다.
+  스트림이 열리고 10초 안에 첫 OPEN이 오지 않으면 그 스트림을 끝낸다(`no OPEN within 10 seconds`). 아무것도 보내지 않는 스트림이 자리를 계속 차지하지 않게 하려는 것이다.
+  정상 호출 쪽은 스트림을 열자마자 OPEN을 보내므로 영향이 없다.
 - **거는 쪽**: via의 OPEN에 적힌 이름이 outbound 피어가 아니면 ERROR로 거부한다.
   outbound 피어와는 연결을 미리 맺어 두고, 실패하거나 끊기면 다시 건다. 간격은 1초에서 두 배씩 늘려 최대 30초이고,
   연결이 10초 이상 유지됐다가 끊긴 경우에만 1초로 되돌린다. 받는 쪽이 핸드셰이크 직후 403으로 거부해도 connect는 성공으로 돌아오므로,
@@ -132,14 +162,41 @@ ALPN은 `herdvia/1`이다.
   그렇게 곧바로 거부당하는 연결도 잠깐은 연결 목록에 들어가므로, 거는 쪽 `status`는 그동안 `connected`를 잠깐 보일 수 있다.
   연결 확인은 받는 쪽 `status`로 하는 편이 확실하다.
   via 요청 때 연결이 없으면 최대 5초 기다리고, 안 되면 ERROR를 돌려준다.
+  연결, open_bi, OPEN 쓰기, 5초 제한 중 하나로 실패해 보내는 ERROR에는 iroh 오류 문구(상대가 정한 종료 사유가 들어갈 수 있다)가 들어가므로,
+  로그 줄과 같은 정화(제어 문자 이스케이프, 300자 제한)를 거친다. via는 이 문구를 표준 오류에 쓴다.
   연결되면 스트림을 열어 OPEN(줄)을 쓰고, 이후 프레임은 양방향으로 그대로 옮긴다.
 - via가 끊기면 스트림을 리셋한다. 스트림이나 연결이 끊기면 실행 쪽은 자식을 정리하고, 거는 쪽 via는 255로 끝난다.
 - 피어 목록이 바뀌면 지워졌거나 권한을 잃은 피어의 연결과 실행 중인 자식을 즉시 정리한다.
+  정리하는 것은 통로와 통로가 띄운 자식(Unix는 프로세스 그룹, Windows는 직접 자식)뿐이다. 그 피어가 이미 연 원격 터미널(herdr-core 안에 남는다),
+  그 안에서 떼어 낸 프로세스, 이미 바꾼 것은 되돌리지 않는다. README의 보안 모델에 그렇게 적고, 침해가 의심될 때 볼 것(Herdr 세션, 로그의 세션 기록)을 안내한다.
 - iroh의 로그는 기본으로 끈다. 에이전트의 로그에는 접속·거부·종료 같은 사건만 남기고 스트림 내용은 남기지 않는다.
 - 에이전트가 실행 중에 쓰는 로그 줄은 UTC 시각으로 시작한다(`2026-11-14T14:17:03Z herdvia: connected <id>`).
   시작하다 실패할 때의 마지막 오류 줄은 CLI와 같은 출력이라 시각이 없다.
-- 자동 시작의 로그 파일(M4, M5b)에서는 180일이 지난 줄을 지운다. 데이터 폴더 잠금을 얻은 직후 한 번, 그 뒤 24시간마다 한다.
-  macOS의 타이머는 잠자기 동안 멈추므로 한 시간마다 깨어나 벽시계로 24시간이 지났는지 본다.
+- 실행 중의 로그 줄은 모두 한 함수(`log::line`)를 거친다. 형식은 그대로 `<UTC 시각> herdvia: <내용>`이고, 내용의 제어 문자(`char::is_control`)는
+  Rust `escape_default` 표기(`\n`, `\r`, `\t`, `\u{1b}`, `\u{0}`, `\u{7f}`, `\u{85}` 등)로 바꿔 호출 한 번이 반드시 한 줄이 되게 한다.
+  이스케이프 뒤 300자(char)를 넘으면 300자에서 자르고 `... [truncated, <N> bytes]`(N은 정화 전 내용의 바이트 수)를 붙인다.
+  QUIC 종료 사유나 거부한 OPEN처럼 원격이 정하는 글이 가짜 줄을 만들거나 한 줄로 로그를 채우지 못하게 하려는 것이다.
+- 속도 제한은 단조 시계 기준의 토큰 버킷 둘이다. 미인증 버킷(`rejected peer <id>`, `incoming connection failed: <오류>`)은 한꺼번에 30줄, 그 뒤 10초에 1줄,
+  나머지 줄의 버킷은 한꺼번에 60줄, 그 뒤 1초에 1줄이다. 버킷이 차 있는 동안에는 토큰이 더 쌓이지 않는다.
+  EndpointId만 알면 누구나 미인증 줄을 만들 수 있으므로, 버킷을 나눠 그쪽 홍수가 인가된 피어의 줄을 밀어내지 못하게 한다.
+  버킷이 비면 그 줄을 버리고 종류별로 센다. 그 종류의 다음 줄이 허용될 때 같은 시각으로 바로 앞에
+  `suppressed <N> log lines about unauthenticated connections` 또는 `suppressed <N> other log lines`(N이 1이면 `line`)를 한 번 쓰고 수를 0으로 돌린다.
+  요약 줄은 토큰을 쓰지 않는다. 그 종류의 줄이 더 오지 않으면 요약도 나오지 않는다.
+- 받는 쪽 훅이 거부한 연결은 `rejected peer <id>` 한 줄만 남긴다. 그 밖의 들어오는 핸드셰이크 실패는 `incoming connection failed: <오류>`다.
+- 세션 기록: 인가된 피어의 스트림이 줄 검사를 통과해 명령을 실행하기 직전에 `session started: <이름> (fingerprint <지문>), herdr session <세션>`을 남긴다
+  (세션 이름이 없으면 `, herdr session ...`이 빠진다. 이름은 같은 EndpointId를 가진 첫 inbound 항목의 이름이다).
+  끝나면 `session ended: <같은 설명>: <사유>`를 남긴다. 사유는 정상 종료면 `exit code <n>`(Unix 시그널 종료는 128+n), 원격이 스트림을 멈추면
+  `the peer stopped the stream`, 연결이 닫히면 그 연결 오류 문구(이 PC의 revoke·권한 변경이면 `closed`), 그 밖에는 실행 중 오류 문구다.
+  끝 줄은 스트림 태스크가 가진 guard의 Drop에서 쓰므로, 연결이 닫혀 태스크가 중단돼도 남는다. 에이전트가 멈추는 중이면(TERM, Ctrl+C 등) `the agent stopped`,
+  사유도 연결 종료 사유도 없으면 `connection closed`다. 종료할 때는 태스크를 중단한 뒤 끝 줄이 쓰이도록 최대 1초 기다리고 엔드포인트를 닫는다.
+  침해가 의심될 때 누가 언제 세션을 열었는지 볼 수 있게 하려는 것이고, 스트림 내용은 남기지 않는다.
+  명령 실행 전에 오류로 끝난 스트림은 예전처럼 `stream from <id> ended: <오류>`다. 실행 전에 연결이 닫히거나 스트림이 멈춘 경우와
+  Windows에서 아무것도 실행하지 않는 응답(Unix 줄 탐색, herdr-core 미설치)은 줄을 남기지 않는다.
+- 자동 시작의 로그 파일(M4, M5b)은 크기와 기간으로 관리한다. 시작 직후(로컬 통신 통로를 연 뒤)와 그 뒤 한 시간마다 크기를 본다.
+  10 MiB(10*1024*1024 바이트)를 넘으면 끝의 5 MiB만 읽어 그 안의 온전한 줄만 남기고 같은 파일을 제자리에서 다시 쓴다(잘린 첫 줄은 버리고,
+  그 안에 개행이 없으면 빈 파일이 된다). 기간만으로는 줄이 쏟아질 때 며칠 안에 디스크가 차는 것을 막지 못하기 때문이다.
+  크기 처리 뒤, 24시간이 지났을 때만(시작 직후 한 번 포함) 180일이 지난 줄을 지운다.
+  macOS의 타이머는 잠자기 동안 멈추므로 24시간을 기다리지 않고 한 시간마다 깨어나 벽시계로 24시간이 지났는지 본다.
   앞에서부터 읽어, 180일 안의 시각이 붙은 첫 줄보다 앞에 있는 마지막 만료 줄까지 지운다. 시각이 없는 줄(이전 버전이 쓴 줄, 시작 실패의 오류 줄 등)은 그다음 시각이 붙은 줄을 따른다.
   지울 것이 없으면 쓰지 않는다. 있으면 남길 내용을 파일 앞으로 옮겨 쓰고 길이를 줄인다. 파일을 새로 만들지 않으므로 이어 쓰는 핸들이 그대로 유효하다.
   고쳐 쓰는 동안 자기 표준 오류를 잠가 그사이의 로그 줄을 잃지 않는다. 실패하면 시각 붙은 한 줄을 남기고 다음 차례에 다시 한다.
@@ -158,6 +215,8 @@ tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 
 
 초대 코드, 자체 중계 서버 설정, 자동 시작, Windows, 키 교체, `hc machine add` 자동 실행.
 자동 시작은 M4, Windows는 M5에서 넣었다. 초대 코드는 지금도 없고, 대신 나중에 `pending`/`accept`를 넣었다(아래).
+키 교체 명령도 없다. 손으로 하는 순서(모든 피어에서 이 PC의 옛 항목을 revoke, 에이전트 중지, `secret.key` 삭제, `herdvia id`,
+`agent install`, 다시 페어링)를 README에 적는다. 키를 백업에서 복원했거나 다른 PC로 옮긴 경우도 교체 대상이다.
 
 ## M4: macOS 자동 시작
 
@@ -170,7 +229,7 @@ tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 
   시스템 전체 데몬으로는 등록하지 않는다(herdr-core가 사용자 로그인 세션에서 돌아야 한다).
 - 실행 경로는 `install`을 실행한 그 실행 파일의 절대 경로다. 임시 폴더나 빌드 폴더(`target/`) 안에서 실행하면
   경고를 stderr에 쓰되 등록은 한다.
-- `RunAtLoad`와 `KeepAlive`를 켠다. 로그는 `~/Library/Logs/herdvia.log`에 표준 출력·오류를 모은다. 180일이 지난 줄은 에이전트가 지운다(M3).
+- `RunAtLoad`와 `KeepAlive`를 켠다. 로그는 `~/Library/Logs/herdvia.log`에 표준 출력·오류를 모은다. 에이전트가 M3의 규칙(10 MiB, 180일)으로 정리한다.
 - plist의 `EnvironmentVariables`에 `PATH`를 넣는다. 값은 `$HOME/.local/bin`을 앞에 둔 기본 경로다
   (connect 줄은 `$HOME/.local/bin/herdr-core`로도 찾으므로 필수는 아니다).
 - `HERDVIA_DIR`이 설정된 채 `install`하면 거부한다. 자동 시작은 기본 데이터 폴더만 쓴다.
@@ -199,12 +258,19 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 ### M5a 설계
 
 - 대상은 `x86_64-pc-windows-gnu`(맥에서 mingw-w64로 교차 빌드)다. 공개 배포용 빌드 방식은 M7에서 정한다.
-- 운영체제별 코드는 `ipc`, `exec`, `template`의 줄 판정, 데이터 폴더, root 거부에만 둔다.
+- 운영체제별 코드는 `ipc`, `exec`, `template`의 줄 판정, 데이터 폴더(권한 검사 포함), root·관리자 거부에만 둔다.
   프레임, 네트워크, 피어 목록, via·에이전트의 흐름은 공유한다.
 - 데이터 폴더: `%APPDATA%\herdvia`. `HERDVIA_DIR`이 있으면 그것을 쓴다(Unix와 같다).
 - 로컬 통신: 이름 있는 파이프 `\\.\pipe\herdvia-<사용자 SID>`. `HERDVIA_DIR`이 있으면 그 경로의 해시를 이름 끝에 붙여 구분한다.
   - 파이프의 보안 설정은 현재 사용자 SID에만 전체 권한을 준다. 원격 클라이언트는 거부한다.
-  - 에이전트는 첫 인스턴스로만 파이프를 만든다(이미 있으면 "agent is already running"). 이것이 단일 실행 보장이다.
+  - 에이전트는 첫 인스턴스로만 파이프를 만든다. 다만 파이프 이름은 `HERDVIA_DIR`의 표기를 따르므로, 같은 폴더를 다른 표기
+    (대소문자, 끝의 역슬래시, 기본 경로를 `HERDVIA_DIR`로 명시)로 가리키면 이름이 달라져 두 에이전트가 같은 `secret.key`로 뜰 수 있었다.
+    그래서 단일 실행은 데이터 폴더의 `agent.lock`으로 보장한다. 에이전트는 이 파일을 만들고(지우지 않는다) 사는 동안 `LockFileEx` 배타 잠금을 쥔다
+    (즉시 실패 방식. FILE_SHARE_DELETE 없이 열어 쥔 동안 이름을 지울 수 없다). 잠겨 있으면 "agent is already running"이다.
+    파이프 이름은 바꾸지 않았으므로 via와 다른 버전의 에이전트도 같은 이름을 쓴다.
+  - 첫 파이프 인스턴스를 만들지 못하면(ERROR_ACCESS_DENIED) 그 이름에 익명 클라이언트(SECURITY_ANONYMOUS)로 접속해 소유자 SID를 읽는다.
+    다른 계정이면 `another account (<SID>) holds this agent's pipe name; the agent cannot start until that account's process closes it`,
+    자기 것이거나 알 수 없으면 "agent is already running"이다. 익명으로 접속하는 것은 남의 서버가 이 사용자를 가장하지 못하게 하려는 것이다.
   - via·관리 명령은 접속한 파이프의 소유자 SID가 자신과 같은지 확인하고, 다르면 접속을 끊고 오류를 낸다.
   - 파이프가 없으면 Unix의 "에이전트 없음"과 같은 오류·종료 코드(255)를 낸다.
 - 실행 쪽(Windows 에이전트가 OPEN을 받았을 때):
@@ -219,10 +285,25 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
     Job Object는 쓰지 않는다. 에이전트가 죽으면 자식은 stdin이 닫혀 스스로 끝난다(M1 실측: stdin EOF 후 약 0.1초).
   - EXIT 코드는 자식의 종료 코드 그대로다.
 - Unix 에이전트는 Windows 줄을 계속 거부한다.
-- root 거부는 Unix에만 있다. Windows에서는 검사하지 않는다.
-- `secret.key`와 `peers`는 사용자 프로필의 기본 권한을 그대로 쓴다(별도 ACL을 걸지 않는다).
+- Windows에는 root 거부 대신 관리자 실행 거부가 있다. `herdvia agent`(`--log` 포함)는 토큰의 `TokenElevationType`이 `TokenElevationTypeFull`
+  (UAC로 분리된 토큰의 상승된 쪽, 즉 "관리자 권한으로 실행"한 터미널)이면
+  `herdvia agent must not run as administrator; run it from a normal terminal without administrator privileges`로 거부한다(`--log`면 이 줄이 로그 파일에 남는다).
+  상승된 에이전트가 띄운 herdr-core는 높은 무결성 수준으로 도는데, 같은 사용자의 보통 무결성 프로세스가 파이프로 그것을 부릴 수 있기 때문이다.
+  `TokenElevationTypeDefault`(UAC 꺼짐, 기본 제공 Administrator, 일반 사용자)와 `Limited`는 허용한다. UAC가 꺼졌거나 기본 제공 Administrator면
+  토큰이 늘 상승돼 있고 대신 쓸 보통 토큰이 없어서, 막으면 에이전트를 아예 띄울 수 없다. 다른 명령은 막지 않는다(`agent install`은 M5b).
+- 데이터 폴더는 `chmod 700`에 해당하는 검사와 설정을 한다(`prepare_dir`, 키를 읽는 모든 명령). 폴더를 만든 뒤 재분석 지점(정션, 심볼릭 링크 등)이면
+  `data path must be a real directory, not a junction, symbolic link, or other reparse point`로, 소유자가 현재 사용자, Administrators(S-1-5-32-544),
+  LocalSystem(S-1-5-18)이 아니면 `data directory must be owned by this user, Administrators, or SYSTEM, not <SID>; use a directory that this user created`로 거부한다.
+  소유자는 언제든 DACL을 되돌릴 수 있으므로 소유자부터 본다. Administrators를 받는 것은 상승된 사용자가 만든 객체의 소유자가 Administrators이기 때문이다.
+  통과하면 매번 보호 DACL `D:P(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`를 건다. 상위 폴더에서 상속받지 않고,
+  안에 만드는 파일(임시 파일로 쓰는 `secret.key`, `peers` 포함)이 상속한다. 검사부터 설정까지 같은 핸들로 해서 경로를 다시 여는 사이의 바꿔치기를 피한다.
+  프로필의 기본 권한에 기대지 않는 것은 `HERDVIA_DIR`이 프로필 밖을 가리켜도 같은 보호를 받게 하려는 것이다.
+- `secret.key`와 `peers`는 재분석 지점이나 일반 파일이 아닌 것을 `<경로> must be a regular file, not a directory, link, or other reparse point`로,
+  소유자가 위 셋이 아니면 `<경로> must be owned by this user, Administrators, or SYSTEM, not <SID>`로 거부한다. 파일이 없을 때의 동작(키 생성, 빈 목록)은 그대로다.
 - `agent install`/`uninstall`은 M5a의 Windows에서 "지원하지 않음" 오류를 낸다.
 - 기존 통합 테스트(`tests/`)는 Unix 전용으로 둔다. Windows 쪽은 줄 판정 등 순수 로직만 단위 테스트한다.
+  CI의 windows 잡이 windows-latest에서 MSVC 툴체인으로 단위 테스트(`cargo test --locked --lib --bins`)를 돌린다.
+  릴리스는 여전히 Linux에서 `x86_64-pc-windows-gnu`로 교차 빌드한다(gnu 디버그 빌드는 링크가 실패한다). 그래서 링크·ABI 차이는 이 잡으로 잡지 못한다.
 
 ### M5a 실기 결과 (Windows 11 10.0.26300, hc 0.1.21)
 
@@ -243,12 +324,13 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   값 `conhost.exe --headless "<실행 파일 절대 경로>" agent --log`.
   `conhost.exe --headless`는 콘솔 창을 만들지 않고 콘솔 프로그램을 띄운다. 서비스나 "로그온 여부와 무관" 작업으로는 등록하지 않는다
   (herdr-core가 사용자의 대화형 세션에서 돌아야 한다).
-- `agent --log`는 Windows 전용이다. 표준 출력·오류를 `%LOCALAPPDATA%\herdvia\herdvia.log`에 이어 쓰도록 바꾼 뒤 평소의 `agent`로 동작한다. 이 파일에서 180일이 지난 줄을 지운다(M3). `--log` 없는 `agent`는 지우지 않는다.
+- `agent --log`는 Windows 전용이다. 표준 출력·오류를 `%LOCALAPPDATA%\herdvia\herdvia.log`에 이어 쓰도록 바꾼 뒤 평소의 `agent`로 동작한다. 이 파일을 M3의 규칙(10 MiB, 180일)으로 정리한다. `--log` 없는 `agent`는 정리하지 않는다.
 - `install`은 등록한 뒤 같은 명령을 콘솔 창 없이, 자신과 분리된 프로세스로 바로 띄운다(재로그온을 기다리지 않는다).
   시작한 에이전트의 파이프가 5초 안에 생기지 않으면 오류를 낸다(등록은 남긴다. 오류 문구에 로그 경로를 적는다).
 - 실행 경로는 `install`을 실행한 그 실행 파일이다. 임시 폴더나 `target` 안이면 경고하되 등록은 한다(macOS와 같다).
 - `HERDVIA_DIR`이 설정된 채 `install`하면 거부한다(macOS와 같다).
 - `install`은 변경 전에 `TokenElevation`을 검사해 상승된 관리자 토큰이면 거부하고, 관리자 권한이 아닌 일반 PowerShell에서 실행하도록 안내한다(`uninstall`에는 적용하지 않는다).
+  에이전트(M5a)와 달리 UAC가 꺼진 상승 토큰도 거부한다. doctor의 관리자 경고도 이 `install` 기준이다.
 - `install`은 등록 전에 실행 파일 경로에 `%`가 있으면 거부한다(conhost의 환경 변수 확장 방지). Run 명령줄은 NUL을 제외하고 최대 259 UTF-16 코드 단위다.
 - 에이전트가 이미 떠 있을 때의 `install`: Run 값이 이미 있으면(재설치) 떠 있는 에이전트를 끝내고 새로 등록·시작한다.
   Run 값이 없으면(수동 실행 중) 실패한다고 알리고 아무것도 바꾸지 않는다.
@@ -256,7 +338,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 떠 있는 에이전트를 끝내는 방법: 파이프에 접속해 소유자 SID를 확인한 뒤 `GetNamedPipeServerProcessId`로 얻은 프로세스를 종료하고,
   파이프가 사라질 때까지 최대 5초 기다린다.
 - 넣지 않는 것: 에이전트가 죽었을 때의 자동 재시작(다음 로그온까지 꺼져 있다). M6 실사용 결과를 보고 정한다.
-  로그 파일은 크기 대신 기간으로 관리한다. 180일이 지난 줄을 지운다(M3).
+  로그 파일은 크기와 기간으로 관리한다(10 MiB, 180일. M3).
 
 ## 피어 등록: pending / accept
 
@@ -301,12 +383,16 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 지문은 hex 16자다. 4자마다 `-`가 있는 19자 형태(전부 있거나 전부 없거나)도 받고, 대소문자를 가리지 않는다. 다른 화면을 보고 손으로 치는 값이기 때문이다.
 - `--outbound`는 받지 않는다. 대기 목록은 들어오는 시도이므로 inbound를 줄 때만 쓸모가 있다.
 - 에이전트에서 `pending` 목록을 받아 EndpointId 앞 16자가 지문과 같은 항목을 찾는다.
-  - 0개: 오류. 상대가 이 PC를 `--outbound`로 allow하고 에이전트를 띄웠는지 확인하라고 안내한다.
+  - 목록이 상한(16개)에 이르렀으면 일치 여부와 관계없이 거부한다. 지문 대조보다 먼저 본다.
+    `the list of connection attempts is full (someone may be flooding this PC with connection attempts); use herdvia allow <name> <EndpointId> --inbound with the full EndpointId`.
+    가득 찬 목록에서는 가장 오래된 항목이 밀려나므로, 누구나 시도를 쏟아부어 진짜 상대를 밀어낼 수 있기 때문이다.
+  - 0개: 오류. 상대가 이 PC를 `--outbound`로 allow하고 에이전트를 띄웠는지 확인하라고, 또는 전체 EndpointId로 `allow`하라고 안내한다.
   - 2개 이상: 오류. 전체 EndpointId로 `herdvia allow`를 쓰라고 안내한다.
   - 1개: 그 전체 EndpointId를 `allow`와 같은 경로(`peers` 파일 갱신 후 reload)로 등록하고 `<이름> <EndpointId> <in|both>` 한 줄을 쓴다.
 - 이름 충돌: 그 이름이 이미 다른 EndpointId로 등록돼 있으면 등록하지 않고 오류를 낸다(먼저 revoke하거나 다른 이름을 쓰라고 안내한다).
   `allow`는 같은 이름이면 항목을 바꾸지만, accept가 사람이 64자를 직접 보지 않은 ID로 기존 피어를 조용히 바꾸면 안 되기 때문이다.
-  같은 EndpointId로 이미 있으면 `allow`처럼 그 항목을 바꾼다. 같은 EndpointId를 다른 이름으로 등록하는 것은 `allow`처럼 막지 않는다.
+  같은 이름에 같은 EndpointId면 `allow`처럼 그 항목(권한)을 바꾼다. 같은 EndpointId가 다른 이름으로 있으면 `allow`처럼 거부한다(M3의 명령).
+  이름 충돌 검사를 먼저 한다.
 - 수락한 ID는 대기 목록에서 빠지므로, 이미 수락한 피어의 권한을 바꾸려면 `allow`를 쓴다.
 
 ### 64비트 접두사의 한계
@@ -334,6 +420,16 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - herdr-core는 설치하지 않는다. herdr-core는 Herdr의 것이고 Herdr의 설치 스크립트가 있다. 스크립트는 herdr-core가 없거나
   에이전트가 찾지 못하는 위치에 있으면 Herdr의 설치 명령(macOS에서 다른 곳에 있으면 `~/.local/bin`에 링크하는 명령)을 안내만 하고, 설치는 성공으로 끝낸다.
 - 피어 등록과 `hc machine add`도 하지 않는다.
+- 릴리스 워크플로는 다섯 자산(두 zip, `install.sh`, `install.ps1`, `SHA256SUMS`)에 GitHub 빌드 출처 증명(`actions/attest-build-provenance`, Sigstore 서명)을 붙인다.
+  사용자는 `gh attestation verify <파일> --repo photojupi/herdvia`로 확인한다. 증명은 이 저장소의 release.yml이 만든 파일임을 보일 뿐이라,
+  계정이 탈취돼 새 태그로 빌드된 릴리스도 유효한 증명을 받는다. `SHA256SUMS`는 같은 릴리스에서 받으므로 전송 손상만 잡는다. v0.1.2까지의 릴리스에는 증명이 없다.
+- 워크플로의 액션은 모두 커밋 SHA로 고정하고 버전은 주석으로 단다. 태그가 옮겨져도 다른 코드가 빌드에 들어오지 않게 하려는 것이다.
+  Dependabot은 github-actions만 매주 확인해 고정 SHA를 올리는 PR을 연다(cargo 의존성 PR은 열지 않는다).
+- 의존성 권고는 audit.yml이 매주, 수동 실행, main에서 `Cargo.lock`이 바뀔 때 `cargo audit --deny warnings`로 확인한다(unmaintained·yanked도 실패).
+  Linux 전용 빌드 도구인 paste(RUSTSEC-2024-0436)만 무시한다. 새 권고가 무관한 PR을 깨지 않도록 pull_request에는 걸지 않는다.
+- CI의 macOS 잡은 단위 테스트와, 두 에이전트를 잇지 않는 통합 테스트(이름으로 나열한다)를 PR마다 돌린다.
+  나머지 통합 테스트는 공개 n0 릴레이와 주소 조회가 필요하고 연결을 30~45초까지 기다리므로, integration.yml이 매주와 수동 실행 때 전체를 돌린다(PR 필수 검사가 아니다).
+  Windows 단위 테스트는 M5a의 windows 잡이다.
 
 ## 점검: doctor
 
@@ -350,11 +446,14 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 점검 항목(이 순서):
   1. 이 실행 파일의 버전과 경로. 임시 폴더나 `target` 아래면 warn(`agent install`이 이 경로를 기록한다. 판정은 `agent install`의 경고와 같다).
   2. 데이터 폴더. `HERDVIA_DIR`에서 왔으면 그렇다고 쓴다(자동 시작은 기본 폴더만 쓴다). 없으면 warn(`herdvia id`가 만든다).
-     디렉터리가 아니거나(Unix는 심볼릭 링크도) 다른 사용자 소유이거나 읽을 수 없으면 fail. 이 사용자 소유여도 목록을 읽거나 안을 탐색할 수 없으면 fail이다(`read_dir`와 `폴더/.` 조회로 판정하고, Unix는 `chmod 700`을 안내한다). Unix는 `agent.sock` 경로가 소켓 주소 한도를 넘으면 fail.
+     `HERDVIA_DIR`이 절대 경로가 아니면 `fail data directory: HERDVIA_DIR must be an absolute path, not "<값>"; set it to a full path, or unset it`이다.
+     디렉터리가 아니거나(폴더를 `symlink_metadata`로 보므로 심볼릭 링크도, Windows는 정션도) 다른 사용자 소유이거나 읽을 수 없으면 fail. 이 사용자 소유여도 목록을 읽거나 안을 탐색할 수 없으면 fail이다(`read_dir`와 `폴더/.` 조회로 판정하고, Unix는 `chmod 700`을 안내한다). Unix는 `agent.sock` 경로가 소켓 주소 한도를 넘으면 fail.
+     에이전트가 거부하는 폴더도 fail이고 그 오류 문구를 그대로 쓴다(`ipc::check_dir`). macOS는 allow 항목이 있는 ACL(`chmod -N` 안내),
+     Windows는 다른 소유자나 그 밖의 재분석 지점이다.
      폴더 자체가 fail이면 3, 4를 건너뛰고, 이 줄이 fail이면(소켓 경로 포함) 7~9도 건너뛴다. 원인은 이 줄에 있으므로 뒤 줄에서 틀린 안내를 하지 않는다.
-  3. `secret.key`. 없으면 warn. Unix에서 에이전트와 같은 권한 검사(이 사용자 소유, 0600 이하)에 어긋나거나 32바이트가 아니면 fail. 있으면 지문만 쓴다.
+  3. `secret.key`. 없으면 warn. 에이전트와 같은 권한 검사(Unix는 이 사용자 소유, 0600 이하, macOS는 allow ACL 없음. Windows는 링크가 아닌 일반 파일, 위 세 소유자)에 어긋나거나 32바이트가 아니면 fail. 있으면 지문만 쓴다.
   4. `peers`. 에이전트와 같은 로더로 읽는다. 형식·권한 오류는 로더의 문구를 넣어 fail(그 줄을 고치라는 안내는 형식 오류일 때만). 방향별 개수를 쓰고, 파일이 없으면 0개다.
-     권한 안내(소유자와 `chmod 600`)는 Unix에서만 쓰고, Windows에서는 이 사용자가 읽을 수 있는 일반 파일인지 보라고 쓴다. 3도 같다.
+     권한 안내(소유자와 `chmod 600`)는 Unix에서만 쓰고, Windows에서는 링크가 아니고 이 사용자가 읽을 수 있는 일반 파일인지 보라고 쓴다. 3도 같다.
   5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
      macOS는 LaunchAgent가 주는 PATH(`~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)의 실행 가능한 파일, 그 밖의 Unix는 현재 PATH와 `~/.local/bin`이다.
      macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. PATH의 상대 경로 항목은 현재 폴더 기준 절대 경로로 바꿔 찾으므로, 표시하는 경로와 링크 대상은 절대 경로다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).
