@@ -350,7 +350,7 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 
 バイナリには署名・公証（notarization）はありません。Intel Mac 用のビルド済みバイナリはないため、[ソースコードからビルド](#from-source)してください。
 
-`v0.1.2` より後に公開されたリリースファイルには、GitHub のビルド来歴証明（build provenance attestation）が付きます。[GitHub CLI](https://cli.github.com) で `gh attestation verify <ファイル> --repo photojupi/herdvia`（例: `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`）を実行すると、そのファイルがこのリポジトリのリリースワークフローでビルドされたことを確認できます。これはファイルがどこでビルドされたかを示すだけで、安全であることの保証ではありません。メンテナーのアカウントを乗っ取った者が作成したタグからビルドされたリリースも検証を通ります。`SHA256SUMS` は同じリリースから取得するため、ダウンロード中の破損は検出できますが、リリース自体の差し替えは検出できません。
+`v0.1.2` より後に公開されたリリースファイルには、GitHub のビルド来歴証明（build provenance attestation）が付きます。[GitHub CLI](https://cli.github.com) で `gh attestation verify <ファイル> --repo photojupi/herdvia --signer-workflow photojupi/herdvia/.github/workflows/release.yml` を実行してください（例: `<ファイル>` に `herdvia-macos-arm64.zip`）。このコマンドは、そのファイルの内容と完全に一致する署名付きの来歴証明があること、そしてその証明をこのリポジトリのリリースワークフロー `.github/workflows/release.yml` が作成したことを確認します（`--repo` だけでは、このリポジトリの別のワークフローが作成した証明も通ります）。これはファイルがどこでビルドされたかを示すだけで、安全であることの保証ではありません。メンテナーのアカウントを乗っ取った者が作成したタグからビルドされたリリースも検証を通ります。`SHA256SUMS` は同じリリースから取得するため、ダウンロード中の破損は検出できますが、リリース自体の差し替えは検出できません。
 
 <a id="macos-apple-silicon"></a>
 #### macOS (Apple Silicon)

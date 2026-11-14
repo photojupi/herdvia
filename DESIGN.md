@@ -454,7 +454,9 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   에이전트가 찾지 못하는 위치에 있으면 Herdr의 설치 명령(macOS에서 다른 곳에 있으면 `~/.local/bin`에 링크하는 명령)을 안내만 하고, 설치는 성공으로 끝낸다.
 - 피어 등록과 `hc machine add`도 하지 않는다.
 - 릴리스 워크플로는 다섯 자산(두 zip, `install.sh`, `install.ps1`, `SHA256SUMS`)에 GitHub 빌드 출처 증명(`actions/attest-build-provenance`, Sigstore 서명)을 붙인다.
-  사용자는 `gh attestation verify <파일> --repo photojupi/herdvia`로 확인한다. 증명은 이 저장소의 release.yml이 만든 파일임을 보일 뿐이라,
+  사용자는 `gh attestation verify <파일> --repo photojupi/herdvia --signer-workflow photojupi/herdvia/.github/workflows/release.yml`로 확인한다.
+  이 명령은 파일 내용과 일치하는 서명된 출처 증명이 있고, 그 증명을 이 저장소의 `.github/workflows/release.yml`이 만들었는지 본다.
+  `--repo`만 주면 이 저장소의 다른 워크플로가 만든 증명도 통과하므로 서명한 워크플로를 `--signer-workflow`로 고정한다. 증명은 이 저장소의 release.yml이 만든 파일임을 보일 뿐이라,
   계정이 탈취돼 새 태그로 빌드된 릴리스도 유효한 증명을 받는다. `SHA256SUMS`는 같은 릴리스에서 받으므로 전송 손상만 잡는다. v0.1.2까지의 릴리스에는 증명이 없다.
 - 워크플로의 액션은 모두 커밋 SHA로 고정하고 버전은 주석으로 단다. 태그가 옮겨져도 다른 코드가 빌드에 들어오지 않게 하려는 것이다.
   Dependabot은 github-actions만 매주 확인해 고정 SHA를 올리는 PR을 연다(cargo 의존성 PR은 열지 않는다).

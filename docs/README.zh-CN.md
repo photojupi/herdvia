@@ -350,7 +350,7 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 
 二进制文件未经代码签名或公证（notarization）。不提供 Intel Mac 预编译包，请[从源码编译](#from-source)。
 
-`v0.1.2` 之后（不含 `v0.1.2`）发布的发行文件附带 GitHub 构建来源证明（build provenance attestation）。使用 [GitHub CLI](https://cli.github.com) 运行 `gh attestation verify <文件> --repo photojupi/herdvia`（例如 `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`），即可确认该文件由本仓库的发布工作流构建。它只说明文件在哪里构建，并不保证文件安全：有人盗用维护者账号推送标签后构建的发行版同样能通过验证。`SHA256SUMS` 来自同一发行版，因此只能发现下载损坏，无法发现整个发行版被替换。
+`v0.1.2` 之后（不含 `v0.1.2`）发布的发行文件附带 GitHub 构建来源证明（build provenance attestation）。请使用 [GitHub CLI](https://cli.github.com) 运行 `gh attestation verify <文件> --repo photojupi/herdvia --signer-workflow photojupi/herdvia/.github/workflows/release.yml`（例如将 `<文件>` 换成 `herdvia-macos-arm64.zip`）。该命令检查是否存在与该文件内容完全一致的已签名来源证明，以及该证明是否由本仓库的发布工作流 `.github/workflows/release.yml` 生成（只用 `--repo` 时，本仓库其他工作流生成的证明也能通过）。它只说明文件在哪里构建，并不保证文件安全：有人盗用维护者账号推送标签后构建的发行版同样能通过验证。`SHA256SUMS` 来自同一发行版，因此只能发现下载损坏，无法发现整个发行版被替换。
 
 <a id="macos-apple-silicon"></a>
 #### macOS (Apple Silicon)

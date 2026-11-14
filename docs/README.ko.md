@@ -350,7 +350,7 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 
 실행 파일에는 코드 서명이나 공증(notarization)이 되어 있지 않습니다. Intel Mac용 미리 빌드된 바이너리는 없으므로 [소스 코드에서 빌드](#from-source)를 이용하세요.
 
-`v0.1.2` 다음 릴리스부터 릴리스 파일에 GitHub 빌드 출처 증명(build provenance attestation)이 붙습니다(`v0.1.2`까지는 없습니다). [GitHub CLI](https://cli.github.com)로 `gh attestation verify <파일> --repo photojupi/herdvia`(예: `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`)를 실행하면 그 파일이 이 저장소의 릴리스 워크플로에서 빌드되었는지 확인할 수 있습니다. 이 증명은 파일을 어디서 빌드했는지 보여 줄 뿐 안전하다는 보증은 아닙니다. 관리자 계정을 탈취한 사람이 올린 태그로 빌드한 릴리스도 통과합니다. `SHA256SUMS`는 같은 릴리스에서 받으므로 다운로드 중 손상은 잡지만 릴리스 자체가 바뀐 것은 잡지 못합니다.
+`v0.1.2` 다음 릴리스부터 릴리스 파일에 GitHub 빌드 출처 증명(build provenance attestation)이 붙습니다(`v0.1.2`까지는 없습니다). [GitHub CLI](https://cli.github.com)로 `gh attestation verify <파일> --repo photojupi/herdvia --signer-workflow photojupi/herdvia/.github/workflows/release.yml`을 실행하세요(예: `<파일>` 자리에 `herdvia-macos-arm64.zip`). 이 명령은 그 파일의 내용과 정확히 일치하는 서명된 출처 증명이 있는지, 그리고 그 증명을 이 저장소의 릴리스 워크플로 `.github/workflows/release.yml`이 만들었는지 확인합니다(`--repo`만 주면 이 저장소의 다른 워크플로가 만든 증명도 통과합니다). 이 증명은 파일을 어디서 빌드했는지 보여 줄 뿐 안전하다는 보증은 아닙니다. 관리자 계정을 탈취한 사람이 올린 태그로 빌드한 릴리스도 통과합니다. `SHA256SUMS`는 같은 릴리스에서 받으므로 다운로드 중 손상은 잡지만 릴리스 자체가 바뀐 것은 잡지 못합니다.
 
 <a id="macos-apple-silicon"></a>
 #### macOS (Apple Silicon)

@@ -343,7 +343,7 @@ Each `.zip` extracts flat (no wrapper directory) and contains the executable, `R
 
 The binaries are not code-signed or notarized. Prebuilt Intel Mac binaries are not provided; see [From source](#from-source).
 
-Release files published after `v0.1.2` come with a GitHub build provenance attestation. With the [GitHub CLI](https://cli.github.com), `gh attestation verify <file> --repo photojupi/herdvia` (for example, `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`) checks that the file was built by this repository's release workflow. It shows where a file was built, not that it is safe: a release built from a tag pushed by someone who took over the maintainer's account would also pass. `SHA256SUMS` comes from the same release, so it catches damaged downloads, not a replaced release.
+Release files published after `v0.1.2` come with a GitHub build provenance attestation. With the [GitHub CLI](https://cli.github.com), run `gh attestation verify <file> --repo photojupi/herdvia --signer-workflow photojupi/herdvia/.github/workflows/release.yml` (for example, with `herdvia-macos-arm64.zip` as `<file>`). It checks that a signed provenance attestation exists for exactly this file's contents and that it was made in this repository by the release workflow, `.github/workflows/release.yml` (with `--repo` alone, an attestation made by any other workflow in the repository would pass too). It shows where a file was built, not that it is safe: a release built from a tag pushed by someone who took over the maintainer's account would also pass. `SHA256SUMS` comes from the same release, so it catches damaged downloads, not a replaced release.
 
 #### macOS (Apple Silicon)
 
