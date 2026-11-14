@@ -1,5 +1,5 @@
 pub(super) fn pipe_name(sid: &str, directory: Option<&[u16]>) -> String {
-    let mut name = format!(r"\\.\pipe\hlink-{sid}");
+    let mut name = format!(r"\\.\pipe\herdvia-{sid}");
     if let Some(directory) = directory {
         // Fixed FNV-1a over UTF-16LE: stable across processes and Rust versions.
         // This separates paths; the SID and pipe ACL provide authentication.
@@ -22,7 +22,7 @@ mod tests {
     fn default_name_is_scoped_to_the_user_sid() {
         assert_eq!(
             pipe_name("S-1-5-21-123", None),
-            r"\\.\pipe\hlink-S-1-5-21-123"
+            r"\\.\pipe\herdvia-S-1-5-21-123"
         );
         assert_ne!(
             pipe_name("S-1-5-21-123", None),

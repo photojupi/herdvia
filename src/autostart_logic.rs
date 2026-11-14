@@ -10,7 +10,7 @@ pub(crate) fn run_command(executable: &[u16]) -> io::Result<Vec<u16>> {
     if executable.contains(&(b'%' as u16)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "executable path contains '%'; move hlink to a path without '%' to avoid conhost environment variable expansion",
+            "executable path contains '%'; move herdvia to a path without '%' to avoid conhost environment variable expansion",
         ));
     }
 
@@ -35,7 +35,7 @@ pub(crate) fn run_command(executable: &[u16]) -> io::Result<Vec<u16>> {
     if command.len() - 1 > 259 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "autostart command exceeds the Run key's 259 UTF-16 unit limit; move hlink to a shorter path",
+            "autostart command exceeds the Run key's 259 UTF-16 unit limit; move herdvia to a shorter path",
         ));
     }
     Ok(command)
@@ -51,11 +51,11 @@ pub(crate) fn install_requires_stop(registered: bool, running: bool) -> io::Resu
     Ok(running)
 }
 
-pub(crate) fn validate_install(hlink_dir_set: bool) -> io::Result<()> {
-    if hlink_dir_set {
+pub(crate) fn validate_install(herdvia_dir_set: bool) -> io::Result<()> {
+    if herdvia_dir_set {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "unset HLINK_DIR before installing autostart; it uses the default data directory",
+            "unset HERDVIA_DIR before installing autostart; it uses the default data directory",
         ));
     }
     Ok(())
@@ -89,12 +89,12 @@ mod tests {
     fn run_command_always_quotes_the_path_and_terminates_with_nul() {
         for (path, expected) in [
             (
-                r"C:\Tools\hlink.exe",
-                r#"conhost.exe --headless "C:\Tools\hlink.exe" agent --log"#,
+                r"C:\Tools\herdvia.exe",
+                r#"conhost.exe --headless "C:\Tools\herdvia.exe" agent --log"#,
             ),
             (
-                r"C:\Program Files\한글\hlink.exe",
-                r#"conhost.exe --headless "C:\Program Files\한글\hlink.exe" agent --log"#,
+                r"C:\Program Files\한글\herdvia.exe",
+                r#"conhost.exe --headless "C:\Program Files\한글\herdvia.exe" agent --log"#,
             ),
             (
                 r#"C:\Tools\a"b.exe"#,
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn run_command_rejects_percent_in_the_path() {
-        for path in [r"C:\%TEMP%\hlink.exe", r"C:\100%\hlink.exe"] {
+        for path in [r"C:\%TEMP%\herdvia.exe", r"C:\100%\herdvia.exe"] {
             assert_eq!(
                 run_command(&path.encode_utf16().collect::<Vec<_>>())
                     .unwrap_err()
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_install_rejects_any_hlink_dir_setting() {
+    fn validate_install_rejects_any_herdvia_dir_setting() {
         assert_eq!(
             validate_install(true).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn unstable_path_matches_temp_case_insensitively_at_component_boundaries() {
         for (path, temp, expected) in [
-            (r"C:\Temp\hlink.exe", r"c:\temp", true),
-            (r"C:/TEMP/nested/hlink.exe", r"c:\temp\", true),
-            (r"C:\Tempest\hlink.exe", r"c:\temp", false),
-            (r"C:\Tools\hlink.exe", "", false),
+            (r"C:\Temp\herdvia.exe", r"c:\temp", true),
+            (r"C:/TEMP/nested/herdvia.exe", r"c:\temp\", true),
+            (r"C:\Tempest\herdvia.exe", r"c:\temp", false),
+            (r"C:\Tools\herdvia.exe", "", false),
             (r"C:\Temp", r"c:\temp", true),
         ] {
             assert_eq!(unstable_path(path, temp), expected, "{path}");
@@ -227,10 +227,10 @@ mod tests {
     #[test]
     fn unstable_path_matches_target_components() {
         for (path, expected) in [
-            (r"C:\repo\target\release\hlink.exe", true),
-            (r"C:/repo/TARGET/release/hlink.exe", true),
-            (r"C:\repo\targeted\hlink.exe", false),
-            (r"C:\repo\notarget\hlink.exe", false),
+            (r"C:\repo\target\release\herdvia.exe", true),
+            (r"C:/repo/TARGET/release/herdvia.exe", true),
+            (r"C:\repo\targeted\herdvia.exe", false),
+            (r"C:\repo\notarget\herdvia.exe", false),
         ] {
             assert_eq!(unstable_path(path, r"C:\Temp"), expected, "{path}");
         }
@@ -240,18 +240,18 @@ mod tests {
     fn unstable_path_handles_unc_and_extended_paths() {
         for (path, temp, expected) in [
             (
-                r"\\server\share\Temp\hlink.exe",
+                r"\\server\share\Temp\herdvia.exe",
                 r"\\SERVER\share\temp",
                 true,
             ),
-            (r"\\?\C:\Temp\hlink.exe", r"C:\Temp", true),
-            (r"C:\Temp\hlink.exe", r"\\?\C:\Temp", true),
+            (r"\\?\C:\Temp\herdvia.exe", r"C:\Temp", true),
+            (r"C:\Temp\herdvia.exe", r"\\?\C:\Temp", true),
             (
-                r"\\?\UNC\server\share\Temp\hlink.exe",
+                r"\\?\UNC\server\share\Temp\herdvia.exe",
                 r"\\server\share\temp",
                 true,
             ),
-            (r"\\?\C:\Tempest\hlink.exe", r"C:\Temp", false),
+            (r"\\?\C:\Tempest\herdvia.exe", r"C:\Temp", false),
         ] {
             assert_eq!(unstable_path(path, temp), expected, "{path}");
         }

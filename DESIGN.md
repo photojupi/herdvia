@@ -1,4 +1,4 @@
-# hlink 설계 (가칭)
+# herdvia 설계
 
 Herdr 앱의 `hc machine add --via '<명령>' --name <이름>`에 꽂는 전송 통로다.
 SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바에 모으는 것이 목적이다.
@@ -20,16 +20,16 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
 
 ## 구성
 
-실행 파일 하나 `hlink`, 단일 crate.
+실행 파일 하나 `herdvia`, 단일 crate.
 
 | 명령 | 역할 |
 |---|---|
-| `hlink agent` | 상주 프로그램(포그라운드). 로컬 통신 통로를 열고 요청을 처리한다 |
-| `hlink via <피어> <줄>` | hc가 부르는 통로. 로컬 에이전트에 붙어 바이트를 중계한다 |
+| `herdvia agent` | 상주 프로그램(포그라운드). 로컬 통신 통로를 열고 요청을 처리한다 |
+| `herdvia via <피어> <줄>` | hc가 부르는 통로. 로컬 에이전트에 붙어 바이트를 중계한다 |
 
 `id`, `allow`, `revoke`, `status`, `agent install`은 M3 이후에 넣는다.
 
-데이터 폴더는 환경 변수 `HLINK_DIR`이 있으면 그 값, 없으면 OS 규약의 사용자별 로컬 데이터 폴더다.
+데이터 폴더는 환경 변수 `HERDVIA_DIR`이 있으면 그 값, 없으면 OS 규약의 사용자별 로컬 데이터 폴더다.
 Unix에서는 폴더 권한 0700, 소켓 `agent.sock` 권한 0600이다.
 
 ## 프레임 형식
@@ -96,18 +96,18 @@ M2에는 네트워크가 없었다. 에이전트는 OPEN의 피어 이름과 무
 
 전송은 iroh 1.4.x다. 암호화와 NAT 통과는 iroh가 제공하는 것만 쓴다.
 기본 설정(`presets::N0`)으로 n0의 공개 중계 서버와 주소 조회를 쓴다. 사용자 설정 옵션은 두지 않는다.
-ALPN은 `hlink/1`이다.
+ALPN은 `herdvia/1`이다.
 
 ### 명령
 
 | 명령 | 역할 |
 |---|---|
-| `hlink id` | 내 EndpointId 전체와 확인용 지문을 표준 출력에 쓴다. 키가 없으면 만든다 |
-| `hlink allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 등록하거나 권한을 바꾼다 |
-| `hlink revoke <이름>` | 피어를 지우고, 그 피어와의 연결을 즉시 끊는다 |
-| `hlink status` | 피어별 이름, 권한, 연결 여부, 직접/중계, 왕복 시간을 쓴다 |
+| `herdvia id` | 내 EndpointId 전체와 확인용 지문을 표준 출력에 쓴다. 키가 없으면 만든다 |
+| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 등록하거나 권한을 바꾼다 |
+| `herdvia revoke <이름>` | 피어를 지우고, 그 피어와의 연결을 즉시 끊는다 |
+| `herdvia status` | 피어별 이름, 권한, 연결 여부, 직접/중계, 왕복 시간을 쓴다 |
 
-- 지문은 EndpointId 문자열의 앞 16자를 4자씩 `-`로 묶은 것이다. `hlink id`의 첫 줄은 EndpointId, 둘째 줄은 지문이다.
+- 지문은 EndpointId 문자열의 앞 16자를 4자씩 `-`로 묶은 것이다. `herdvia id`의 첫 줄은 EndpointId, 둘째 줄은 지문이다.
 - 이름은 `[A-Za-z0-9._-]{1,32}`다.
 - inbound: 그 피어가 이 PC에서 명령을 실행해도 된다. outbound: 이 PC가 그 피어로 걸어도 된다.
 - `allow`, `revoke`는 에이전트가 떠 있으면 즉시 반영되고, 떠 있지 않아도 파일에는 반영된다.
@@ -145,18 +145,18 @@ tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 
 
 | 명령 | 역할 |
 |---|---|
-| `hlink agent install` | 로그인 시 에이전트가 자동으로 뜨도록 등록하고 바로 시작한다 |
-| `hlink agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
+| `herdvia agent install` | 로그인 시 에이전트가 자동으로 뜨도록 등록하고 바로 시작한다 |
+| `herdvia agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
 
-- 사용자별 LaunchAgent다. 파일은 `~/Library/LaunchAgents/dev.hlink.agent.plist`, 라벨은 `dev.hlink.agent`.
+- 사용자별 LaunchAgent다. 파일은 `~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`, 라벨은 `io.github.photojupi.herdvia.agent`.
   시스템 전체 데몬으로는 등록하지 않는다(herdr-core가 사용자 로그인 세션에서 돌아야 한다).
 - 실행 경로는 `install`을 실행한 그 실행 파일의 절대 경로다. 임시 폴더나 빌드 폴더(`target/`) 안에서 실행하면
   경고를 stderr에 쓰되 등록은 한다.
-- `RunAtLoad`와 `KeepAlive`를 켠다. 로그는 `~/Library/Logs/hlink.log`에 표준 출력·오류를 모은다.
+- `RunAtLoad`와 `KeepAlive`를 켠다. 로그는 `~/Library/Logs/herdvia.log`에 표준 출력·오류를 모은다.
 - plist의 `EnvironmentVariables`에 `PATH`를 넣는다. 값은 `$HOME/.local/bin`을 앞에 둔 기본 경로다
   (connect 줄은 `$HOME/.local/bin/herdr-core`로도 찾으므로 필수는 아니다).
-- `HLINK_DIR`이 설정된 채 `install`하면 거부한다. 자동 시작은 기본 데이터 폴더만 쓴다.
-- 등록·해제는 `launchctl bootstrap gui/<uid>` / `launchctl bootout gui/<uid>/dev.hlink.agent`를 쓴다.
+- `HERDVIA_DIR`이 설정된 채 `install`하면 거부한다. 자동 시작은 기본 데이터 폴더만 쓴다.
+- 등록·해제는 `launchctl bootstrap gui/<uid>` / `launchctl bootout gui/<uid>/io.github.photojupi.herdvia.agent`를 쓴다.
 - `install`은 이미 등록돼 있으면 새 내용으로 바꾸고 다시 시작한다. `uninstall`은 등록이 없어도 성공한다.
 - 에이전트가 이미 수동으로 떠 있으면 `install`은 실패한다고 알리고 아무것도 바꾸지 않는다.
 
@@ -183,8 +183,8 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 대상은 `x86_64-pc-windows-gnu`(맥에서 mingw-w64로 교차 빌드)다. 공개 배포용 빌드 방식은 M7에서 정한다.
 - 운영체제별 코드는 `ipc`, `exec`, `template`의 줄 판정, 데이터 폴더, root 거부에만 둔다.
   프레임, 네트워크, 피어 목록, via·에이전트의 흐름은 공유한다.
-- 데이터 폴더: `%APPDATA%\hlink`. `HLINK_DIR`이 있으면 그것을 쓴다(Unix와 같다).
-- 로컬 통신: 이름 있는 파이프 `\\.\pipe\hlink-<사용자 SID>`. `HLINK_DIR`이 있으면 그 경로의 해시를 이름 끝에 붙여 구분한다.
+- 데이터 폴더: `%APPDATA%\herdvia`. `HERDVIA_DIR`이 있으면 그것을 쓴다(Unix와 같다).
+- 로컬 통신: 이름 있는 파이프 `\\.\pipe\herdvia-<사용자 SID>`. `HERDVIA_DIR`이 있으면 그 경로의 해시를 이름 끝에 붙여 구분한다.
   - 파이프의 보안 설정은 현재 사용자 SID에만 전체 권한을 준다. 원격 클라이언트는 거부한다.
   - 에이전트는 첫 인스턴스로만 파이프를 만든다(이미 있으면 "agent is already running"). 이것이 단일 실행 보장이다.
   - via·관리 명령은 접속한 파이프의 소유자 SID가 자신과 같은지 확인하고, 다르면 접속을 끊고 오류를 낸다.
@@ -217,19 +217,19 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 
 | 명령 | 역할 |
 |---|---|
-| `hlink agent install` | 로그온 시 에이전트가 창 없이 뜨도록 등록하고 바로 시작한다 |
-| `hlink agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
+| `herdvia agent install` | 로그온 시 에이전트가 창 없이 뜨도록 등록하고 바로 시작한다 |
+| `herdvia agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
 
 - 관리자 권한 없이 동작해야 한다. 등록은 현재 사용자 레지스트리의 Run 키다:
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, 값 이름 `hlink`,
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, 값 이름 `herdvia`,
   값 `conhost.exe --headless "<실행 파일 절대 경로>" agent --log`.
   `conhost.exe --headless`는 콘솔 창을 만들지 않고 콘솔 프로그램을 띄운다. 서비스나 "로그온 여부와 무관" 작업으로는 등록하지 않는다
   (herdr-core가 사용자의 대화형 세션에서 돌아야 한다).
-- `agent --log`는 Windows 전용이다. 표준 출력·오류를 `%LOCALAPPDATA%\hlink\hlink.log`에 이어 쓰도록 바꾼 뒤 평소의 `agent`로 동작한다.
+- `agent --log`는 Windows 전용이다. 표준 출력·오류를 `%LOCALAPPDATA%\herdvia\herdvia.log`에 이어 쓰도록 바꾼 뒤 평소의 `agent`로 동작한다.
 - `install`은 등록한 뒤 같은 명령을 콘솔 창 없이, 자신과 분리된 프로세스로 바로 띄운다(재로그온을 기다리지 않는다).
   시작한 에이전트의 파이프가 5초 안에 생기지 않으면 오류를 낸다(등록은 남긴다. 오류 문구에 로그 경로를 적는다).
 - 실행 경로는 `install`을 실행한 그 실행 파일이다. 임시 폴더나 `target` 안이면 경고하되 등록은 한다(macOS와 같다).
-- `HLINK_DIR`이 설정된 채 `install`하면 거부한다(macOS와 같다).
+- `HERDVIA_DIR`이 설정된 채 `install`하면 거부한다(macOS와 같다).
 - `install`은 변경 전에 `TokenElevation`을 검사해 상승된 관리자 토큰이면 거부하고, 관리자 권한이 아닌 일반 PowerShell에서 실행하도록 안내한다(`uninstall`에는 적용하지 않는다).
 - `install`은 등록 전에 실행 파일 경로에 `%`가 있으면 거부한다(conhost의 환경 변수 확장 방지). Run 명령줄은 NUL을 제외하고 최대 259 UTF-16 코드 단위다.
 - 에이전트가 이미 떠 있을 때의 `install`: Run 값이 이미 있으면(재설치) 떠 있는 에이전트를 끝내고 새로 등록·시작한다.

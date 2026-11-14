@@ -1,7 +1,7 @@
 #!/bin/sh
 # M1 측정용 가짜 via: hc가 넘기는 인자를 기록하고, 마지막 인자(원격 줄)를 이 PC에서 그대로 실행한다.
-LOG="${HLINK_M1_LOG:-/tmp/hlink-m1.log}"
-MODE_FILE="${HLINK_M1_MODE:-/tmp/hlink-m1.mode}"
+LOG="${HERDVIA_M1_LOG:-/tmp/herdvia-m1.log}"
+MODE_FILE="${HERDVIA_M1_MODE:-/tmp/herdvia-m1.mode}"
 ts() { python3 -c 'import time;print("%.3f"%time.time())'; }
 start=$(ts)
 {
@@ -12,7 +12,7 @@ for last in "$@"; do :; done
 if [ -f "$MODE_FILE" ]; then
   code=$(cat "$MODE_FILE")
   printf '=== %s FORCED pid=%s exit=%s\n' "$(ts)" "$$" "$code" >> "$LOG"
-  echo "hlink-m1: forced failure $code" >&2
+  echo "herdvia-m1: forced failure $code" >&2
   exit "$code"
 fi
 sh -c "$last"

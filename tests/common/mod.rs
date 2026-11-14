@@ -1,8 +1,8 @@
 //! M3 통합 테스트 공용 하네스.
 //!
-//! 노드 하나 = 임시 폴더 하나(HLINK_DIR, 가짜 HOME, 가짜 herdr-core 가 든 PATH 폴더).
-//! 거는 쪽 A 와 받는 쪽 B 를 각자의 HLINK_DIR 로 띄우고, `hlink id` 의 첫 줄(EndpointId)을
-//! 읽어 A 에는 B 를 outbound 로, B 에는 A 를 inbound 로 등록한 뒤 `hlink status` 로 연결을 기다린다.
+//! 노드 하나 = 임시 폴더 하나(HERDVIA_DIR, 가짜 HOME, 가짜 herdr-core 가 든 PATH 폴더).
+//! 거는 쪽 A 와 받는 쪽 B 를 각자의 HERDVIA_DIR 로 띄우고, `herdvia id` 의 첫 줄(EndpointId)을
+//! 읽어 A 에는 B 를 outbound 로, B 에는 A 를 inbound 로 등록한 뒤 `herdvia status` 로 연결을 기다린다.
 //!
 //! 에이전트는 작은 sh 감시 스크립트 밑에서 띄운다. 감시 스크립트는 표준 입력이 닫히면
 //! (테스트가 정리하거나 테스트 프로세스가 죽으면) 에이전트를 끝내고 원격 자식 pid 파일을 정리한다.
@@ -23,7 +23,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub const HLINK: &str = env!("CARGO_BIN_EXE_hlink");
+pub const HERDVIA: &str = env!("CARGO_BIN_EXE_herdvia");
 
 /// hc 0.1.21이 실제로 넘기는 기본 connect 줄 (DESIGN.md 그대로).
 pub const DEFAULT_LINE: &str = r#"sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x "$p" ] || { echo "herdr-core is not installed here" >&2; exit 127; }; exec "$p" connect'"#;
@@ -83,7 +83,7 @@ case "$HC_SESSION" in
 esac
 "#;
 
-/// 에이전트 감시 스크립트. $1=hlink, $2=노드 폴더, $3=rm 이면 끝날 때 노드 폴더를 지운다.
+/// 에이전트 감시 스크립트. $1=herdvia, $2=노드 폴더, $3=rm 이면 끝날 때 노드 폴더를 지운다.
 /// 첫 줄로 에이전트 pid 를 쓰고, 표준 입력이 닫힐 때까지 기다린다.
 const AGENT_WRAPPER: &str = r#"
 "$1" agent </dev/null >>"$2/agent.out" 2>>"$2/agent.err" &
@@ -197,7 +197,7 @@ struct AgentProc {
 pub struct Node {
     pub label: String,
     pub root: PathBuf,
-    pub hlink_dir: PathBuf,
+    pub herdvia_dir: PathBuf,
     pub home: PathBuf,
     pub bin: PathBuf,
     pub path_env: String,
@@ -215,18 +215,18 @@ impl Node {
     fn create(label: &str, persistent: bool) -> Self {
         let tmp = TempDir::new();
         let root = tmp.0.clone();
-        let hlink_dir = root.join("hl");
+        let herdvia_dir = root.join("hl");
         let home = root.join("home");
         let bin = root.join("bin");
-        fs::create_dir(&hlink_dir).unwrap();
-        fs::set_permissions(&hlink_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(&herdvia_dir).unwrap();
+        fs::set_permissions(&herdvia_dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::create_dir(&home).unwrap();
         fs::create_dir(&bin).unwrap();
         let path_env = format!("{}:/usr/bin:/bin", bin.display());
         let n = Node {
             label: label.to_string(),
             root,
-            hlink_dir,
+            herdvia_dir,
             home,
             bin,
             path_env,
@@ -244,15 +244,15 @@ impl Node {
     }
 
     pub fn sock(&self) -> PathBuf {
-        self.hlink_dir.join("agent.sock")
+        self.herdvia_dir.join("agent.sock")
     }
 
     pub fn peers_file(&self) -> PathBuf {
-        self.hlink_dir.join("peers")
+        self.herdvia_dir.join("peers")
     }
 
     pub fn key_file(&self) -> PathBuf {
-        self.hlink_dir.join("secret.key")
+        self.herdvia_dir.join("secret.key")
     }
 
     /// 가짜 herdr-core 의 위치를 바꾼다. 에이전트가 떠 있어도 다음 실행부터 반영된다.
@@ -276,7 +276,7 @@ impl Node {
     }
 
     fn env(&self, cmd: &mut Command) {
-        cmd.env("HLINK_DIR", &self.hlink_dir)
+        cmd.env("HERDVIA_DIR", &self.herdvia_dir)
             .env("PATH", &self.path_env)
             .env("HOME", &self.home)
             .env_remove("HC_SESSION")
@@ -284,54 +284,54 @@ impl Node {
     }
 
     pub fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(HLINK);
+        let mut c = Command::new(HERDVIA);
         c.args(args);
         self.env(&mut c);
         c
     }
 
-    /// `hlink <args>` 를 실행한다 (agent·via 제외 단발 명령용).
-    pub fn hlink(&self, args: &[&str]) -> Out {
+    /// `herdvia <args>` 를 실행한다 (agent·via 제외 단발 명령용).
+    pub fn herdvia(&self, args: &[&str]) -> Out {
         try_run(self.cmd(args), Duration::from_secs(30))
-            .unwrap_or_else(|| panic!("[{}] hlink {args:?} 가 30초 안에 끝나지 않음", self.label))
+            .unwrap_or_else(|| panic!("[{}] herdvia {args:?} 가 30초 안에 끝나지 않음", self.label))
     }
 
-    /// `hlink id` 의 (EndpointId, 지문).
+    /// `herdvia id` 의 (EndpointId, 지문).
     pub fn id(&self) -> (String, String) {
-        let o = self.hlink(&["id"]);
-        assert_eq!(o.code(), Some(0), "[{}] hlink id 실패. stderr: {}", self.label, o.err());
+        let o = self.herdvia(&["id"]);
+        assert_eq!(o.code(), Some(0), "[{}] herdvia id 실패. stderr: {}", self.label, o.err());
         let s = o.out();
         let mut lines = s.lines();
         let id = lines.next().unwrap_or("").trim().to_string();
         let fp = lines.next().unwrap_or("").trim().to_string();
-        assert!(!id.is_empty(), "[{}] hlink id 출력이 비어 있음", self.label);
+        assert!(!id.is_empty(), "[{}] herdvia id 출력이 비어 있음", self.label);
         (id, fp)
     }
 
     pub fn allow(&self, name: &str, id: &str, flag: &str) {
-        let o = self.hlink(&["allow", name, id, flag]);
+        let o = self.herdvia(&["allow", name, id, flag]);
         assert_eq!(
             o.code(),
             Some(0),
-            "[{}] hlink allow {name} {id} {flag} 실패. stderr: {}",
+            "[{}] herdvia allow {name} {id} {flag} 실패. stderr: {}",
             self.label,
             o.err()
         );
     }
 
     pub fn revoke(&self, name: &str) {
-        let o = self.hlink(&["revoke", name]);
+        let o = self.herdvia(&["revoke", name]);
         assert_eq!(
             o.code(),
             Some(0),
-            "[{}] hlink revoke {name} 실패. stderr: {}",
+            "[{}] herdvia revoke {name} 실패. stderr: {}",
             self.label,
             o.err()
         );
     }
 
     pub fn status(&self) -> Out {
-        self.hlink(&["status"])
+        self.herdvia(&["status"])
     }
 
     pub fn peers_text(&self) -> String {
@@ -349,8 +349,8 @@ impl Node {
         let mut c = Command::new("/bin/sh");
         c.arg("-c")
             .arg(AGENT_WRAPPER)
-            .arg("hlink-agent-wrapper")
-            .arg(HLINK)
+            .arg("herdvia-agent-wrapper")
+            .arg(HERDVIA)
             .arg(&self.root)
             .arg(if self.remove_root_on_exit { "rm" } else { "keep" });
         self.env(&mut c);
@@ -377,7 +377,7 @@ impl Node {
         loop {
             if !process_alive(&pid) {
                 panic!(
-                    "[{}] hlink agent 가 바로 끝남\n로그:\n{}",
+                    "[{}] herdvia agent 가 바로 끝남\n로그:\n{}",
                     self.label,
                     self.agent_log()
                 );
@@ -387,7 +387,7 @@ impl Node {
             }
             if Instant::now() > deadline {
                 panic!(
-                    "[{}] hlink agent 소켓이 15초 안에 준비되지 않음\n로그:\n{}",
+                    "[{}] herdvia agent 소켓이 15초 안에 준비되지 않음\n로그:\n{}",
                     self.label,
                     self.agent_log()
                 );
@@ -438,7 +438,7 @@ impl Node {
                 s.push_str(&String::from_utf8_lossy(&b));
             }
         }
-        if let Ok(rd) = fs::read_dir(&self.hlink_dir) {
+        if let Ok(rd) = fs::read_dir(&self.herdvia_dir) {
             for e in rd.flatten() {
                 if e.file_name() == "secret.key" {
                     continue;
@@ -456,7 +456,7 @@ impl Node {
     // --- via ---------------------------------------------------------------
 
     pub fn spawn_via(&self, peer: &str, line: &str) -> Via {
-        let mut c = Command::new(HLINK);
+        let mut c = Command::new(HERDVIA);
         c.arg("via").arg(peer).arg(line);
         self.env(&mut c);
         let mut child = c
@@ -464,7 +464,7 @@ impl Node {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("hlink via 실행 실패");
+            .expect("herdvia via 실행 실패");
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let err_rx = spawn_reader(child.stderr.take().unwrap());
@@ -555,7 +555,7 @@ fn reap(child: &mut Child, timeout: Duration) -> bool {
     }
 }
 
-/// `hlink agent` 를 직접 띄워 시작을 거부하는지 본다. 10초 안에 0이 아닌 코드로 끝나야 한다.
+/// `herdvia agent` 를 직접 띄워 시작을 거부하는지 본다. 10초 안에 0이 아닌 코드로 끝나야 한다.
 pub fn expect_agent_refused(n: &Node, what: &str) -> Out {
     let o = try_run(n.cmd(&["agent"]), Duration::from_secs(10))
         .unwrap_or_else(|| panic!("[{what}] 에이전트가 시작을 거부하지 않고 계속 돎"));

@@ -22,7 +22,7 @@ use tokio::{
     task::JoinSet,
 };
 
-pub const ALPN: &[u8] = b"hlink/1";
+pub const ALPN: &[u8] = b"herdvia/1";
 
 fn permitted(peers: &[Peer], id: EndpointId, inbound: bool) -> bool {
     peers.iter().any(|p| {
@@ -57,7 +57,7 @@ impl EndpointHooks for Policy {
         {
             AfterHandshakeOutcome::Accept
         } else {
-            eprintln!("hlink: rejected peer {}", conn.remote_id());
+            eprintln!("herdvia: rejected peer {}", conn.remote_id());
             AfterHandshakeOutcome::Reject {
                 error_code: 403u32.into(),
                 reason: b"peer not allowed".to_vec(),
@@ -171,7 +171,7 @@ impl Network {
                     delay = 1;
                     self.clone().serve_connection(conn).await;
                 }
-                Err(err) => eprintln!("hlink: connection to {id} failed: {err}"),
+                Err(err) => eprintln!("herdvia: connection to {id} failed: {err}"),
             }
             tokio::time::sleep(Duration::from_secs(delay)).await;
             delay = (delay * 2).min(30);
@@ -193,7 +193,7 @@ impl Network {
             id: conn.stable_id(),
         };
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
-        eprintln!("hlink: connected {id}");
+        eprintln!("herdvia: connected {id}");
         let mut streams = JoinSet::new();
         loop {
             tokio::select! {
@@ -215,7 +215,7 @@ impl Network {
                             _ = conn.closed() => {},
                             _ = stopped => {},
                             result = exec::serve(tokio::io::join(recv, send)) => {
-                                if let Err(err) = result { eprintln!("hlink: stream from {id} ended: {err}"); }
+                                if let Err(err) = result { eprintln!("herdvia: stream from {id} ended: {err}"); }
                             }
                         }
                     });
@@ -225,7 +225,7 @@ impl Network {
         }
         streams.abort_all();
         while streams.join_next().await.is_some() {}
-        eprintln!("hlink: disconnected {id}");
+        eprintln!("herdvia: disconnected {id}");
     }
 
     async fn connection_for(&self, name: &str) -> io::Result<Connection> {

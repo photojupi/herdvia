@@ -9,8 +9,8 @@ use std::{
 };
 use tokio::net::UnixStream;
 
-const LABEL: &str = "dev.hlink.agent";
-const PLIST: &str = "Library/LaunchAgents/dev.hlink.agent.plist";
+const LABEL: &str = "io.github.photojupi.herdvia.agent";
+const PLIST: &str = "Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist";
 // A service that launchd respawned moments ago took 2.3s to leave after bootout
 // (measured on macOS 27), so allow 10s of 250ms retries.
 const BOOTSTRAP_RETRIES: u32 = if cfg!(test) { 4 } else { 40 };
@@ -20,7 +20,7 @@ pub async fn install() -> io::Result<()> {
     install_at(
         &ipc::home_dir()?,
         &env::current_exe()?,
-        env::var_os("HLINK_DIR").as_deref(),
+        env::var_os("HERDVIA_DIR").as_deref(),
         ipc::uid(),
         launchctl,
     )
@@ -76,14 +76,14 @@ fn bootout(service: &str, run: &mut impl FnMut(&[&OsStr]) -> io::Result<Output>)
 async fn install_at(
     home: &Path,
     executable: &Path,
-    hlink_dir: Option<&OsStr>,
+    herdvia_dir: Option<&OsStr>,
     uid: u32,
     mut run: impl FnMut(&[&OsStr]) -> io::Result<Output>,
 ) -> io::Result<()> {
-    if hlink_dir.is_some() {
+    if herdvia_dir.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "unset HLINK_DIR before installing the agent",
+            "unset HERDVIA_DIR before installing the agent",
         ));
     }
     let domain = format!("gui/{uid}");
@@ -93,7 +93,7 @@ async fn install_at(
     if !loaded && !service_missing(&output) {
         check_output("print", &output)?;
     }
-    let data = home.join("Library/Application Support/hlink");
+    let data = home.join("Library/Application Support/herdvia");
     match ipc::lock_dir(&data) {
         Ok(lock) => drop(lock),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -131,7 +131,7 @@ async fn install_at(
     let contents = plist(home, executable)?;
     if unstable_path(executable, &env::temp_dir()) {
         eprintln!(
-            "hlink: warning: executable is in a temporary or target directory: {}",
+            "herdvia: warning: executable is in a temporary or target directory: {}",
             executable.display()
         );
     }
@@ -147,7 +147,7 @@ async fn install_at(
     let recovery_error = |err: io::Error| {
         io::Error::new(
             err.kind(),
-            format!("{err}; agent is now stopped; run hlink agent install again"),
+            format!("{err}; agent is now stopped; run herdvia agent install again"),
         )
     };
     let mut retries = 0;
@@ -197,7 +197,7 @@ fn xml_path(path: &Path) -> io::Result<String> {
 
 fn plist(home: &Path, executable: &Path) -> io::Result<String> {
     let executable = xml_path(executable)?;
-    let log = xml_path(&home.join("Library/Logs/hlink.log"))?;
+    let log = xml_path(&home.join("Library/Logs/herdvia.log"))?;
     let path = xml_path(&home.join(".local/bin"))?;
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -280,19 +280,19 @@ mod tests {
     fn plist_contains_launch_agent_settings_and_escaped_paths() {
         let dir = temp_home();
         let home = dir.path().join("한 글 & <home>\"'");
-        let executable = home.join("bin/hlink");
+        let executable = home.join("bin/herdvia");
         let xml = plist(&home, &executable).unwrap();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
-        assert!(xml.contains("<key>Label</key>\n    <string>dev.hlink.agent</string>"));
+        assert!(xml.contains("<key>Label</key>\n    <string>io.github.photojupi.herdvia.agent</string>"));
         assert!(xml.contains(&format!(
-            "<key>ProgramArguments</key>\n    <array>\n        <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/bin/hlink</string>\n        <string>agent</string>\n    </array>",
+            "<key>ProgramArguments</key>\n    <array>\n        <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/bin/herdvia</string>\n        <string>agent</string>\n    </array>",
             dir.path().display()
         )));
         assert!(xml.contains("<key>RunAtLoad</key>\n    <true/>"));
         assert!(xml.contains("<key>KeepAlive</key>\n    <true/>"));
         for key in ["StandardOutPath", "StandardErrorPath"] {
             assert!(xml.contains(&format!(
-                "<key>{key}</key>\n    <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/Library/Logs/hlink.log</string>",
+                "<key>{key}</key>\n    <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/Library/Logs/herdvia.log</string>",
                 dir.path().display()
             )));
         }
@@ -300,7 +300,7 @@ mod tests {
             "<key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key>\n        <string>{}/한 글 &amp; &lt;home&gt;&quot;&apos;/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
             dir.path().display()
         )));
-        assert!(!xml.contains("HLINK_DIR"));
+        assert!(!xml.contains("HERDVIA_DIR"));
         #[cfg(target_os = "macos")]
         {
             let path = dir.path().join("agent.plist");
@@ -315,21 +315,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_hlink_dir_even_when_empty_without_any_changes() {
+    async fn rejects_herdvia_dir_even_when_empty_without_any_changes() {
         let dir = temp_home();
         for value in ["", "/custom"] {
             let home = dir.path().join("home");
             let err = install_at(
                 &home,
-                Path::new("/opt/hlink"),
+                Path::new("/opt/herdvia"),
                 Some(OsStr::new(value)),
                 501,
-                |_| panic!("HLINK_DIR must be rejected before launchctl"),
+                |_| panic!("HERDVIA_DIR must be rejected before launchctl"),
             )
             .await
             .unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-            assert!(err.to_string().contains("HLINK_DIR"));
+            assert!(err.to_string().contains("HERDVIA_DIR"));
             assert!(!home.exists());
         }
     }
@@ -339,15 +339,15 @@ mod tests {
         let dir = temp_home();
         // Keep the socket path short enough for macOS's sockaddr_un.
         let home = dir.path();
-        let data = home.join("Library/Application Support/hlink");
+        let data = home.join("Library/Application Support/herdvia");
         fs::create_dir_all(&data).unwrap();
         let listener = ipc::listen(&data).unwrap();
-        let path = home.join("Library/LaunchAgents/dev.hlink.agent.plist");
+        let path = home.join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
         for (code, status) in [(113, ""), (0, "state = waiting\n"), (0, "pid = 1\n")] {
-            let err = install_at(home, Path::new("/opt/hlink"), None, 501, |args| {
-                assert_eq!(args_owned(args), ["print", "gui/501/dev.hlink.agent"]);
+            let err = install_at(home, Path::new("/opt/herdvia"), None, 501, |args| {
+                assert_eq!(args_owned(args), ["print", "gui/501/io.github.photojupi.herdvia.agent"]);
                 Ok(output(code, status))
             })
             .await
@@ -365,7 +365,7 @@ mod tests {
         for create_socket in [false, true] {
             let dir = temp_home();
             let home = dir.path();
-            let data = home.join("Library/Application Support/hlink");
+            let data = home.join("Library/Application Support/herdvia");
             fs::create_dir_all(&data).unwrap();
             let lock = fs::File::open(&data).unwrap();
             // SAFETY: lock owns an open directory descriptor throughout this test.
@@ -380,19 +380,19 @@ mod tests {
             } else {
                 None
             };
-            let path = home.join("Library/LaunchAgents/dev.hlink.agent.plist");
+            let path = home.join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "old plist").unwrap();
             for (code, status) in [(113, ""), (0, "state = waiting\n"), (0, "pid = 1\n")] {
                 let mut calls = Vec::new();
-                let err = install_at(home, Path::new("/opt/hlink"), None, 501, |args| {
+                let err = install_at(home, Path::new("/opt/herdvia"), None, 501, |args| {
                     calls.push(args_owned(args));
                     Ok(output(if args[0] == "print" { code } else { 0 }, status))
                 })
                 .await
                 .unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
-                assert_eq!(calls, [vec!["print", "gui/501/dev.hlink.agent"]]);
+                assert_eq!(calls, [vec!["print", "gui/501/io.github.photojupi.herdvia.agent"]]);
                 assert_eq!(fs::read_to_string(&path).unwrap(), "old plist");
                 assert!(!home.join("Library/Logs").exists());
                 assert!(!data.join("agent.sock").exists());
@@ -403,10 +403,10 @@ mod tests {
     #[tokio::test]
     async fn ignores_unlocked_socket_and_releases_probe_lock_before_bootstrap() {
         let dir = temp_home();
-        let data = dir.path().join("Library/Application Support/hlink");
+        let data = dir.path().join("Library/Application Support/herdvia");
         fs::create_dir_all(&data).unwrap();
         let _socket = UnixListener::bind(data.join("agent.sock")).unwrap();
-        install_at(dir.path(), Path::new("/opt/hlink"), None, 501, |args| {
+        install_at(dir.path(), Path::new("/opt/herdvia"), None, 501, |args| {
             if args[0] == "bootstrap" {
                 let lock = fs::File::open(&data).unwrap();
                 // SAFETY: lock owns a valid descriptor and is dropped after the probe.
@@ -421,7 +421,7 @@ mod tests {
         .unwrap();
         assert!(
             dir.path()
-                .join("Library/LaunchAgents/dev.hlink.agent.plist")
+                .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist")
                 .is_file()
         );
     }
@@ -430,16 +430,16 @@ mod tests {
     async fn installs_then_reinstalls_using_the_current_executable() {
         let dir = temp_home();
         let home = dir.path();
-        let path = home.join("Library/LaunchAgents/dev.hlink.agent.plist");
+        let path = home.join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         let mut calls = Vec::new();
-        install_at(home, Path::new("/opt/first/hlink"), None, 501, |args| {
+        install_at(home, Path::new("/opt/first/herdvia"), None, 501, |args| {
             let args = args_owned(args);
             let code = if args[0] == "print" { 113 } else { 0 };
             if args[0] == "bootstrap" {
                 assert!(
                     fs::read_to_string(&path)
                         .unwrap()
-                        .contains("/opt/first/hlink")
+                        .contains("/opt/first/herdvia")
                 );
             }
             calls.push(args);
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(
             calls,
             [
-                vec!["print".to_owned(), "gui/501/dev.hlink.agent".to_owned()],
+                vec!["print".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
@@ -460,18 +460,18 @@ mod tests {
         );
         assert!(home.join("Library/Logs").is_dir());
 
-        let data = home.join("Library/Application Support/hlink");
+        let data = home.join("Library/Application Support/herdvia");
         fs::create_dir_all(&data).unwrap();
         let listener = ipc::listen(&data).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
         calls.clear();
-        install_at(home, Path::new("/opt/new/hlink"), None, 501, |args| {
+        install_at(home, Path::new("/opt/new/herdvia"), None, 501, |args| {
             let args = args_owned(args);
             if args[0] == "bootout" {
                 assert!(
                     fs::read_to_string(&path)
                         .unwrap()
-                        .contains("/opt/first/hlink")
+                        .contains("/opt/first/herdvia")
                 );
             }
             if args[0] == "bootstrap" {
@@ -488,8 +488,8 @@ mod tests {
         assert_eq!(
             calls,
             [
-                vec!["print".to_owned(), "gui/501/dev.hlink.agent".to_owned()],
-                vec!["bootout".to_owned(), "gui/501/dev.hlink.agent".to_owned()],
+                vec!["print".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
+                vec!["bootout".to_owned(), "gui/501/io.github.photojupi.herdvia.agent".to_owned()],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
@@ -497,24 +497,24 @@ mod tests {
                 ],
             ]
         );
-        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/hlink"));
+        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/herdvia"));
         drop(listener);
     }
 
     #[tokio::test]
     async fn ignores_a_stale_socket_when_installing() {
         let dir = temp_home();
-        let data = dir.path().join("Library/Application Support/hlink");
+        let data = dir.path().join("Library/Application Support/herdvia");
         fs::create_dir_all(&data).unwrap();
         drop(UnixListener::bind(data.join("agent.sock")).unwrap());
-        install_at(dir.path(), Path::new("/opt/hlink"), None, 501, |args| {
+        install_at(dir.path(), Path::new("/opt/herdvia"), None, 501, |args| {
             Ok(output(if args[0] == "print" { 113 } else { 0 }, ""))
         })
         .await
         .unwrap();
         assert!(
             dir.path()
-                .join("Library/LaunchAgents/dev.hlink.agent.plist")
+                .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist")
                 .is_file()
         );
     }
@@ -523,13 +523,13 @@ mod tests {
     fn uninstall_is_idempotent_and_preserves_data_and_logs() {
         let dir = temp_home();
         let home = dir.path();
-        let path = home.join("Library/LaunchAgents/dev.hlink.agent.plist");
+        let path = home.join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
-        let log = home.join("Library/Logs/hlink.log");
+        let log = home.join("Library/Logs/herdvia.log");
         fs::create_dir_all(log.parent().unwrap()).unwrap();
         fs::write(&log, "log").unwrap();
-        let key = home.join("Library/Application Support/hlink/secret.key");
+        let key = home.join("Library/Application Support/herdvia/secret.key");
         fs::create_dir_all(key.parent().unwrap()).unwrap();
         fs::write(&key, "key").unwrap();
         for code in [0, 3, 113] {
@@ -539,7 +539,7 @@ mod tests {
                 Ok(output(code, ""))
             })
             .unwrap();
-            assert_eq!(calls, [vec!["bootout", "gui/501/dev.hlink.agent"]]);
+            assert_eq!(calls, [vec!["bootout", "gui/501/io.github.photojupi.herdvia.agent"]]);
             assert!(!path.exists());
             assert_eq!(fs::read_to_string(&log).unwrap(), "log");
             assert_eq!(fs::read_to_string(&key).unwrap(), "key");
@@ -551,12 +551,12 @@ mod tests {
         let dir = temp_home();
         let path = dir
             .path()
-            .join("Library/LaunchAgents/dev.hlink.agent.plist");
+            .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
         for failing_command in ["print", "bootout", "bootstrap"] {
             let mut attempts = 0;
-            let err = install_at(dir.path(), Path::new("/opt/hlink"), None, 501, |args| {
+            let err = install_at(dir.path(), Path::new("/opt/herdvia"), None, 501, |args| {
                 if args[0] == "bootstrap" {
                     attempts += 1;
                 }
@@ -569,10 +569,10 @@ mod tests {
             if failing_command == "bootstrap" {
                 assert_eq!(attempts, 5);
                 let xml = fs::read_to_string(&path).unwrap();
-                assert!(xml.contains("<string>/opt/hlink</string>"));
+                assert!(xml.contains("<string>/opt/herdvia</string>"));
                 assert!(!xml.contains("old plist"));
                 assert!(err.to_string().contains("agent is now stopped"));
-                assert!(err.to_string().contains("hlink agent install again"));
+                assert!(err.to_string().contains("herdvia agent install again"));
             } else {
                 assert_eq!(fs::read_to_string(&path).unwrap(), "old plist");
             }
@@ -587,19 +587,19 @@ mod tests {
         let dir = temp_home();
         let path = dir
             .path()
-            .join("Library/LaunchAgents/dev.hlink.agent.plist");
+            .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
         let mut calls = Vec::new();
         let mut attempts = 0;
-        install_at(dir.path(), Path::new("/opt/new/hlink"), None, 501, |args| {
+        install_at(dir.path(), Path::new("/opt/new/herdvia"), None, 501, |args| {
             calls.push(args_owned(args));
             if args[0] == "bootstrap" {
                 attempts += 1;
                 assert!(
                     fs::read_to_string(&path)
                         .unwrap()
-                        .contains("/opt/new/hlink")
+                        .contains("/opt/new/herdvia")
                 );
                 return Ok(output(if attempts < 3 { 5 } else { 0 }, ""));
             }
@@ -608,8 +608,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(attempts, 3);
-        assert_eq!(calls[0], ["print", "gui/501/dev.hlink.agent"]);
-        assert_eq!(calls[1], ["bootout", "gui/501/dev.hlink.agent"]);
+        assert_eq!(calls[0], ["print", "gui/501/io.github.photojupi.herdvia.agent"]);
+        assert_eq!(calls[1], ["bootout", "gui/501/io.github.photojupi.herdvia.agent"]);
         assert_eq!(calls.len(), 5);
         for call in &calls[2..] {
             assert_eq!(call, &["bootstrap", "gui/501", path.to_str().unwrap()]);
@@ -621,10 +621,10 @@ mod tests {
         let dir = temp_home();
         let path = dir
             .path()
-            .join("Library/LaunchAgents/dev.hlink.agent.plist");
+            .join("Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "old plist").unwrap();
-        let err = install_at(dir.path(), Path::new("/opt/new/hlink"), None, 501, |args| {
+        let err = install_at(dir.path(), Path::new("/opt/new/herdvia"), None, 501, |args| {
             if args[0] == "bootstrap" {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -635,27 +635,27 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/hlink"));
+        assert!(fs::read_to_string(path).unwrap().contains("/opt/new/herdvia"));
         assert!(err.to_string().contains("launchctl unavailable"));
         assert!(err.to_string().contains("agent is now stopped"));
-        assert!(err.to_string().contains("hlink agent install again"));
+        assert!(err.to_string().contains("herdvia agent install again"));
     }
 
     #[test]
     fn warns_for_temporary_or_target_components_only() {
         let temp = Path::new("/custom/temp");
         for path in [
-            "/tmp/hlink",
-            "/private/tmp/hlink",
-            "/custom/temp/hlink",
-            "/repo/target/release/hlink",
+            "/tmp/herdvia",
+            "/private/tmp/herdvia",
+            "/custom/temp/herdvia",
+            "/repo/target/release/herdvia",
         ] {
             assert!(unstable_path(Path::new(path), temp), "{path}");
         }
         for path in [
-            "/opt/hlink",
-            "/repo/targeted/hlink",
-            "/custom/temporary/hlink",
+            "/opt/herdvia",
+            "/repo/targeted/herdvia",
+            "/custom/temporary/herdvia",
         ] {
             assert!(!unstable_path(Path::new(path), temp), "{path}");
         }

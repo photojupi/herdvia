@@ -100,17 +100,17 @@ pub fn home_dir() -> io::Result<PathBuf> {
 }
 
 pub fn data_dir() -> io::Result<PathBuf> {
-    if let Some(dir) = env::var_os("HLINK_DIR") {
+    if let Some(dir) = env::var_os("HERDVIA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     if cfg!(target_os = "macos") {
-        Ok(home_dir()?.join("Library/Application Support/hlink"))
+        Ok(home_dir()?.join("Library/Application Support/herdvia"))
     } else {
         let base = env::var_os("XDG_DATA_HOME")
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or(home_dir()?.join(".local/share"));
-        Ok(base.join("hlink"))
+        Ok(base.join("herdvia"))
     }
 }
 
@@ -123,7 +123,7 @@ pub fn reject_root() -> io::Result<()> {
     if uid() == 0 {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "hlink must not run as root",
+            "herdvia must not run as root",
         ))
     } else {
         Ok(())
@@ -273,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn secures_directory_and_socket_and_checks_peer_uid() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("hlink");
+        let dir = temp.path().join("herdvia");
         let listener = listen(&dir).unwrap();
         assert_eq!(
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,

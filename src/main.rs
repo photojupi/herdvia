@@ -1,4 +1,4 @@
-use hlink::{
+use herdvia::{
     control, ipc,
     peers::{self, Peer, Permission},
 };
@@ -59,9 +59,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: hlink agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
             } else {
-                "usage: hlink agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
             },
         )),
     }
@@ -77,25 +77,25 @@ async fn main() {
         })
         .collect();
     let result = match ipc::reject_root().and(args).and_then(parse) {
-        Ok(Command::Agent) => hlink::agent::run().await.map(|()| 0),
+        Ok(Command::Agent) => herdvia::agent::run().await.map(|()| 0),
         #[cfg(windows)]
-        Ok(Command::AgentLog) => match hlink::launchd::redirect_log() {
-            Ok(()) => hlink::agent::run().await.map(|()| 0),
+        Ok(Command::AgentLog) => match herdvia::launchd::redirect_log() {
+            Ok(()) => herdvia::agent::run().await.map(|()| 0),
             Err(err) => Err(err),
         },
-        Ok(Command::AgentInstall) => hlink::launchd::install().await.map(|()| 0),
+        Ok(Command::AgentInstall) => herdvia::launchd::install().await.map(|()| 0),
         #[cfg(unix)]
-        Ok(Command::AgentUninstall) => hlink::launchd::uninstall().map(|()| 0),
+        Ok(Command::AgentUninstall) => herdvia::launchd::uninstall().map(|()| 0),
         #[cfg(windows)]
-        Ok(Command::AgentUninstall) => hlink::launchd::uninstall().await.map(|()| 0),
-        Ok(Command::Via { peer, line }) => hlink::via::run(&peer, &line).await,
+        Ok(Command::AgentUninstall) => herdvia::launchd::uninstall().await.map(|()| 0),
+        Ok(Command::Via { peer, line }) => herdvia::via::run(&peer, &line).await,
         Ok(command) => manage(command).await.map(|()| 0),
         Err(err) => Err(err),
     };
     let code = match result {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("hlink: {err}");
+            eprintln!("herdvia: {err}");
             255
         }
     };

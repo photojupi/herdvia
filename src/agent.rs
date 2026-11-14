@@ -39,8 +39,8 @@ pub async fn run() -> io::Result<()> {
             _ = updates.changed() => refresh_workers(&network, &mut workers, &mut connectors),
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 match completed {
-                    Some(Ok(Err(err))) => eprintln!("hlink: {err}"),
-                    Some(Err(err)) => eprintln!("hlink: session task: {err}"),
+                    Some(Ok(Err(err))) => eprintln!("herdvia: {err}"),
+                    Some(Err(err)) => eprintln!("herdvia: session task: {err}"),
                     _ => {}
                 }
             }

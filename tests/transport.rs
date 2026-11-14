@@ -1,6 +1,6 @@
 //! M2 루프백 테스트가 보던 성질을 M3 의 A→B 네트워크 경로로 옮긴 통합 테스트.
 //!
-//! A 에서 `hlink via b <줄>` 을 실행하면 A 의 에이전트가 iroh 로 B 의 에이전트에 스트림을 열고,
+//! A 에서 `herdvia via b <줄>` 을 실행하면 A 의 에이전트가 iroh 로 B 의 에이전트에 스트림을 열고,
 //! B 가 줄을 검사해 실행한다. B 의 PATH 에는 가짜 herdr-core 가 있고 HC_SESSION 으로 동작을 고른다.
 //! 대부분의 검증은 한 쌍(`shared()`)을 잠가 가며 재사용한다. 에이전트를 죽이는 검증만 새 쌍을 띄운다.
 
@@ -325,7 +325,7 @@ fn no_agent_means_immediate_255() {
     // 데이터 폴더는 있지만 소켓이 없음
     assert_quick_255(&n, "소켓 없음");
     // 데이터 폴더 자체가 없음
-    n.hlink_dir = n.root.join("does-not-exist");
+    n.herdvia_dir = n.root.join("does-not-exist");
     assert_quick_255(&n, "폴더 없음");
 }
 
@@ -551,10 +551,10 @@ fn killing_via_cleans_up_remote_children() {
 #[test]
 fn permissions_when_agent_creates_dir() {
     let mut n = Node::new("A");
-    n.hlink_dir = n.root.join("fresh");
-    assert!(!n.hlink_dir.exists());
+    n.herdvia_dir = n.root.join("fresh");
+    assert!(!n.herdvia_dir.exists());
     n.start_agent();
-    assert_eq!(mode_of(&n.hlink_dir), 0o700, "데이터 폴더 권한");
+    assert_eq!(mode_of(&n.herdvia_dir), 0o700, "데이터 폴더 권한");
     let meta = fs::symlink_metadata(n.sock()).unwrap();
     assert!(meta.file_type().is_socket(), "agent.sock 이 소켓이 아님");
     assert_eq!(mode_of(&n.sock()), 0o600, "소켓 권한");
@@ -569,12 +569,12 @@ fn permissions_when_agent_creates_dir() {
 fn permissions_when_dir_is_too_open() {
     // 이미 있는 폴더가 0755 여도 결과는 0700 / 0600 이어야 한다. allow 가 만든 peers 도 0600.
     let mut n = Node::new("A");
-    fs::set_permissions(&n.hlink_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&n.herdvia_dir, fs::Permissions::from_mode(0o755)).unwrap();
     n.start_agent();
     let other = Node::new("X");
     let (other_id, _) = other.id();
     n.allow("x", &other_id, "--both");
-    assert_eq!(mode_of(&n.hlink_dir), 0o700, "데이터 폴더 권한");
+    assert_eq!(mode_of(&n.herdvia_dir), 0o700, "데이터 폴더 권한");
     assert_eq!(mode_of(&n.sock()), 0o600, "소켓 권한");
     assert_eq!(mode_of(&n.key_file()), 0o600, "secret.key 권한");
     assert_eq!(mode_of(&n.peers_file()), 0o600, "peers 권한");

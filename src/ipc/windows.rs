@@ -172,9 +172,9 @@ pub fn home_dir() -> io::Result<PathBuf> {
 }
 
 pub fn data_dir() -> io::Result<PathBuf> {
-    match env::var_os("HLINK_DIR") {
+    match env::var_os("HERDVIA_DIR") {
         Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(env_path("APPDATA")?.join("hlink")),
+        None => Ok(env_path("APPDATA")?.join("herdvia")),
     }
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn lock_file(lock: &File) -> io::Result<()> {
 }
 
 fn name_for_dir(sid: &str, dir: &Path) -> io::Result<String> {
-    let directory = env::var_os("HLINK_DIR")
+    let directory = env::var_os("HERDVIA_DIR")
         .map(|_| std::path::absolute(dir).map(|p| p.as_os_str().encode_wide().collect::<Vec<_>>()))
         .transpose()?;
     Ok(pipe_name(sid, directory.as_deref()))

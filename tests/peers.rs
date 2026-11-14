@@ -303,7 +303,7 @@ fn wide_secret_key_permission_refuses_start() {
     let (id, _) = n.id();
     for mode in [0o644, 0o640, 0o604] {
         chmod(&n.key_file(), mode);
-        let o = n.hlink(&["id"]);
+        let o = n.herdvia(&["id"]);
         assert_ne!(
             o.code(),
             Some(0),
@@ -342,10 +342,10 @@ fn wide_peers_permission_refuses_start() {
 #[test]
 fn id_prints_endpoint_id_and_fingerprint_stably() {
     let mut n = Node::new("A");
-    n.hlink_dir = n.root.join("fresh");
-    assert!(!n.hlink_dir.exists());
+    n.herdvia_dir = n.root.join("fresh");
+    assert!(!n.herdvia_dir.exists());
 
-    let o1 = n.hlink(&["id"]);
+    let o1 = n.herdvia(&["id"]);
     assert_eq!(o1.code(), Some(0), "stderr: {}", o1.err());
     let s = o1.out();
     let lines: Vec<&str> = s.lines().collect();
@@ -364,16 +364,16 @@ fn id_prints_endpoint_id_and_fingerprint_stably() {
     );
 
     assert_eq!(mode_of(&n.key_file()), 0o600, "id 가 만든 secret.key 권한");
-    assert_eq!(mode_of(&n.hlink_dir), 0o700, "id 가 만든 데이터 폴더 권한");
+    assert_eq!(mode_of(&n.herdvia_dir), 0o700, "id 가 만든 데이터 폴더 권한");
 
-    let o2 = n.hlink(&["id"]);
+    let o2 = n.herdvia(&["id"]);
     assert_eq!(o2.code(), Some(0));
     assert_eq!(o2.stdout, o1.stdout, "다시 실행하면 같은 값이어야 함");
 
     // 에이전트가 떠 있어도 같은 값이고, 다른 노드와는 다르다.
     n.start_agent();
     assert_eq!(
-        n.hlink(&["id"]).stdout,
+        n.herdvia(&["id"]).stdout,
         o1.stdout,
         "에이전트가 뜬 뒤 id 가 바뀜"
     );
@@ -461,7 +461,7 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
 
     let too_long = "x".repeat(33);
     for name in ["", "a b", "a/b", "한글", too_long.as_str(), "a;b", "a\nb"] {
-        let o = n.hlink(&["allow", name, good, "--both"]);
+        let o = n.herdvia(&["allow", name, good, "--both"]);
         assert_ne!(o.code(), Some(0), "잘못된 이름 {name:?} 을 받아들임");
         assert!(!o.err().trim().is_empty(), "[{name:?}] 거부 사유가 없음");
         assert!(
@@ -480,7 +480,7 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
         format!(" {good}"),
     ];
     for bad in &bad_ids {
-        let o = n.hlink(&["allow", "p1", bad, "--both"]);
+        let o = n.herdvia(&["allow", "p1", bad, "--both"]);
         assert_ne!(o.code(), Some(0), "잘못된 EndpointId {bad:?} 를 받아들임");
         assert!(!o.err().trim().is_empty(), "[{bad:?}] 거부 사유가 없음");
         assert!(
@@ -496,7 +496,7 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
         vec!["allow", "p2"],
         vec!["allow"],
     ] {
-        let o = n.hlink(&args);
+        let o = n.herdvia(&args);
         assert_ne!(o.code(), Some(0), "{args:?} 를 받아들임");
         assert!(!o.err().trim().is_empty(), "{args:?} 거부 사유가 없음");
         assert!(

@@ -39,12 +39,12 @@ use windows_sys::{
 };
 
 const RUN_KEY: *const u16 = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const VALUE: *const u16 = w!("hlink");
+const VALUE: *const u16 = w!("herdvia");
 const WAIT: Duration = Duration::from_secs(5);
 
 pub async fn install() -> io::Result<()> {
     reject_elevated_install()?;
-    autostart_logic::validate_install(env::var_os("HLINK_DIR").is_some())?;
+    autostart_logic::validate_install(env::var_os("HERDVIA_DIR").is_some())?;
     let executable = env::current_exe()?;
     let command =
         autostart_logic::run_command(&executable.as_os_str().encode_wide().collect::<Vec<_>>())?;
@@ -57,7 +57,7 @@ pub async fn install() -> io::Result<()> {
         &env::temp_dir().to_string_lossy(),
     ) {
         eprintln!(
-            "hlink: warning: executable is in a temporary or target directory: {}",
+            "herdvia: warning: executable is in a temporary or target directory: {}",
             executable.display()
         );
     }
@@ -74,7 +74,7 @@ pub async fn install() -> io::Result<()> {
         io::Error::new(
             err.kind(),
             format!(
-                "{err}; Run registration remains; check {} and run hlink agent install again",
+                "{err}; Run registration remains; check {} and run herdvia agent install again",
                 log.display()
             ),
         )
@@ -82,7 +82,7 @@ pub async fn install() -> io::Result<()> {
 }
 
 pub async fn uninstall() -> io::Result<()> {
-    // Automatic startup always uses the default pipe, even with HLINK_DIR set.
+    // Automatic startup always uses the default pipe, even with HERDVIA_DIR set.
     unregister()?;
     if let Some(pipe) = agent_pipe().await? {
         stop_agent(pipe).await?;
@@ -118,7 +118,7 @@ fn reject_elevated_install() -> io::Result<()> {
     if elevation.TokenIsElevated != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "run hlink agent install from a normal PowerShell window without administrator privileges",
+            "run herdvia agent install from a normal PowerShell window without administrator privileges",
         ));
     }
     Ok(())
@@ -127,7 +127,7 @@ fn reject_elevated_install() -> io::Result<()> {
 fn log_path() -> io::Result<PathBuf> {
     env::var_os("LOCALAPPDATA")
         .filter(|value| !value.is_empty())
-        .map(|dir| PathBuf::from(dir).join("hlink/hlink.log"))
+        .map(|dir| PathBuf::from(dir).join("herdvia/herdvia.log"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))
 }
 
@@ -377,7 +377,7 @@ fn start_detached(mut command: Vec<u16>) -> io::Result<()> {
             return Err(err);
         }
         eprintln!(
-            "hlink: warning: this terminal does not let the agent outlive it; the agent may stop when the terminal closes and will start again at the next logon"
+            "herdvia: warning: this terminal does not let the agent outlive it; the agent may stop when the terminal closes and will start again at the next logon"
         );
         flags = DETACHED_PROCESS;
     }
