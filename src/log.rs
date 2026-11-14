@@ -124,6 +124,7 @@ pub(crate) fn sanitize(text: &str) -> String {
                 c,
                 '\u{2028}'
                     | '\u{2029}'
+                    | '\u{061c}'
                     | '\u{200e}'
                     | '\u{200f}'
                     | '\u{202a}'..='\u{202e}'
@@ -523,17 +524,17 @@ mod tests {
         assert!(!sanitize(&"\n\u{1b}".repeat(500)).contains(['\n', '\u{1b}']));
         assert_eq!(sanitize("a\u{2028}b\u{2029}c"), r"a\u{2028}b\u{2029}c");
         let bidi = [
-            '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
-            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}',
+            '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
         ];
         assert_eq!(
             sanitize(&String::from_iter(bidi)),
-            r"\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}"
+            r"\u{61c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}"
         );
         // Neighbours of the escaped ranges stay.
         assert_eq!(
-            sanitize("\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"),
-            "\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"
+            sanitize("\u{061b}\u{061d}\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"),
+            "\u{061b}\u{061d}\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"
         );
     }
 
