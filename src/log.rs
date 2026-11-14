@@ -4,7 +4,7 @@
 
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read, Seek, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     sync::{LazyLock, Mutex, PoisonError},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -12,9 +12,12 @@ use std::{
 
 const MAX_AGE: u64 = 180 * 24 * 60 * 60;
 const DAY: u64 = 24 * 60 * 60;
-/// How often the agent checks whether a trim is due. Tokio's timers stop while a Mac sleeps,
-/// so it checks the wall clock every hour instead of waiting 24 hours.
+/// How often the agent checks the log's size and whether a trim by age is due. Tokio's timers
+/// stop while a Mac sleeps, so it checks the wall clock every hour instead of waiting 24 hours.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
+/// A log longer than this is cut down to the whole lines in its last `KEEP` bytes.
+const MAX_SIZE: u64 = 10 * 1024 * 1024;
+const KEEP: u64 = 5 * 1024 * 1024;
 /// Longer text is cut to this many characters after escaping.
 const MAX_CHARS: usize = 300;
 
@@ -214,6 +217,26 @@ fn expired(data: &[u8], cutoff: u64) -> usize {
     cut
 }
 
+/// Cuts `file` down in place to the whole lines in its last `keep` bytes when it is longer than
+/// `max`, reading only those bytes. Leaves the file alone otherwise.
+fn shrink(file: &mut File, max: u64, keep: u64) -> io::Result<()> {
+    let len = file.metadata()?.len();
+    if len <= max {
+        return Ok(());
+    }
+    // One byte more shows whether the kept bytes start a line; a partial first line is dropped.
+    file.seek(SeekFrom::Start(len.saturating_sub(keep + 1)))?;
+    let mut data = Vec::new();
+    (&*file).take(keep + 1).read_to_end(&mut data)?;
+    let cut = data
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(data.len(), |i| i + 1);
+    file.rewind()?;
+    file.write_all(&data[cut..])?;
+    file.set_len((data.len() - cut) as u64)
+}
+
 /// Drops the expired start of `file` in place, keeping its inode for the append handles that
 /// write to it. Leaves the file alone when nothing has expired.
 fn rewrite(file: &mut File, cutoff: u64) -> io::Result<()> {
@@ -250,7 +273,7 @@ fn is_stderr(file: &File) -> io::Result<bool> {
         && stat.st_ino as u64 == metadata.ino())
 }
 
-fn trim(path: &Path, now: u64) -> io::Result<()> {
+fn trim(path: &Path, now: u64, expire: bool) -> io::Result<()> {
     // Hold standard error so that no log line of this process lands mid-rewrite and is lost.
     let _stderr = io::stderr().lock();
     let mut file = match OpenOptions::new().read(true).write(true).open(path) {
@@ -261,7 +284,13 @@ fn trim(path: &Path, now: u64) -> io::Result<()> {
     if !is_stderr(&file)? {
         return Ok(());
     }
-    rewrite(&mut file, now.saturating_sub(MAX_AGE))
+    // Cutting the size first bounds what the trim by age reads.
+    shrink(&mut file, MAX_SIZE, KEEP)?;
+    if expire {
+        file.rewind()?;
+        rewrite(&mut file, now.saturating_sub(MAX_AGE))?;
+    }
+    Ok(())
 }
 
 /// Whether a trim is due at `now`, 24 hours of wall-clock time after the `last` one.
@@ -269,16 +298,17 @@ fn due(last: Option<u64>, now: u64) -> bool {
     last.is_none_or(|last| now.abs_diff(last) >= DAY)
 }
 
-/// Drops lines older than 180 days from the log at `path` if 24 hours of wall-clock time have
-/// passed since the `last` trim, or if there has been none.
+/// Cuts the log at `path` down to its last 5 MiB if it is over 10 MiB. Then drops lines older
+/// than 180 days if 24 hours of wall-clock time have passed since the `last` such trim, or if
+/// there has been none.
 pub(crate) async fn trim_if_due(path: &Path, last: &mut Option<u64>) {
     let now = unix_now();
-    if !due(*last, now) {
-        return;
+    let expire = due(*last, now);
+    if expire {
+        *last = Some(now);
     }
-    *last = Some(now);
     let file = path.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || trim(&file, now))
+    let result = tokio::task::spawn_blocking(move || trim(&file, now, expire))
         .await
         .unwrap_or_else(|err| Err(io::Error::other(err)));
     if let Err(err) = result {
@@ -560,6 +590,87 @@ mod tests {
         assert_eq!(summary(Kind::Other, 1), "suppressed 1 other log line");
     }
 
+    fn numbered(count: usize) -> String {
+        (0..count).map(|i| format!("line {i:03}\n")).collect()
+    }
+
+    fn read_write(path: &Path) -> File {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn does_not_write_a_log_within_the_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdvia.log");
+        let data = numbered(10);
+        fs::write(&path, &data).unwrap();
+        // A read-only handle fails any write.
+        shrink(&mut File::open(&path).unwrap(), data.len() as u64, 9).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), data);
+    }
+
+    #[test]
+    fn shrinks_an_oversized_log_in_place_at_a_line_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdvia.log");
+        // 25 lines of 9 bytes.
+        let data = numbered(25);
+        fs::write(&path, &data).unwrap();
+        let mut append = OpenOptions::new().append(true).open(&path).unwrap();
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&path).unwrap().ino()
+        };
+        // The last 50 bytes start inside line 19, which goes.
+        shrink(&mut read_write(&path), 100, 50).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), &data[9 * 20..]);
+        append.write_all(b"after\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{}after\n", &data[9 * 20..])
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        }
+    }
+
+    #[test]
+    fn keeps_a_line_that_starts_exactly_at_the_kept_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdvia.log");
+        let data = numbered(25);
+        fs::write(&path, &data).unwrap();
+        shrink(&mut read_write(&path), 100, 45).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), &data[9 * 20..]);
+        // Without a line boundary in the kept bytes nothing is left.
+        fs::write(&path, "x".repeat(200)).unwrap();
+        shrink(&mut read_write(&path), 100, 50).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    /// Reading all of this sparse file would need 64 GiB of memory.
+    #[cfg(unix)]
+    #[test]
+    fn reads_only_the_end_of_a_huge_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdvia.log");
+        fs::write(&path, b"").unwrap();
+        let mut file = read_write(&path);
+        file.set_len(64 << 30).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        let tail = format!("\n{}", numbered(3));
+        file.write_all(tail.as_bytes()).unwrap();
+        shrink(&mut file, MAX_SIZE, KEEP).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), numbered(3));
+    }
+
     #[cfg(unix)]
     #[test]
     fn leaves_a_file_that_is_not_standard_error_alone() {
@@ -567,8 +678,8 @@ mod tests {
         let path = dir.path().join("herdvia.log");
         let data = at(1, "old");
         fs::write(&path, &data).unwrap();
-        trim(&path, CUTOFF).unwrap();
+        trim(&path, CUTOFF, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), data);
-        trim(&dir.path().join("missing.log"), CUTOFF).unwrap();
+        trim(&dir.path().join("missing.log"), CUTOFF, true).unwrap();
     }
 }
