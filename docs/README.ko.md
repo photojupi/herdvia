@@ -126,7 +126,7 @@ $env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/i
 
 두 대의 PC를 연결해 보겠습니다:
 - **PC A** — 내가 Herdr / `hc`를 실행하는 컴퓨터 (예: 노트북)
-- **PC B** — 원격으로 붙이고 싶은 컴퓨터 (예: 집 데스크톱, 맥미니)
+- **PC B** — 원격으로 붙이고 싶은 컴퓨터 (예: 집 데스크톱)
 
 먼저 **A와 B 양쪽 모두**에 `herdvia`를 설치합니다(Intel Mac, Linux, 수동 설치는 [설치 가이드](#install) 참고):
 
@@ -246,7 +246,7 @@ hc machine add --via 'herdvia via B' --name B
 - `hc`는 이 명령어 뒤에 원격 실행 줄을 인자 하나로 덧붙여 호출합니다.
 - **`hc`가 `PATH`에서 `herdvia`를 찾지 못하는 경우:** 실행 파일의 전체 경로를 적고, 공백이 있으면 따옴표로 감싸야 합니다.
   - **macOS:** `hc`가 `--via` 값을 `sh` 명령줄로 실행하므로 `sh` 규칙에 맞게 따옴표를 씌웁니다(설치 스크립트 출력에 그대로 붙여 넣을 수 있는 명령이 안내됩니다).
-  - **Windows:** `hc`가 셸 없이 `CommandLineToArgvW` 규칙으로 인자를 분리하므로 공백 있는 경로는 큰따옴표(`"..."`)로 감싸야 합니다. Windows PowerShell 5.1은 인자 안의 큰따옴표 전달이 까다로우므로, 설치 후 새 PowerShell 창을 열고 Herdr를 재시작해 `PATH`에 잡힌 상태에서 위의 `hc machine add --via 'herdvia via B' --name B` 형태를 그대로 쓰는 것이 가장 간편합니다.
+  - **Windows:** `hc`가 셸 없이 `--via`를 분리하므로(`CommandLineToArgvW` 규칙) 공백 있는 경로는 큰따옴표로 감싸야 합니다. Windows PowerShell 5.1은 이스케이프하지 않으면 안쪽 큰따옴표를 제거하므로, 사용자 `PATH`에 `herdvia`를 두고(설치 후 새 PowerShell 창을 열고 Herdr를 재시작) 위와 같이 `hc machine add --via 'herdvia via B' --name B`를 실행하는 것이 훨씬 간단합니다.
 
 ### 6단계. 연결 상태 확인하기
 
@@ -308,7 +308,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_NO_MODIFY_PATH=1` | `~/.zprofile` 또는 Windows 사용자 `PATH` 수정 생략 |
 | `HERDVIA_RELEASE_BASE` | GitHub Releases 대신 `<url>/<파일명>`에서 다운로드 (`HERDVIA_VERSION`보다 우선) |
 
-특정 버전을 지정해 설치하려면(버전 태그 URL의 스크립트를 받더라도 `HERDVIA_VERSION`을 지정하지 않으면 최신 버전을 설치합니다):
+특정 버전을 지정해 설치하려면(참고: 버전 태그 URL에서 `install.sh` / `install.ps1`을 내려받더라도 `HERDVIA_VERSION`을 명시적으로 설정해야 합니다):
 
 ```sh
 curl -fsSL https://github.com/photojupi/herdvia/releases/download/v0.1.0/install.sh | HERDVIA_VERSION=0.1.0 sh
@@ -391,12 +391,12 @@ curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA2
 certutil -hashfile herdvia-windows-x64.zip SHA256
 Select-String herdvia-windows-x64.zip SHA256SUMS
 
-# 4. %LOCALAPPDATA%\Programs\herdvia 에 압축 해제
+# 4. %LOCALAPPDATA%\Programs\herdvia 에 압축 해제 (해시가 일치할 때만)
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
 tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
 ```
 
-이후 시작 메뉴에서 **"계정에 대한 환경 변수 편집"**을 검색해 사용자 변수 `Path`에 `%LOCALAPPDATA%\Programs\herdvia`의 실제 경로를 추가한 뒤, 새 PowerShell 창을 열고(Herdr가 켜져 있었다면 재시작) `herdvia id`를 실행해 확인하세요. 첫 실행 시 SmartScreen 경고가 뜰 수 있습니다.
+`herdvia`를 이름만으로 실행하려면 **사용자 `Path`** (*시작 메뉴 → "계정에 대한 환경 변수 편집" → 사용자 변수 → `Path` → 편집 → 새로 만들기*)에 `%LOCALAPPDATA%\Programs\herdvia`를 추가한 뒤, 새 PowerShell 창을 열고(Herdr가 실행 중이면 재시작) `herdvia id`로 확인하세요. 첫 실행 시 Windows SmartScreen 안내 창이 뜰 수 있습니다.
 
 <a id="from-source"></a>
 ### 소스 코드에서 빌드
@@ -423,7 +423,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 바꿉니다. 실행 중인 에이전트에는 즉시 반영됩니다(또는 다음 에이전트 시작 시 반영). |
 | `herdvia revoke <이름>` | 피어를 삭제하고 해당 피어와 맺어진 활성 연결·세션을 즉시 끊습니다. |
 | `herdvia status` | 각 피어의 이름, 권한, 연결 상태, 경로(`direct`/`relay`), 왕복 시간(RTT)을 표시합니다. 에이전트 실행 필요. |
-| `herdvia pending` | `inbound` 권한이 없어 거부된 접속 시도를 최근 순으로 보여 줍니다(지문, `EndpointId`, 횟수, 경과 초). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
+| `herdvia pending` | 인바운드 접속 시도가 거부된 기기 목록을 보여 줍니다(지문, `EndpointId`, 시도 횟수, 마지막 확인 후 경과 시간). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
 | `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문으로 시작하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, `<이름>`이 이미 다른 ID로 등록돼 있으면 거부합니다. 에이전트 실행 필요. |
 | `herdvia doctor` | 아무것도 변경하지 않고 이 PC의 설정 상태(실행 파일, 데이터 폴더, `secret.key`, `peers`, `herdr-core`, 자동 시작, 에이전트, 중계 서버, 피어 연결, 대기 중인 접속 시도)를 점검합니다. `ok`/`warn`/`fail` 줄들을 출력하며(피어 연결은 피어마다 한 줄, 앞 단계가 실패하면 뒤 점검 생략), 실패한 항목이 하나라도 있으면 종료 코드 `1`로 끝납니다. [`herdvia doctor` 실행하기](#run-herdvia-doctor) 참고. |
 | `herdvia --version` | `herdvia <버전>`을 출력합니다. |
@@ -559,14 +559,14 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`(또는 `--both`) 권한을 준 피어는 이 PC에서 내 사용자 권한으로 `herdr-core` 세션을 열 수 있으며, 이는 사실상 셸(터미널) 권한을 주는 것과 같습니다.** 본인이 직접 소유하거나 완전히 신뢰하는 기기만 허용하세요.
 
-- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 Ed25519 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 세션마다 권한을 재확인하며, `allow`·`revoke` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다.
+- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 Ed25519 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 스트림마다 권한을 재확인하며, `revoke` / `allow` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다.
 - **명령줄 허용 목록의 역할:** `hc`의 정확한 `herdr-core connect` 줄만 허용하고 나머지를 로그에 남기며 차단하는 것은 오용 표면을 줄이고 이상 징후를 포착하기 위함입니다. `herdr-core connect` 자체가 임의 명령을 실행할 수 있으므로, **실질적인 보안 경계는 피어 키 목록(`peers`)입니다.**
 - **`root` 실행 거부:** macOS/Unix에서 `herdvia`는 `root` 권한으로 실행되지 않습니다.
 - **사용자 전용 로컬 통신(IPC):**
   - **macOS / Unix:** 권한 `0700` 데이터 폴더 안의 `0600` 소켓을 사용하며 접속 프로세스의 UID를 검사합니다.
-  - **Windows:** 현재 사용자 SID에만 접근을 허용하는 이름 있는 파이프(Named Pipe)를 쓰며 원격 네트워크 클라이언트를 차단합니다.
+  - **Windows:** DACL로 현재 사용자 SID에만 접근을 제한한 이름 있는 파이프(Named Pipe)를 쓰며 원격 네트워크 파이프 클라이언트를 차단합니다.
 - **비밀키(`secret.key`) 관리:** macOS/Unix에서는 권한 `0600`으로 생성되며 권한이 더 넓으면 시작을 거부합니다(Windows는 사용자 프로필 기본 권한 사용). 이 파일이 유출되면 공격자가 내 PC로 위장할 수 있으므로, 유출 시 모든 피어에서 즉시 `herdvia revoke <이름>`을 실행하고 `secret.key`를 삭제해 새 ID를 발급받으세요.
-- **지문과 `pending` / `accept`:** 지문은 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)로 사람이 눈으로 대조하고 입력하기 위한 축약값이며, 실제 저장·검증은 항상 전체 `EndpointId`로 이루어집니다. `pending`은 `iroh` 핸드셰이크 인증을 통과한 시도만 메모리에 최대 16개·10분간 유지하며, `accept`는 일치하는 항목이 정확히 1개일 때만 등록합니다. 지문은 `pending` 목록 자체가 아니라 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
+- **지문과 `pending` / `accept`:** 지문은 사람이 대조하기 위해 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)만 나타낸 것이며, `herdvia`는 항상 전체 `EndpointId`를 저장하고 검증합니다. `pending`은 `iroh` 핸드셰이크 인증을 통과한 시도만 메모리에 최대 16개·10분간 유지하며, `accept`는 일치하는 항목이 정확히 1개일 때만 등록합니다. 지문은 `pending` 목록 자체가 아니라 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
 
 **보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주시고, 민감하지 않은 버그는 일반 이슈를 열어 주세요.
 
@@ -613,19 +613,19 @@ ok   pending: no rejected connection attempts
 | **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (`hc`가 띄우는 `via`를 포함해 모든 명령에 동일한 값이 보여야 하며, `agent install`과는 함께 쓸 수 없음) |
 | **`secret.key`** | 이 PC의 32바이트 Ed25519 비밀키 (데이터 폴더 내) |
 | **`peers`** | 피어 허용 목록 (줄마다 `<이름> <EndpointId> <in\|out\|both>`, `allow`·`accept`·`revoke`로 관리) |
-| **`agent.sock`** | macOS/Unix 로컬 소켓 (Windows는 사용자 SID별 이름 있는 파이프 사용) |
+| **`agent.sock`** | macOS/Unix 로컬 Unix 도메인 소켓 (Windows는 대신 사용자 SID별 이름 있는 파이프 사용) |
 | **로그 (macOS 자동 시작)** | `~/Library/Logs/herdvia.log` |
 | **로그 (Windows 자동 시작)** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **로그 (`herdvia agent` 수동 실행)** | 표준 오류 (`stderr`) |
 
-*참고: `herdvia`는 로그 파일을 자동으로 순환(rotate)하거나 비우지 않습니다.*
+*참고: `herdvia`는 로그 파일을 자동으로 순환(rotate)하지 않습니다.*
 
 ---
 
 <a id="design"></a>
 ## 설계 문서
 
-내부 프레임 규격, 실측한 `hc` 동작, 설계 배경은 [DESIGN.md](../DESIGN.md)에 정리되어 있습니다.
+아키텍처 설명, 와이어 프레이밍 세부 규격, 실측한 `hc` 동작은 [DESIGN.md](../DESIGN.md)(한국어로 작성됨)에 정리되어 있습니다.
 
 ---
 

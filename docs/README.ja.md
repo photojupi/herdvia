@@ -126,7 +126,7 @@ $env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/i
 
 2 台の PC を接続してみましょう：
 - **マシン A** — Herdr / `hc` を操作する手元の PC（例：ノート PC）
-- **マシン B** — リモート接続したい PC（例：自宅のデスクトップや Mac mini）
+- **マシン B** — リモート接続したい PC（例：自宅のデスクトップ）
 
 まず **A と B の両方**に `herdvia` をインストールします（Intel Mac・Linux・手動導入は[インストール方法](#install)を参照）：
 
@@ -246,7 +246,7 @@ hc machine add --via 'herdvia via B' --name B
 - `hc` はこのコマンドの末尾にリモート実行コマンドを 1 つの引数として追加して起動します。
 - **`hc` が `PATH` 上の `herdvia` を見つけられない場合:** 実行ファイルのフルパスを指定し、空白を含む場合はクォートしてください。
   - **macOS:** `hc` は `--via` を `sh` コマンド行として実行するため、`sh` の規則でクォートします（インストールスクリプトがそのまま貼り付けられるコマンドを表示します）。
-  - **Windows:** `hc` はシェルを介さず `CommandLineToArgvW` 規則で分割するため、空白を含むパスはダブルクォート（`"..."`）が必要です。Windows PowerShell 5.1 では引数内のダブルクォートの扱いが煩雑なため、インストール後に新しい PowerShell を開き Herdr を再起動して `PATH` を通したうえで、上記の `hc machine add --via 'herdvia via B' --name B` を使うのが最も簡単です。
+  - **Windows:** `hc` はシェルを介さず `--via` を分割するため（`CommandLineToArgvW` 規則）、空白を含むパスはダブルクォートで囲む必要があります。Windows PowerShell 5.1 はエスケープしない限り内側のダブルクォートを除去してしまうため、ユーザー `PATH` に `herdvia` を入れた状態にして（インストール後に新しい PowerShell ウィンドウを開き Herdr を再起動）、上記の通り `hc machine add --via 'herdvia via B' --name B` を実行する方がずっと簡単です。
 
 ### 手順 6. 接続状態を確認する
 
@@ -391,12 +391,12 @@ curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA2
 certutil -hashfile herdvia-windows-x64.zip SHA256
 Select-String herdvia-windows-x64.zip SHA256SUMS
 
-# 4. %LOCALAPPDATA%\Programs\herdvia に展開
+# 4. %LOCALAPPDATA%\Programs\herdvia に展開（ハッシュが一致した場合のみ）
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
 tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
 ```
 
-その後、スタートメニューで「アカウントの環境変数を編集」を検索し、ユーザー環境変数 `Path` に `%LOCALAPPDATA%\Programs\herdvia` のフルパスを追加してから、新しい PowerShell ウィンドウを開き（Herdr が起動中なら再起動）`herdvia id` を確認してください。初回実行時に SmartScreen の警告が表示されることがあります。
+`herdvia` を名前だけで実行できるよう、`%LOCALAPPDATA%\Programs\herdvia` を**ユーザー環境変数 `Path`**（*スタートメニュー → 「アカウントの環境変数を編集」 → ユーザー環境変数 → `Path` → 編集 → 新規*）に追加してから、新しい PowerShell ウィンドウを開き（Herdr が起動中なら再起動）、`herdvia id` で確認してください。初回実行時に Windows SmartScreen の確認画面が表示されることがあります。
 
 <a id="from-source"></a>
 ### ソースコードからビルド
@@ -423,7 +423,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia allow <名前> <EndpointId> (--inbound \| --outbound \| --both)` | ピアを追加または更新します。稼働中のエージェントには即座に反映されます（または次回エージェント起動時に反映）。 |
 | `herdvia revoke <名前>` | ピアを削除し、そのピアとのアクティブな接続・セッションを即座に切断します。 |
 | `herdvia status` | 各ピアの名前、権限、接続状態、経路（`direct`/`relay`）、往復遅延（RTT）を表示します。エージェントの起動が必要です。 |
-| `herdvia pending` | `inbound` 権限がないために拒否された着信試行を新しい順に表示します（フィンガープリント、`EndpointId`、試行回数、最終試行からの経過秒数）。メモリ上のみ最大 16 件・最終試行から 10 分間保持。エージェントの起動が必要です。 |
+| `herdvia pending` | 着信接続の試行が拒否されたマシンを一覧表示します（フィンガープリント、`EndpointId`、試行回数、最終確認からの経過時間）。メモリ上のみ最大 16 件・最終試行から 10 分間保持。エージェントの起動が必要です。 |
 | `herdvia accept <名前> <fingerprint> (--inbound \| --both)` | `pending` 内で指定フィンガープリントに一致する 1 台を完全な `EndpointId` で登録します。一致が 0 件または複数件の場合、あるいは `<名前>` が別の ID で登録済みの場合は拒否します。エージェントの起動が必要です。 |
 | `herdvia doctor` | 何も変更せずにこのマシンの設定状態（実行ファイル、データフォルダ、`secret.key`、`peers`、`herdr-core`、自動起動、エージェント、リレー、ピア接続、保留中の着信試行）を点検します。`ok`/`warn`/`fail` の行を出力し（ピア接続はピアごとに 1 行、前の段階が失敗した場合は後続の点検を省略）、1 つでも失敗があれば終了コード `1` で終了します。[`herdvia doctor` を実行する](#run-herdvia-doctor)を参照。 |
 | `herdvia --version` | `herdvia <バージョン>` を表示します。 |
@@ -559,14 +559,14 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`（または `--both`）で許可したピアは、このマシン上であなたのユーザー権限として `herdr-core` セッションを開けます — 実質的にシェル権限を与えるのと同等です。** 自分自身の端末と同等に信頼できる機器のみを許可してください。
 
-- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。セッションごとに再確認され、`revoke` / `allow` の変更は稼働中のエージェントに即時反映されます。
+- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。権限はストリームごとに再確認され、`revoke` / `allow` の変更は稼働中のエージェントに即時反映されます。
 - **コマンド許可リストの位置づけ:** `hc` の正確な `herdr-core connect` 行のみを通し他を拒否・ログ記録する仕組みは、誤用を減らし異常を検知するためのものです。`herdr-core connect` 自体が任意のコマンドを実行できるため、**本来のセキュリティ境界はピアの鍵リスト（`peers`）です。**
 - **`root` 実行の拒否:** macOS/Unix では `root` での起動を拒否します。
 - **ユーザー分離されたローカル IPC:**
   - **macOS / Unix:** `0700` データフォルダ内の `0600` ソケットを使用し、接続元の UID を検証します。
-  - **Windows:** 現在のユーザー SID のみにアクセスを許可した名前付きパイプを使用し、リモートクライアントを拒否します。
+  - **Windows:** DACL により現在のユーザー SID のみに制限された名前付きパイプを使用し、リモートネットワークからのパイプクライアントを拒否します。
 - **秘密鍵（`secret.key`）の保護:** macOS/Unix では権限 `0600` で作成され、それより広い権限だと起動を拒否します（Windows ではユーザープロファイルの既定の権限を使用）。`secret.key` を持つ者は誰でも、このマシンを信頼しているピアに対してこのマシンになりすますことができます — 漏洩した場合はすべてのピアで直ちに `herdvia revoke <名前>` を実行し、`secret.key` を削除して新しい ID を再生成してください。
-- **フィンガープリントと `pending` / `accept`:** フィンガープリントは 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）であり、目視確認と `accept` 入力用の短縮表記です。保存・検証されるのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了した試行のみをメモリ上に最大 16 件・10 分間保持し、`accept` は一致がただ 1 件のときのみ登録します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
+- **フィンガープリントと `pending` / `accept`:** フィンガープリントは人間が照合するために 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）のみを表したもので、`herdvia` が保存・検証するのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了した試行のみをメモリ上に最大 16 件・10 分間保持し、`accept` は一致がただ 1 件のときのみ登録します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
 
 **脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
 
@@ -613,7 +613,7 @@ ok   pending: no rejected connection attempts
 | **保存先の上書き環境変数** | `HERDVIA_DIR=<パス>` でデータフォルダを変更可能（`hc` が起動する `via` を含む全コマンドに同じ値を渡す必要あり。`agent install` とは併用不可） |
 | **`secret.key`** | このマシンの 32 バイト Ed25519 秘密鍵（データフォルダ内） |
 | **`peers`** | ピア許可リスト（1 行に `<名前> <EndpointId> <in\|out\|both>`、`allow`・`accept`・`revoke` で管理） |
-| **`agent.sock`** | macOS/Unix のローカルソケット（Windows はユーザー SID 別の名前付きパイプを使用） |
+| **`agent.sock`** | macOS/Unix のローカル Unix ドメインソケット（Windows は代わりにユーザー SID 別の名前付きパイプを使用） |
 | **ログ（macOS 自動起動時）** | `~/Library/Logs/herdvia.log` |
 | **ログ（Windows 自動起動時）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **ログ（`herdvia agent` 手動起動時）** | 標準エラー出力（`stderr`） |
@@ -625,7 +625,7 @@ ok   pending: no rejected connection attempts
 <a id="design"></a>
 ## 設計ドキュメント
 
-設計メモおよび実測した `hc` の挙動は [DESIGN.md](../DESIGN.md)（韓国語）にまとめられています。
+アーキテクチャメモ、ワイヤーフレーミングの詳細、および実測した `hc` の挙動は [DESIGN.md](../DESIGN.md)（韓国語）にまとめられています。
 
 ---
 

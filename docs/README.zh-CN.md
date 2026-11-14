@@ -126,7 +126,7 @@ $env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/i
 
 假设你有两台设备：
 - **电脑 A** — 你日常操作 Herdr / `hc` 的电脑（例如随身笔记本）
-- **电脑 B** — 你希望远程接入的电脑（例如家里的台式机或 Mac mini）
+- **电脑 B** — 你希望远程接入的电脑（例如家里的台式机）
 
 首先，在 **A 和 B 两台电脑**上安装 `herdvia`（Intel Mac、Linux 或手动解压安装请参阅[安装指南](#install)）：
 
@@ -246,7 +246,7 @@ hc machine add --via 'herdvia via B' --name B
 - `hc` 会在该命令末尾追加一个远程命令参数后执行。
 - **如果 `hc` 在其 `PATH` 中找不到 `herdvia`：** 请填写可执行文件的完整路径，若路径含空格需加引号：
   - **macOS：** `hc` 通过 `sh` 执行 `--via`，请按 `sh` 规则加引号（安装脚本会自动输出可直接粘贴的命令）。
-  - **Windows：** `hc` 不经过 shell，而是按 `CommandLineToArgvW` 规则拆分参数，路径含空格时需用双引号包裹。由于 Windows PowerShell 5.1 传递内嵌双引号较为繁琐，最省心的做法是在安装后打开新的 PowerShell 窗口并重启 Herdr，确保 `herdvia` 已在 `PATH` 中，然后直接使用上面的 `hc machine add --via 'herdvia via B' --name B`。
+  - **Windows：** `hc` 不经过 shell 拆分 `--via`（`CommandLineToArgvW` 规则），路径含空格时需用双引号包裹。由于 Windows PowerShell 5.1 在未转义时会剥离内层双引号，更简单的做法是将 `herdvia` 保留在用户 `PATH` 中（安装后打开新的 PowerShell 窗口并重启 Herdr），然后如上运行 `hc machine add --via 'herdvia via B' --name B`。
 
 ### 步骤 6. 检查连接状态
 
@@ -308,7 +308,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_NO_MODIFY_PATH=1` | 不修改 `~/.zprofile` 或 Windows 用户 `PATH` |
 | `HERDVIA_RELEASE_BASE` | 改从 `<url>/<文件名>` 而非 GitHub Releases 下载发布文件（优先级高于 `HERDVIA_VERSION`） |
 
-安装指定版本（即使从特定版本标签 URL 下载脚本，也需显式设置 `HERDVIA_VERSION`，否则默认安装最新版）：
+安装指定版本（注意：即使从带版本标签的 URL 下载 `install.sh` / `install.ps1`，也需显式设置 `HERDVIA_VERSION`）：
 
 ```sh
 curl -fsSL https://github.com/photojupi/herdvia/releases/download/v0.1.0/install.sh | HERDVIA_VERSION=0.1.0 sh
@@ -391,12 +391,12 @@ curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA2
 certutil -hashfile herdvia-windows-x64.zip SHA256
 Select-String herdvia-windows-x64.zip SHA256SUMS
 
-# 4. 解压至 %LOCALAPPDATA%\Programs\herdvia
+# 4. 解压至 %LOCALAPPDATA%\Programs\herdvia（仅在哈希一致时）
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
 tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
 ```
 
-在开始菜单搜索“编辑账户的环境变量”，将 `%LOCALAPPDATA%\Programs\herdvia` 的完整路径加入用户变量 `Path`，随后打开新的 PowerShell 窗口（若 Herdr 正在运行请重启）并运行 `herdvia id` 验证。首次运行时 SmartScreen 可能会弹出提示。
+要直接通过名称运行 `herdvia`，请将 `%LOCALAPPDATA%\Programs\herdvia` 加入**用户 `Path`**（*开始菜单 → “编辑账户的环境变量” → 用户变量 → `Path` → 编辑 → 新建*），随后打开新的 PowerShell 窗口（若 Herdr 正在运行请重启）并运行 `herdvia id` 验证。首次运行时 Windows SmartScreen 可能会弹出提示。
 
 <a id="from-source"></a>
 ### 从源码编译
@@ -423,7 +423,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | `herdvia allow <名称> <EndpointId> (--inbound \| --outbound \| --both)` | 添加或更新对端节点。运行中的代理会立即生效；未运行时在下次启动生效。 |
 | `herdvia revoke <名称>` | 移除对端节点，并立即断开与该节点的所有活动连接与会话。 |
 | `herdvia status` | 显示各对端的名称、权限、连接状态、`direct`/`relay` 路径及往返时延（RTT）。需要代理正在运行。 |
-| `herdvia pending` | 按最近时间倒序列出因缺少 `inbound` 权限而被拒的连入请求（指纹、`EndpointId`、尝试次数、距上次尝试秒数）。仅保存在内存中，最多保留 16 台设备，末次尝试 10 分钟后过期。需要代理正在运行。 |
+| `herdvia pending` | 列出连入连接尝试被拒绝的设备（指纹、`EndpointId`、尝试次数、距上次出现的时间）。仅保存在内存中：最多保留 16 条，末次尝试 10 分钟后过期。需要代理正在运行。 |
 | `herdvia accept <名称> <指纹> (--inbound \| --both)` | 将 `pending` 中唯一匹配该指纹的设备以其完整 `EndpointId` 加入授权列表。若匹配数为 0 或多于 1，或 `<名称>` 已绑定其他 ID，则拒绝操作。需要代理正在运行。 |
 | `herdvia doctor` | 在不做任何修改的前提下检查本机配置（可执行文件、数据目录、`secret.key`、`peers`、`herdr-core`、自动启动、代理、中继、对端连接、待确认连入请求）。输出以 `ok`/`warn`/`fail` 开头的检查行（对端连接为每个对端一行；前置步骤失败时省略后续依赖项），若有任一检查失败则以退出码 `1` 结束。详见[运行 `herdvia doctor`](#run-herdvia-doctor)。 |
 | `herdvia --version` | 输出 `herdvia <版本号>`。 |
@@ -462,7 +462,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 ### Linux
 
-Linux 暂不支持自动启动（`agent install` / `agent uninstall` 会提示不支持），请自行运行 `herdvia agent`（例如在 `systemd --user` 下或会话管理器内）。
+Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接运行 `herdvia agent`（例如在 `systemd --user` 下或会话管理器内）。
 
 ---
 
@@ -559,14 +559,14 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **向某个对端授予 `--inbound`（或 `--both`）权限，意味着允许它以你的当前系统用户身份启动 `herdr-core` 会话——实际上等同于授予完整的本地 Shell 权限。** 请仅授权你像信任自己一样完全信任的设备。
 
-- **端到端公钥双向认证：** 所有连接均由 `iroh` 使用各设备的 Ed25519 密钥对（`EndpointId`）完成双向认证。当授权列表为空或方向权限（`in`、`out`、`both`）不匹配时一律拒绝。每次新建会话都会重新校验权限，`allow` 与 `revoke` 对运行中的代理立即生效。
+- **端到端公钥双向认证：** 所有连接均由 `iroh` 使用各设备的 Ed25519 密钥对（`EndpointId`）完成双向认证。当授权列表为空或方向权限（`in`、`out`、`both`）不匹配时一律拒绝。在每个流（stream）上都会重新校验权限，`revoke` / `allow` 变更对运行中的代理立即生效。
 - **命令白名单仅作纵深防御：** 仅放行 `hc` 的精确 `herdr-core connect` 命令并记录异常请求，旨在缩小误用面并及时发现异常；但 `herdr-core connect` 本身即可执行任意命令，**真正的安全边界是对端密钥列表（`peers`）。**
 - **拒绝 `root` 运行：** 在 macOS/Unix 上，`herdvia` 拒绝以 `root` 身份启动。
 - **用户隔离的本地 IPC：**
   - **macOS / Unix：** 位于 `0700` 数据目录内的 `0600` 域套接字，并校验连接进程的 UID。
-  - **Windows：** 命名管道仅向当前用户 SID 授予访问权限，并拒绝远程网络管道客户端。
+  - **Windows：** 通过 DACL 将命名管道限制为仅当前用户 SID 可访问，并拒绝远程网络管道客户端。
 - **私钥保护 (`secret.key`)：** macOS/Unix 上以 `0600` 权限创建，若权限过宽则拒绝启动；Windows 上沿用用户配置文件夹的默认权限。任何拿到 `secret.key` 的人都可向信任本机的对端冒充本机——一旦泄露，请立即在所有对端上运行 `herdvia revoke <名称>`，并删除 `secret.key` 以重新生成新身份。
-- **短指纹与 `pending` / `accept`：** 指纹仅取 256 位 `EndpointId` 的前 16 个十六进制字符（64 位），供人工肉眼比对与 `accept` 输入；底层存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成已认证 `iroh` 握手的对端，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
+- **短指纹与 `pending` / `accept`：** 指纹仅表示 256 位 `EndpointId` 的前 16 个十六进制字符（64 位），供人工比对；`herdvia` 存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成已认证 `iroh` 握手的对端，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
 
 **报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交；非敏感的 bug 请新建普通 Issue。
 
@@ -613,7 +613,7 @@ ok   pending: no rejected connection attempts
 | **覆盖数据目录环境变量** | `HERDVIA_DIR=<路径>` 可替换默认数据目录（包含 `hc` 拉起的 `via` 在内的所有命令必须看到相同值；设置后无法使用 `agent install`） |
 | **`secret.key`** | 本机 32 字节 Ed25519 私钥（位于数据目录内） |
 | **`peers`** | 对端授权列表（每行 `<名称> <EndpointId> <in\|out\|both>`，通过 `allow`、`accept`、`revoke` 管理） |
-| **`agent.sock`** | macOS/Unix 本地套接字（Windows 使用按用户 SID 隔离的命名管道） |
+| **`agent.sock`** | macOS/Unix 本地 Unix 域套接字（Windows 改用按用户 SID 区分的命名管道） |
 | **日志（macOS 自动启动）** | `~/Library/Logs/herdvia.log` |
 | **日志（Windows 自动启动）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **日志（`herdvia agent` 前台运行）** | 标准错误输出（`stderr`） |
@@ -625,7 +625,7 @@ ok   pending: no rejected connection attempts
 <a id="design"></a>
 ## 设计文档
 
-架构设计说明与实测 `hc` 行为记录详见 [DESIGN.md](../DESIGN.md)（韩文）。
+架构说明、通信分帧细节与实测 `hc` 行为测量记录详见 [DESIGN.md](../DESIGN.md)（韩文）。
 
 ---
 
