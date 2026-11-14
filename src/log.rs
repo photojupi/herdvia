@@ -112,12 +112,24 @@ fn summary(kind: Kind, count: u64) -> String {
     }
 }
 
-/// `text` with control characters such as newlines and ESC escaped, cut to 300 characters with
-/// the original length in bytes noted. Text that a remote chose cannot fake or flood lines.
+/// `text` with control characters such as newlines and ESC, the Unicode line and paragraph
+/// separators and the bidirectional controls escaped, cut to 300 characters with the original
+/// length in bytes noted. Text that a remote chose cannot fake or flood lines, or reorder what a
+/// log viewer shows.
 pub(crate) fn sanitize(text: &str) -> String {
     let mut clean = String::new();
     for c in text.chars() {
-        if c.is_control() {
+        if c.is_control()
+            || matches!(
+                c,
+                '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{200e}'
+                    | '\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+            )
+        {
             clean.extend(c.escape_default());
         } else {
             clean.push(c);
@@ -510,6 +522,20 @@ mod tests {
             r"a\nb\r\n2026-11-14T14:17:03Z herdvia: fake\u{1b}[31m\u{0}\u{7f}\u{85}"
         );
         assert!(!sanitize(&"\n\u{1b}".repeat(500)).contains(['\n', '\u{1b}']));
+        assert_eq!(sanitize("a\u{2028}b\u{2029}c"), r"a\u{2028}b\u{2029}c");
+        let bidi = [
+            '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ];
+        assert_eq!(
+            sanitize(&String::from_iter(bidi)),
+            r"\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}"
+        );
+        // Neighbours of the escaped ranges stay.
+        assert_eq!(
+            sanitize("\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"),
+            "\u{200d}\u{2027}\u{202f}\u{2065}\u{206a}"
+        );
     }
 
     #[test]
