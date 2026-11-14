@@ -54,7 +54,12 @@ jobs:
             id_prints_endpoint_id_and_fingerprint_stably \
             status_without_agent_is_255 \
             allow_rejects_bad_name_bad_id_and_missing_flag \
-            allow_and_revoke_update_file_without_agent
+            allow_and_revoke_update_file_without_agent \
+            revoke_of_an_unknown_name_fails_and_changes_nothing \
+            one_endpoint_id_cannot_take_a_second_name \
+            revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name
+          cargo test --locked --test pending -- --exact \
+            accept_refuses_a_full_pending_list
           cargo test --locked --test transport -- --exact \
             no_agent_means_immediate_255 \
             stale_socket_means_immediate_255 \
