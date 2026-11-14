@@ -122,10 +122,15 @@ ALPN은 `herdvia/1`이다.
 
 - root로 실행하면 거부한다.
 - **받는 쪽**: 연결의 상대 EndpointId가 inbound 피어가 아니면 연결을 끊는다. 처음 본 피어를 자동으로 믿지 않는다.
+  끊은 시도는 `pending`을 위해 메모리에 기록만 한다(아래 "피어 등록: pending / accept").
   허용된 연결의 양방향 스트림 하나마다 M2의 실행 쪽 함수를 그대로 돌린다(네트워크 OPEN의 payload는 줄).
   스트림을 받을 때마다 권한을 다시 확인한다.
 - **거는 쪽**: via의 OPEN에 적힌 이름이 outbound 피어가 아니면 ERROR로 거부한다.
-  outbound 피어와는 연결을 미리 맺어 두고, 끊기면 1초에서 30초까지 간격을 늘리며 다시 건다.
+  outbound 피어와는 연결을 미리 맺어 두고, 실패하거나 끊기면 다시 건다. 간격은 1초에서 두 배씩 늘려 최대 30초이고,
+  연결이 10초 이상 유지됐다가 끊긴 경우에만 1초로 되돌린다. 받는 쪽이 핸드셰이크 직후 403으로 거부해도 connect는 성공으로 돌아오므로,
+  connect가 성공할 때마다 되돌리면 거부당하는 동안 약 1초 간격으로 끝없이 다시 걸게 된다.
+  그렇게 곧바로 거부당하는 연결도 잠깐은 연결 목록에 들어가므로, 거는 쪽 `status`는 그동안 `connected`를 잠깐 보일 수 있다.
+  연결 확인은 받는 쪽 `status`로 하는 편이 확실하다.
   via 요청 때 연결이 없으면 최대 5초 기다리고, 안 되면 ERROR를 돌려준다.
   연결되면 스트림을 열어 OPEN(줄)을 쓰고, 이후 프레임은 양방향으로 그대로 옮긴다.
 - via가 끊기면 스트림을 리셋한다. 스트림이나 연결이 끊기면 실행 쪽은 자식을 정리하고, 거는 쪽 via는 255로 끝난다.
@@ -134,12 +139,13 @@ ALPN은 `herdvia/1`이다.
 
 ### 로컬 통신 추가
 
-tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload` 또는 `status`다.
+tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending` 중 하나다(`pending`은 나중에 추가).
 에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. 네트워크 스트림에서는 CONTROL을 받지 않는다.
 
 ### M3에 넣지 않는 것
 
 초대 코드, 자체 중계 서버 설정, 자동 시작, Windows, 키 교체, `hc machine add` 자동 실행.
+자동 시작은 M4, Windows는 M5에서 넣었다. 초대 코드는 지금도 없고, 대신 나중에 `pending`/`accept`를 넣었다(아래).
 
 ## M4: macOS 자동 시작
 
@@ -238,6 +244,83 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 떠 있는 에이전트를 끝내는 방법: 파이프에 접속해 소유자 SID를 확인한 뒤 `GetNamedPipeServerProcessId`로 얻은 프로세스를 종료하고,
   파이프가 사라질 때까지 최대 5초 기다린다.
 - 넣지 않는 것: 에이전트가 죽었을 때의 자동 재시작(다음 로그온까지 꺼져 있다), 로그 파일 크기 관리. 둘 다 M6 실사용 결과를 보고 정한다.
+
+## 피어 등록: pending / accept
+
+| 명령 | 역할 |
+|---|---|
+| `herdvia pending` | 받는 쪽 에이전트가 inbound 권한이 없어 거부한 접속 시도를 쓴다 |
+| `herdvia accept <이름> <지문> (--inbound \| --both)` | 지문이 일치하는 시도 하나의 전체 EndpointId를 피어로 등록한다 |
+
+기존 `herdvia allow <이름> <EndpointId> --inbound`는 그대로 둔다. accept는 받는 쪽에 64자 EndpointId를 옮겨 오지 않고 등록하는 또 하나의 길이다.
+
+### 흐름
+
+1. 거는 쪽 A: `herdvia allow B <B의 EndpointId> --outbound`. 붙여 넣은 B의 ID는 지금처럼 지문으로 대조한다.
+2. A의 에이전트가 B로 건다. B는 A가 inbound 피어가 아니므로 핸드셰이크 직후 거부하고, A의 EndpointId를 대기 목록에 남긴다.
+3. 받는 쪽 B: `herdvia pending`으로 시도를 보고, A 화면의 `herdvia id` 둘째 줄을 직접 보고 입력해 `herdvia accept A <지문> --inbound`.
+4. B가 A를 inbound로 등록한다. A가 다음에 다시 걸 때 연결된다. 거는 쪽의 재시도 간격(최대 30초) 때문에 최대 약 30초가 걸린다.
+
+### 왜 이 방식인가
+
+- 짧은 초대 코드로 키를 주고받으려면 코드와 키를 이어 줄 서버가 필요하다. 이 방식은 거는 쪽이 실제로 걸어 온 연결을 쓰므로 서버를 더 두지 않는다.
+- 처음 걸어 온 피어를 자동으로 믿는 방식은 "처음 본 피어를 자동으로 믿지 않는다"는 원칙(M3)에 어긋난다. 여기서는 받는 쪽 사람이 accept해야만 등록된다.
+- 지문 대조가 선택이 아니라 입력이다. `allow`는 붙여 넣은 ID를 눈으로 대조하라고 안내할 뿐, 대조를 건너뛰어도 동작한다.
+  accept는 상대 화면에서 읽은 지문을 입력해야 동작하고, 그 지문과 일치하는 시도가 대기 목록에 있어야 한다.
+- 받는 쪽에서 손으로 옮기는 값이 64자가 아니라 16자다.
+
+### 기록 규칙
+
+- 받는 쪽(서버 쪽)이고 ALPN이 `herdvia/1`인 연결이 핸드셰이크를 통과했지만 inbound 권한이 없어 거부될 때만 기록한다.
+  EndpointId는 iroh가 핸드셰이크에서 인증한 값이다. 거는 쪽(클라이언트 쪽) 연결이나 다른 ALPN은 기록하지 않는다.
+- 항목은 EndpointId, 시도 횟수, 마지막으로 본 시각이다.
+- 최대 16개다. 가득 찬 상태에서 새 ID가 오면 마지막으로 본 지 가장 오래된 항목을 버린다.
+- 마지막으로 본 지 10분(600초)이 지난 항목은 버린다. 버린 ID가 다시 오면 횟수를 1부터 센다.
+  EndpointId를 아는 누구든 시도를 만들 수 있으므로 목록이 끝없이 늘지 않게 상한과 만료를 둔다.
+- 피어 목록을 다시 읽을 때(reload) inbound 권한이 생긴 ID는 버린다. 기록 직전에도 잠금 안에서 권한을 다시 확인해,
+  수락 직후의 거부가 다시 기록되지 않게 한다.
+- 메모리에만 둔다. 파일에 저장하지 않으므로 에이전트를 다시 시작하면 비어 있다. 그래서 `pending`과 `accept`는 에이전트가 떠 있어야 한다.
+- 로컬 통신의 CONTROL `pending`으로 요청한다. 답은 status처럼 머리 줄 `fingerprint id attempts last-seen`과 항목당 한 줄
+  `<지문> <EndpointId> <횟수> <마지막으로 본 뒤 지난 초>s`이고, 마지막으로 본 시각이 최근인 것부터 쓴다. 항목이 없으면 머리 줄만 쓴다.
+
+### accept의 일치 규칙
+
+- 지문은 hex 16자다. 4자마다 `-`가 있는 19자 형태(전부 있거나 전부 없거나)도 받고, 대소문자를 가리지 않는다. 다른 화면을 보고 손으로 치는 값이기 때문이다.
+- `--outbound`는 받지 않는다. 대기 목록은 들어오는 시도이므로 inbound를 줄 때만 쓸모가 있다.
+- 에이전트에서 `pending` 목록을 받아 EndpointId 앞 16자가 지문과 같은 항목을 찾는다.
+  - 0개: 오류. 상대가 이 PC를 `--outbound`로 allow하고 에이전트를 띄웠는지 확인하라고 안내한다.
+  - 2개 이상: 오류. 전체 EndpointId로 `herdvia allow`를 쓰라고 안내한다.
+  - 1개: 그 전체 EndpointId를 `allow`와 같은 경로(`peers` 파일 갱신 후 reload)로 등록하고 `<이름> <EndpointId> <in|both>` 한 줄을 쓴다.
+- 이름 충돌: 그 이름이 이미 다른 EndpointId로 등록돼 있으면 등록하지 않고 오류를 낸다(먼저 revoke하거나 다른 이름을 쓰라고 안내한다).
+  `allow`는 같은 이름이면 항목을 바꾸지만, accept가 사람이 64자를 직접 보지 않은 ID로 기존 피어를 조용히 바꾸면 안 되기 때문이다.
+  같은 EndpointId로 이미 있으면 `allow`처럼 그 항목을 바꾼다. 같은 EndpointId를 다른 이름으로 등록하는 것은 `allow`처럼 막지 않는다.
+- 수락한 ID는 대기 목록에서 빠지므로, 이미 수락한 피어의 권한을 바꾸려면 `allow`를 쓴다.
+
+### 64비트 접두사의 한계
+
+- 입력받는 것은 EndpointId(공개키 32바이트)의 앞 16자, 즉 64비트뿐이다. 전체 키를 대조하는 것보다 약하다.
+  실제 상대가 대기 목록에 없을 때 앞 16자가 같은 다른 키가 목록에 있으면 그 키가 등록된다. 이것을 막는 것은 특정 64비트 접두사를 가진 키를 만드는 비용뿐이다.
+- 일치 항목이 둘 이상이면 거부한다. 사람이 입력한 지문으로는 어느 쪽이 상대 PC인지 구분할 수 없고, 하나를 고르면 공격자의 키를 등록할 수 있기 때문이다.
+  이 경우는 전체 EndpointId로 `allow`한다.
+- 목록에 보인다는 것은 신뢰의 근거가 아니다. 이 PC의 EndpointId를 아는 누구나 목록에 나타날 수 있다.
+  그래서 지문은 대기 목록이 아니라 상대 PC 화면에서 읽는다. 목록의 지문을 옮겨 치면 대조가 되지 않는다.
+
+## 설치 스크립트
+
+- `scripts/install.sh`(macOS arm64, POSIX sh)와 `scripts/install.ps1`(Windows x64, PowerShell 5.1·7)을 릴리스에 함께 올리고 `SHA256SUMS`에도 넣는다.
+  `curl -fsSL .../releases/latest/download/install.sh | sh`, `powershell -c "irm .../releases/latest/download/install.ps1 | iex"` 한 줄로 설치한다.
+- 하는 일: 릴리스 zip과 `SHA256SUMS`를 받아 검증한다. 실행 파일을 고정 위치(macOS `~/.local/bin/herdvia`, Windows `%LOCALAPPDATA%\Programs\herdvia\herdvia.exe`)에 두고,
+  그 폴더가 PATH에 없으면 추가한다(macOS는 로그인 셸이 zsh일 때만 `~/.zprofile`에 한 줄, Windows는 사용자 PATH). 그 뒤 `herdvia id`, `herdvia agent install`을 실행하고 다음 단계를 안내한다.
+- 교체: macOS는 같은 폴더의 임시 파일로 복사해 `--version`을 실행해 본 뒤 `mv`로 바꾼다(실행 중인 파일 위에 `cp`하면 다음 시작이 `Killed: 9`로 실패한다).
+  Windows는 실행 중인 exe를 덮어쓸 수 없으므로 새 파일을 같은 폴더의 `herdvia.new.exe`로 복사해 `--version`을 실행해 본 뒤, 기존 파일을 `herdvia.exe.old`로, 새 파일을 `herdvia.exe`로 이름을 바꾼다.
+  `.old`는 새 `herdvia.exe`가 제자리에서 실행된 뒤에만, 쓰이지 않게 되면 그 실행이나 다음 실행에서 지운다. 중간에 실패한 실행은 `.old`를 남긴다.
+- 다시 실행하면 업그레이드다. `agent install`을 다시 실행해 새 실행 파일로 에이전트를 다시 시작한다. 데이터 폴더는 건드리지 않는다.
+- 환경 변수: `HERDVIA_VERSION`(특정 릴리스), `HERDVIA_NO_AGENT=1`, `HERDVIA_NO_MODIFY_PATH=1`, `HERDVIA_RELEASE_BASE`(다른 곳에서 받기, 시험용).
+  스크립트에는 버전이 박혀 있지 않아서 버전 경로에서 받은 스크립트도 `HERDVIA_VERSION`이 없으면 최신 릴리스를 받는다.
+- 받은 실행 파일을 확인하려고 `herdvia --version`을 둔다. 표준 출력에 `herdvia <Cargo 패키지 버전>` 한 줄을 쓰고 0으로 끝난다. 데이터 폴더나 키를 만들지 않는다.
+- herdr-core는 설치하지 않는다. herdr-core는 Herdr의 것이고 Herdr의 설치 스크립트가 있다. 스크립트는 herdr-core가 없거나
+  에이전트가 찾지 못하는 위치에 있으면 Herdr의 설치 명령(macOS에서 다른 곳에 있으면 `~/.local/bin`에 링크하는 명령)을 안내만 하고, 설치는 성공으로 끝낸다.
+- 피어 등록과 `hc machine add`도 하지 않는다.
 
 ## 단계
 
