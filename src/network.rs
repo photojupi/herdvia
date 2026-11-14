@@ -735,7 +735,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn connected_peers_cannot_open_unidirectional_streams_or_send_datagrams() {
+    async fn connected_peers_get_at_most_16_bidirectional_streams_and_nothing_else() {
         // As in the audit: this side dials a peer that it allowed outbound only.
         let dir = tempfile::tempdir().unwrap();
         let remote_key = SecretKey::generate();
