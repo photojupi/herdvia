@@ -5,20 +5,15 @@ use crate::{
     peers,
 };
 use iroh::EndpointId;
-use std::{collections::HashMap, io, os::fd::AsFd, sync::Arc};
-use tokio::{
-    net::UnixStream,
-    signal::unix::{SignalKind, signal},
-    task::{AbortHandle, JoinSet},
-};
+use std::{collections::HashMap, io, sync::Arc};
+use tokio::task::{AbortHandle, JoinSet};
 
 pub async fn run() -> io::Result<()> {
     ipc::reject_root()?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    let mut shutdown = ipc::Shutdown::new()?;
     let dir = ipc::data_dir()?;
     let network = Network::bind(dir.clone()).await?;
-    let listener = ipc::listen(&dir)?;
+    let mut listener = ipc::listen(&dir)?;
     let mut updates = network.updates();
     let mut sessions = JoinSet::new();
     let mut connectors = JoinSet::new();
@@ -26,9 +21,9 @@ pub async fn run() -> io::Result<()> {
     refresh_workers(&network, &mut workers, &mut connectors);
     let result = loop {
         tokio::select! {
-            accepted = listener.socket.accept() => {
+            accepted = listener.accept() => {
                 match accepted {
-                    Ok((stream, _)) => { sessions.spawn(connection(stream, network.clone())); }
+                    Ok(stream) => { sessions.spawn(connection(stream, network.clone())); }
                     Err(err) => break Err(err),
                 }
             }
@@ -50,8 +45,7 @@ pub async fn run() -> io::Result<()> {
                 }
             }
             _ = connectors.join_next(), if !connectors.is_empty() => {},
-            _ = interrupt.recv() => break Ok(()),
-            _ = terminate.recv() => break Ok(()),
+            _ = shutdown.recv() => break Ok(()),
         }
     };
     sessions.abort_all();
@@ -106,8 +100,8 @@ fn request(frame: frame::Frame) -> io::Result<Request> {
     }
 }
 
-async fn connection(mut stream: UnixStream, network: Arc<Network>) -> io::Result<()> {
-    ipc::check_uid(&stream)?;
+async fn connection(mut stream: ipc::ServerStream, network: Arc<Network>) -> io::Result<()> {
+    ipc::check_peer(&stream)?;
     let first = frame::read(&mut stream)
         .await?
         .ok_or_else(|| frame::invalid("missing first frame"))?;
@@ -131,7 +125,7 @@ async fn connection(mut stream: UnixStream, network: Arc<Network>) -> io::Result
             frame::write(&mut stream, EXIT, &0_i32.to_be_bytes()).await
         }
         Request::Open(peer, line) => {
-            let watcher = stream.as_fd().try_clone_to_owned()?;
+            let watcher = ipc::watch_disconnect(&stream)?;
             tokio::select! {
                 result = network.forward(stream, &peer, &line) => result,
                 err = ipc::disconnected(watcher) => Err(err),

@@ -3,6 +3,8 @@
 //! 공유 쌍(A: b=out, B: a=in)은 피어 목록을 바꾸지 않는 검증에만 쓴다.
 //! 피어 목록을 바꾸거나 에이전트를 죽이는 검증은 새 쌍을 띄운다.
 
+#![cfg(unix)]
+
 mod common;
 
 use common::*;
@@ -31,16 +33,36 @@ fn assert_running_child_cleaned_and_later_refused(
         t.elapsed()
     );
     assert_eq!(out.code(), Some(255), "[{what}] stderr: {}", out.err());
-    assert!(out.stdout.is_empty(), "[{what}] stdout 에 원격 외 바이트: {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "[{what}] stdout 에 원격 외 바이트: {:?}",
+        out.stdout
+    );
     wait_gone(&[child, grandchild], Duration::from_secs(5), what);
 
     // 이후 via 는 거부되고 B 에서 실행되지 않는다.
     p.b.clear_state();
     let out = p.a.run_via("b", &session_line("cat"), b"must not run");
-    assert_eq!(out.code(), Some(255), "[{what}] 이후 via 가 거부되지 않음. stderr: {}", out.err());
-    assert!(!out.err().trim().is_empty(), "[{what}] 이후 via 의 stderr 에 사유가 없음");
-    assert!(out.stdout.is_empty(), "[{what}] 이후 via stdout: {:?}", out.stdout);
-    assert_eq!(p.b.invoked(), None, "[{what}] 권한을 잃은 피어의 줄이 B 에서 실행됨");
+    assert_eq!(
+        out.code(),
+        Some(255),
+        "[{what}] 이후 via 가 거부되지 않음. stderr: {}",
+        out.err()
+    );
+    assert!(
+        !out.err().trim().is_empty(),
+        "[{what}] 이후 via 의 stderr 에 사유가 없음"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "[{what}] 이후 via stdout: {:?}",
+        out.stdout
+    );
+    assert_eq!(
+        p.b.invoked(),
+        None,
+        "[{what}] 권한을 잃은 피어의 줄이 B 에서 실행됨"
+    );
 }
 
 fn start_sleep(p: &Pair) -> (Via, String, String) {
@@ -48,7 +70,10 @@ fn start_sleep(p: &Pair) -> (Via, String, String) {
     assert_eq!(v.read_stdout_exact(6, Duration::from_secs(10)), b"ready\n");
     let child = p.b.read_pid("child.pid");
     let grandchild = p.b.read_pid("grandchild.pid");
-    assert!(process_alive(&child) && process_alive(&grandchild), "원격 프로세스가 처음부터 없음");
+    assert!(
+        process_alive(&child) && process_alive(&grandchild),
+        "원격 프로세스가 처음부터 없음"
+    );
     (v, child, grandchild)
 }
 
@@ -67,11 +92,24 @@ fn unregistered_endpoint_is_refused_by_receiver() {
 
     let t = Instant::now();
     let out = c.run_via("b", &session_line("cat"), b"from C");
-    assert_eq!(out.code(), Some(255), "C 의 via 가 거부되지 않음. stderr: {}", out.err());
-    assert!(t.elapsed() < Duration::from_secs(15), "C 의 via 가 너무 오래 걸림: {:?}", t.elapsed());
+    assert_eq!(
+        out.code(),
+        Some(255),
+        "C 의 via 가 거부되지 않음. stderr: {}",
+        out.err()
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(15),
+        "C 의 via 가 너무 오래 걸림: {:?}",
+        t.elapsed()
+    );
     assert!(!out.err().trim().is_empty(), "stderr 에 사유가 없음");
     assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
-    assert_eq!(p.b.invoked(), None, "등록되지 않은 피어의 줄이 B 에서 실행됨");
+    assert_eq!(
+        p.b.invoked(),
+        None,
+        "등록되지 않은 피어의 줄이 B 에서 실행됨"
+    );
     assert_eq!(c.invoked(), None, "C 자기 자신에서 실행됨");
 
     // B 는 여전히 A 를 받는다.
@@ -86,8 +124,17 @@ fn inbound_only_peer_cannot_be_called_back() {
     let p = shared();
     let t = Instant::now();
     let out = p.b.run_via("a", &session_line("cat"), b"reverse");
-    assert_eq!(out.code(), Some(255), "B→A 가 거부되지 않음. stderr: {}", out.err());
-    assert!(t.elapsed() < Duration::from_secs(3), "로컬에서 바로 거부해야 함: {:?}", t.elapsed());
+    assert_eq!(
+        out.code(),
+        Some(255),
+        "B→A 가 거부되지 않음. stderr: {}",
+        out.err()
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "로컬에서 바로 거부해야 함: {:?}",
+        t.elapsed()
+    );
     assert!(!out.err().trim().is_empty());
     assert!(out.stdout.is_empty());
     assert_eq!(p.a.invoked(), None, "B→A 줄이 A 에서 실행됨");
@@ -101,11 +148,24 @@ fn receiver_refuses_peer_it_granted_only_outbound() {
     let p = Pair::build("--outbound", "--both", false);
     let t = Instant::now();
     let out = p.b.run_via("a", &session_line("cat"), b"reverse");
-    assert_eq!(out.code(), Some(255), "A 가 inbound 없이 받음. stderr: {}", out.err());
-    assert!(t.elapsed() < Duration::from_secs(15), "너무 오래 걸림: {:?}", t.elapsed());
+    assert_eq!(
+        out.code(),
+        Some(255),
+        "A 가 inbound 없이 받음. stderr: {}",
+        out.err()
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(15),
+        "너무 오래 걸림: {:?}",
+        t.elapsed()
+    );
     assert!(!out.err().trim().is_empty());
     assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
-    assert_eq!(p.a.invoked(), None, "inbound 권한 없는 B 의 줄이 A 에서 실행됨");
+    assert_eq!(
+        p.a.invoked(),
+        None,
+        "inbound 권한 없는 B 의 줄이 A 에서 실행됨"
+    );
 
     // A→B 방향은 그대로 된다.
     let out = p.a.run_via("b", &session_line("cat"), b"forward");
@@ -119,9 +179,21 @@ fn via_to_unknown_peer_name_is_255() {
     for name in ["nosuch", "B", "a", "b2", "", "b "] {
         let t = Instant::now();
         let out = p.a.run_via(name, &session_line("cat"), b"x");
-        assert_eq!(out.code(), Some(255), "[{name:?}] 거부되어야 함. stderr: {}", out.err());
-        assert!(t.elapsed() < Duration::from_secs(3), "[{name:?}] 바로 거부해야 함: {:?}", t.elapsed());
-        assert!(!out.err().trim().is_empty(), "[{name:?}] stderr 에 사유가 없음");
+        assert_eq!(
+            out.code(),
+            Some(255),
+            "[{name:?}] 거부되어야 함. stderr: {}",
+            out.err()
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(3),
+            "[{name:?}] 바로 거부해야 함: {:?}",
+            t.elapsed()
+        );
+        assert!(
+            !out.err().trim().is_empty(),
+            "[{name:?}] stderr 에 사유가 없음"
+        );
         assert!(out.stdout.is_empty(), "[{name:?}] stdout: {:?}", out.stdout);
     }
     assert_eq!(p.b.invoked(), None, "없는 피어 이름인데 B 에서 실행됨");
@@ -137,7 +209,10 @@ fn revoke_on_receiver_kills_running_child_and_refuses_later() {
     let p = Pair::new();
     let (v, child, grandchild) = start_sleep(&p);
     p.b.revoke("a");
-    assert!(!has_peer_name(&p.b.peers_text(), "a"), "B 의 peers 에 a 가 남음");
+    assert!(
+        !has_peer_name(&p.b.peers_text(), "a"),
+        "B 의 peers 에 a 가 남음"
+    );
     assert_running_child_cleaned_and_later_refused(&p, v, &child, &grandchild, "B 에서 revoke a");
 }
 
@@ -146,13 +221,20 @@ fn revoke_on_caller_kills_running_child_and_refuses_later() {
     let p = Pair::new();
     let (v, child, grandchild) = start_sleep(&p);
     p.a.revoke("b");
-    assert!(!has_peer_name(&p.a.peers_text(), "b"), "A 의 peers 에 b 가 남음");
+    assert!(
+        !has_peer_name(&p.a.peers_text(), "b"),
+        "A 의 peers 에 b 가 남음"
+    );
     assert_running_child_cleaned_and_later_refused(&p, v, &child, &grandchild, "A 에서 revoke b");
     // A 에서는 이제 모르는 이름이므로 바로 거부된다.
     let t = Instant::now();
     let out = p.a.run_via("b", DEFAULT_LINE, b"");
     assert_eq!(out.code(), Some(255));
-    assert!(t.elapsed() < Duration::from_secs(3), "지운 피어는 바로 거부해야 함: {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "지운 피어는 바로 거부해야 함: {:?}",
+        t.elapsed()
+    );
 }
 
 #[test]
@@ -162,16 +244,33 @@ fn downgrade_inbound_to_outbound_takes_effect_immediately() {
     let (v, child, grandchild) = start_sleep(&p);
     p.b.allow("a", &p.a_id, "--outbound");
     let peers = p.b.peers_text();
-    assert!(has_peer_line(&peers, "a", &p.a_id, "out"), "B 의 peers 가 바뀌지 않음:\n{peers}");
-    assert_eq!(peers.lines().filter(|l| !l.trim().is_empty()).count(), 1, "중복 줄:\n{peers}");
-    assert_running_child_cleaned_and_later_refused(&p, v, &child, &grandchild, "B 에서 a 를 in→out");
+    assert!(
+        has_peer_line(&peers, "a", &p.a_id, "out"),
+        "B 의 peers 가 바뀌지 않음:\n{peers}"
+    );
+    assert_eq!(
+        peers.lines().filter(|l| !l.trim().is_empty()).count(),
+        1,
+        "중복 줄:\n{peers}"
+    );
+    assert_running_child_cleaned_and_later_refused(
+        &p,
+        v,
+        &child,
+        &grandchild,
+        "B 에서 a 를 in→out",
+    );
 
     // A 쪽도 b 를 out 에서 in 으로 바꾸면 A 에서 b 로 거는 것이 바로 거부된다.
     p.a.allow("b", &p.b_id, "--inbound");
     let t = Instant::now();
     let out = p.a.run_via("b", DEFAULT_LINE, b"");
     assert_eq!(out.code(), Some(255), "stderr: {}", out.err());
-    assert!(t.elapsed() < Duration::from_secs(3), "outbound 가 없는 피어는 바로 거부해야 함: {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "outbound 가 없는 피어는 바로 거부해야 함: {:?}",
+        t.elapsed()
+    );
 }
 
 #[test]
@@ -205,7 +304,11 @@ fn wide_secret_key_permission_refuses_start() {
     for mode in [0o644, 0o640, 0o604] {
         chmod(&n.key_file(), mode);
         let o = n.hlink(&["id"]);
-        assert_ne!(o.code(), Some(0), "[{mode:o}] id 가 넓은 키 권한을 받아들임");
+        assert_ne!(
+            o.code(),
+            Some(0),
+            "[{mode:o}] id 가 넓은 키 권한을 받아들임"
+        );
         assert!(!o.out().contains(&id), "[{mode:o}] 거부하면서 id 를 출력함");
         assert!(!o.err().trim().is_empty(), "[{mode:o}] id 거부 사유가 없음");
         expect_agent_refused(&n, &format!("secret.key {mode:o}"));
@@ -250,10 +353,15 @@ fn id_prints_endpoint_id_and_fingerprint_stably() {
     let id = lines[0];
     assert_eq!(id.len(), 64, "EndpointId 는 hex 64자: {id:?}");
     assert!(
-        id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        id.bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
         "EndpointId 는 소문자 hex: {id:?}"
     );
-    assert_eq!(lines[1], fingerprint_of(id), "둘째 줄은 앞 16자를 4-4-4-4 로 묶은 지문");
+    assert_eq!(
+        lines[1],
+        fingerprint_of(id),
+        "둘째 줄은 앞 16자를 4-4-4-4 로 묶은 지문"
+    );
 
     assert_eq!(mode_of(&n.key_file()), 0o600, "id 가 만든 secret.key 권한");
     assert_eq!(mode_of(&n.hlink_dir), 0o700, "id 가 만든 데이터 폴더 권한");
@@ -264,9 +372,17 @@ fn id_prints_endpoint_id_and_fingerprint_stably() {
 
     // 에이전트가 떠 있어도 같은 값이고, 다른 노드와는 다르다.
     n.start_agent();
-    assert_eq!(n.hlink(&["id"]).stdout, o1.stdout, "에이전트가 뜬 뒤 id 가 바뀜");
+    assert_eq!(
+        n.hlink(&["id"]).stdout,
+        o1.stdout,
+        "에이전트가 뜬 뒤 id 가 바뀜"
+    );
     let other = Node::new("X");
-    assert_ne!(other.id().0, id, "서로 다른 데이터 폴더인데 EndpointId 가 같음");
+    assert_ne!(
+        other.id().0,
+        id,
+        "서로 다른 데이터 폴더인데 EndpointId 가 같음"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -278,19 +394,37 @@ fn status_shows_name_connection_and_path() {
     let p = shared();
     for (node, peer, perm_word) in [(&p.a, "b", "out"), (&p.b, "a", "in")] {
         let o = node.status();
-        assert_eq!(o.code(), Some(0), "[{}] status 실패. stderr: {}", node.label, o.err());
+        assert_eq!(
+            o.code(),
+            Some(0),
+            "[{}] status 실패. stderr: {}",
+            node.label,
+            o.err()
+        );
         let s = o.out();
         let line = status_line(&s, peer)
             .unwrap_or_else(|| panic!("[{}] status 에 피어 {peer} 줄이 없음:\n{s}", node.label));
-        assert!(says_connected(line), "[{}] status 가 연결됨을 보이지 않음: {line:?}", node.label);
+        assert!(
+            says_connected(line),
+            "[{}] status 가 연결됨을 보이지 않음: {line:?}",
+            node.label
+        );
         let lower = line.to_lowercase();
         assert!(
             PATH_WORDS.iter().any(|w| lower.contains(w)),
             "[{}] status 에 직접/중계 구분이 없음: {line:?}",
             node.label
         );
-        assert!(lower.contains(perm_word), "[{}] status 에 권한({perm_word})이 없음: {line:?}", node.label);
-        assert!(line.chars().any(|c| c.is_ascii_digit()), "[{}] status 에 왕복 시간이 없음: {line:?}", node.label);
+        assert!(
+            lower.contains(perm_word),
+            "[{}] status 에 권한({perm_word})이 없음: {line:?}",
+            node.label
+        );
+        assert!(
+            line.chars().any(|c| c.is_ascii_digit()),
+            "[{}] status 에 왕복 시간이 없음: {line:?}",
+            node.label
+        );
     }
 }
 
@@ -300,9 +434,17 @@ fn status_without_agent_is_255() {
     let t = Instant::now();
     let o = n.status();
     assert_eq!(o.code(), Some(255), "stderr: {}", o.err());
-    assert!(t.elapsed() < Duration::from_secs(3), "에이전트가 없으면 기다리지 않아야 함");
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "에이전트가 없으면 기다리지 않아야 함"
+    );
     assert!(!o.err().trim().is_empty(), "stderr 에 사유가 없음");
-    assert_eq!(o.err().trim().lines().count(), 1, "stderr 는 한 줄: {:?}", o.err());
+    assert_eq!(
+        o.err().trim().lines().count(),
+        1,
+        "stderr 는 한 줄: {:?}",
+        o.err()
+    );
     assert!(o.stdout.is_empty(), "stdout: {:?}", o.out());
 }
 
@@ -322,7 +464,10 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
         let o = n.hlink(&["allow", name, good, "--both"]);
         assert_ne!(o.code(), Some(0), "잘못된 이름 {name:?} 을 받아들임");
         assert!(!o.err().trim().is_empty(), "[{name:?}] 거부 사유가 없음");
-        assert!(!n.peers_text().contains(good), "잘못된 이름 {name:?} 이 파일에 들어감");
+        assert!(
+            !n.peers_text().contains(good),
+            "잘못된 이름 {name:?} 이 파일에 들어감"
+        );
     }
 
     let bad_ids = [
@@ -338,7 +483,10 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
         let o = n.hlink(&["allow", "p1", bad, "--both"]);
         assert_ne!(o.code(), Some(0), "잘못된 EndpointId {bad:?} 를 받아들임");
         assert!(!o.err().trim().is_empty(), "[{bad:?}] 거부 사유가 없음");
-        assert!(!has_peer_name(&n.peers_text(), "p1"), "잘못된 EndpointId {bad:?} 가 파일에 들어감");
+        assert!(
+            !has_peer_name(&n.peers_text(), "p1"),
+            "잘못된 EndpointId {bad:?} 가 파일에 들어감"
+        );
     }
 
     for args in [
@@ -351,7 +499,10 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
         let o = n.hlink(&args);
         assert_ne!(o.code(), Some(0), "{args:?} 를 받아들임");
         assert!(!o.err().trim().is_empty(), "{args:?} 거부 사유가 없음");
-        assert!(!has_peer_name(&n.peers_text(), "p2"), "{args:?} 가 파일에 들어감");
+        assert!(
+            !has_peer_name(&n.peers_text(), "p2"),
+            "{args:?} 가 파일에 들어감"
+        );
     }
 
     // 경계값은 받아들인다.
@@ -359,8 +510,14 @@ fn allow_rejects_bad_name_bad_id_and_missing_flag() {
     n.allow("A.b_9-z", &ids[1], "--both");
     n.allow(&max, &ids[2], "--inbound");
     let peers = n.peers_text();
-    assert!(has_peer_line(&peers, "A.b_9-z", &ids[1], "both"), "peers:\n{peers}");
-    assert!(has_peer_line(&peers, &max, &ids[2], "in"), "peers:\n{peers}");
+    assert!(
+        has_peer_line(&peers, "A.b_9-z", &ids[1], "both"),
+        "peers:\n{peers}"
+    );
+    assert!(
+        has_peer_line(&peers, &max, &ids[2], "in"),
+        "peers:\n{peers}"
+    );
 }
 
 #[test]
@@ -370,12 +527,22 @@ fn allow_and_revoke_update_file_without_agent() {
     let x = Node::new("X").id().0;
     let y = Node::new("Y").id().0;
 
-    for (flag, perm) in [("--inbound", "in"), ("--outbound", "out"), ("--both", "both")] {
+    for (flag, perm) in [
+        ("--inbound", "in"),
+        ("--outbound", "out"),
+        ("--both", "both"),
+    ] {
         n.allow("x", &x, flag);
         let peers = n.peers_text();
-        assert!(has_peer_line(&peers, "x", &x, perm), "[{flag}] peers:\n{peers}");
+        assert!(
+            has_peer_line(&peers, "x", &x, perm),
+            "[{flag}] peers:\n{peers}"
+        );
         assert_eq!(
-            peers.lines().filter(|l| l.split_whitespace().next() == Some("x")).count(),
+            peers
+                .lines()
+                .filter(|l| l.split_whitespace().next() == Some("x"))
+                .count(),
             1,
             "[{flag}] 같은 이름 줄이 여러 개:\n{peers}"
         );
@@ -384,8 +551,14 @@ fn allow_and_revoke_update_file_without_agent() {
     n.allow("y", &y, "--inbound");
     n.revoke("x");
     let peers = n.peers_text();
-    assert!(!has_peer_name(&peers, "x"), "revoke 뒤에도 x 가 남음:\n{peers}");
-    assert!(has_peer_line(&peers, "y", &y, "in"), "revoke 가 다른 피어까지 지움:\n{peers}");
+    assert!(
+        !has_peer_name(&peers, "x"),
+        "revoke 뒤에도 x 가 남음:\n{peers}"
+    );
+    assert!(
+        has_peer_line(&peers, "y", &y, "in"),
+        "revoke 가 다른 피어까지 지움:\n{peers}"
+    );
     assert_eq!(mode_of(&n.peers_file()), 0o600, "revoke 뒤 peers 권한");
 }
 
@@ -408,7 +581,10 @@ fn via_gives_255_within_about_5s_when_receiver_is_off() {
     let out = a.run_via_timeout("b", &session_line("cat"), b"", Duration::from_secs(30));
     let el = t.elapsed();
     assert_eq!(out.code(), Some(255), "stderr: {}", out.err());
-    assert!(el < Duration::from_secs(8), "받는 쪽이 없을 때 약 5초 안에 끝나야 함: {el:?}");
+    assert!(
+        el < Duration::from_secs(8),
+        "받는 쪽이 없을 때 약 5초 안에 끝나야 함: {el:?}"
+    );
     assert!(!out.err().trim().is_empty(), "stderr 에 사유가 없음");
     assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
 

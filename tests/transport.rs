@@ -4,6 +4,8 @@
 //! B 가 줄을 검사해 실행한다. B 의 PATH 에는 가짜 herdr-core 가 있고 HC_SESSION 으로 동작을 고른다.
 //! 대부분의 검증은 한 쌍(`shared()`)을 잠가 가며 재사용한다. 에이전트를 죽이는 검증만 새 쌍을 띄운다.
 
+#![cfg(unix)]
+
 mod common;
 
 use common::*;
@@ -27,7 +29,11 @@ fn roundtrip_all_byte_values_default_line() {
     let out = p.a.run_via("b", DEFAULT_LINE, &input);
     assert_eq!(out.code(), Some(0), "stderr: {}", out.err());
     assert_bytes_eq(&out.stdout, &input, "기본 줄 cat 왕복");
-    assert_eq!(p.b.invoked().as_deref(), Some("<default>\n"), "B 에서 한 번 실행되어야 함");
+    assert_eq!(
+        p.b.invoked().as_deref(),
+        Some("<default>\n"),
+        "B 에서 한 번 실행되어야 함"
+    );
     assert_eq!(p.a.invoked(), None, "거는 쪽 A 에서 실행되면 안 됨");
 }
 
@@ -57,7 +63,11 @@ fn interactive_echo_without_closing_stdin() {
     assert!(v.running(), "표준 입력이 열려 있는데 via 가 먼저 끝남");
     let out = v.finish(Duration::from_secs(10));
     assert_eq!(out.code(), Some(0), "stderr: {}", out.err());
-    assert!(out.stdout.is_empty(), "남은 출력이 있으면 안 됨: {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "남은 출력이 있으면 안 됨: {:?}",
+        out.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +127,11 @@ fn missing_herdr_core_gives_127_and_message() {
             "stderr 에 미설치 문구가 없음: {:?}",
             out.err()
         );
-        assert!(out.stdout.is_empty(), "stdout 에 무언가 섞임: {:?}", out.stdout);
+        assert!(
+            out.stdout.is_empty(),
+            "stdout 에 무언가 섞임: {:?}",
+            out.stdout
+        );
     }
     // A 에는 가짜 herdr-core 가 있어도 A 에서 실행되면 안 된다.
     assert_eq!(p.a.invoked(), None, "B 가 없을 때 A 쪽에서 실행됨");
@@ -177,12 +191,21 @@ fn disallowed_lines_are_rejected_and_not_executed() {
         ("임의 명령", format!("echo {token}; touch {m}; touch {ma}")),
         ("임의 sh -c", format!("sh -c 'touch {m}; touch {ma}'")),
         ("빈 줄", String::new()),
-        ("connect 대신 다른 하위 명령", DEFAULT_LINE.replace("connect'", "serve'")),
-        ("세션에 세미콜론·공백", session_line(&format!("x;touch {m};"))),
+        (
+            "connect 대신 다른 하위 명령",
+            DEFAULT_LINE.replace("connect'", "serve'"),
+        ),
+        (
+            "세션에 세미콜론·공백",
+            session_line(&format!("x;touch {m};")),
+        ),
         ("세션에 명령 치환", session_line(&format!("$(touch {m})"))),
         ("세션에 백틱", session_line(&format!("`touch {m}`"))),
         ("세션에 슬래시", session_line("a/b")),
-        ("세션에 작은따옴표", session_line(&format!("a';touch {m};'"))),
+        (
+            "세션에 작은따옴표",
+            session_line(&format!("a';touch {m};'")),
+        ),
         ("세션에 비 ASCII", session_line("세션")),
         ("빈 세션", session_line("")),
         ("세션 65자", session_line(&"a".repeat(65))),
@@ -192,7 +215,10 @@ fn disallowed_lines_are_rejected_and_not_executed() {
         ("줄 끝에 공백", format!("{DEFAULT_LINE} ")),
         ("줄 앞에 공백", format!(" {DEFAULT_LINE}")),
         ("줄 앞에 명령", format!("touch {m}; {DEFAULT_LINE}")),
-        ("세션 줄 끝에 덧붙임", format!("{}; touch {m}", session_line("cat"))),
+        (
+            "세션 줄 끝에 덧붙임",
+            format!("{}; touch {m}", session_line("cat")),
+        ),
     ];
 
     for (name, line) in &cases {
@@ -203,13 +229,34 @@ fn disallowed_lines_are_rejected_and_not_executed() {
             "[{name}] 거부되어야 함. 줄: {line:?}, stderr: {}",
             out.err()
         );
-        assert!(!out.err().trim().is_empty(), "[{name}] stderr 에 사유가 없음");
-        assert!(out.stdout.is_empty(), "[{name}] stdout 에 무언가 섞임: {:?}", out.stdout);
+        assert!(
+            !out.err().trim().is_empty(),
+            "[{name}] stderr 에 사유가 없음"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "[{name}] stdout 에 무언가 섞임: {:?}",
+            out.stdout
+        );
         thread::sleep(Duration::from_millis(50));
-        assert!(!marker_b.exists(), "[{name}] 거부된 줄이 B 에서 실행됨 (표지 파일 생김)");
-        assert!(!marker_a.exists(), "[{name}] 거부된 줄이 A 에서 실행됨 (표지 파일 생김)");
-        assert_eq!(p.b.invoked(), None, "[{name}] 거부된 줄에서 B 의 herdr-core 가 실행됨");
-        assert_eq!(p.a.invoked(), None, "[{name}] 거부된 줄에서 A 의 herdr-core 가 실행됨");
+        assert!(
+            !marker_b.exists(),
+            "[{name}] 거부된 줄이 B 에서 실행됨 (표지 파일 생김)"
+        );
+        assert!(
+            !marker_a.exists(),
+            "[{name}] 거부된 줄이 A 에서 실행됨 (표지 파일 생김)"
+        );
+        assert_eq!(
+            p.b.invoked(),
+            None,
+            "[{name}] 거부된 줄에서 B 의 herdr-core 가 실행됨"
+        );
+        assert_eq!(
+            p.a.invoked(),
+            None,
+            "[{name}] 거부된 줄에서 A 의 herdr-core 가 실행됨"
+        );
     }
 
     // 거부한 줄은 로그에 남긴다 (어느 쪽 에이전트든, 출력 또는 데이터 폴더 안 파일).
@@ -239,7 +286,12 @@ fn session_name_boundaries_are_accepted() {
     let long = "a".repeat(64);
     for name in ["a.b_c-D9", "Z", long.as_str()] {
         let out = p.a.run_via("b", &session_line(name), b"");
-        assert_eq!(out.code(), Some(98), "[{name}] 허용되어야 함. stderr: {}", out.err());
+        assert_eq!(
+            out.code(),
+            Some(98),
+            "[{name}] 허용되어야 함. stderr: {}",
+            out.err()
+        );
         assert!(out.err().contains(&format!("unknown mode {name}")));
     }
     let invoked = p.b.invoked().unwrap_or_default();
@@ -255,8 +307,14 @@ fn assert_quick_255(n: &Node, what: &str) {
     let out = n.run_via("b", DEFAULT_LINE, b"");
     let el = t.elapsed();
     assert_eq!(out.code(), Some(255), "[{what}] stderr: {}", out.err());
-    assert!(el < Duration::from_secs(2), "[{what}] via 가 기다림: {el:?}");
-    assert!(!out.err().trim().is_empty(), "[{what}] stderr 에 사유가 없음");
+    assert!(
+        el < Duration::from_secs(2),
+        "[{what}] via 가 기다림: {el:?}"
+    );
+    assert!(
+        !out.err().trim().is_empty(),
+        "[{what}] stderr 에 사유가 없음"
+    );
     assert!(out.stdout.is_empty(), "[{what}] stdout 에 무언가 섞임");
     assert_eq!(n.invoked(), None);
 }
@@ -289,17 +347,32 @@ fn caller_agent_dying_midstream_gives_255_and_remote_child_is_cleaned() {
     assert_eq!(v.read_stdout_exact(6, Duration::from_secs(10)), b"ready\n");
     let child = p.b.read_pid("child.pid");
     let grandchild = p.b.read_pid("grandchild.pid");
-    assert!(process_alive(&child) && process_alive(&grandchild), "원격 프로세스가 처음부터 없음");
+    assert!(
+        process_alive(&child) && process_alive(&grandchild),
+        "원격 프로세스가 처음부터 없음"
+    );
 
     p.a.kill_agent("KILL");
     let t = Instant::now();
     let out = v.wait_end_keep_stdin(Duration::from_secs(10));
-    assert!(t.elapsed() < Duration::from_secs(3), "A 에이전트가 죽은 뒤 via 가 늦게 끝남: {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(3),
+        "A 에이전트가 죽은 뒤 via 가 늦게 끝남: {:?}",
+        t.elapsed()
+    );
     assert_eq!(out.code(), Some(255), "stderr: {}", out.err());
     assert!(!out.err().trim().is_empty());
-    assert!(out.stdout.is_empty(), "stdout 에 원격 외 바이트가 섞임: {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "stdout 에 원격 외 바이트가 섞임: {:?}",
+        out.stdout
+    );
 
-    wait_gone(&[&child, &grandchild], Duration::from_secs(60), "A 에이전트 사망 뒤 B 의 자식 정리");
+    wait_gone(
+        &[&child, &grandchild],
+        Duration::from_secs(60),
+        "A 에이전트 사망 뒤 B 의 자식 정리",
+    );
 }
 
 #[test]
@@ -313,9 +386,17 @@ fn receiver_agent_dying_midstream_gives_255() {
     let out = v.wait_end_keep_stdin(Duration::from_secs(60));
     assert_eq!(out.code(), Some(255), "stderr: {}", out.err());
     assert!(!out.err().trim().is_empty());
-    assert!(out.stdout.is_empty(), "stdout 에 원격 외 바이트가 섞임: {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "stdout 에 원격 외 바이트가 섞임: {:?}",
+        out.stdout
+    );
     // A 의 에이전트는 계속 산다.
-    assert!(p.a.agent_running(), "B 가 죽었는데 A 에이전트도 끝남. 로그:\n{}", p.a.agent_log());
+    assert!(
+        p.a.agent_running(),
+        "B 가 죽었는데 A 에이전트도 끝남. 로그:\n{}",
+        p.a.agent_log()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -364,9 +445,8 @@ fn multi_megabyte_echo_full_duplex() {
     // cat 으로 수 MB 를 동시에 넣고 받는다. 한쪽이 다른 쪽을 기다리면 교착된다.
     let p = shared();
     let input = pattern(6 * 1024 * 1024, 3);
-    let out = p
-        .a
-        .run_via_timeout("b", &session_line("cat"), &input, Duration::from_secs(120));
+    let out =
+        p.a.run_via_timeout("b", &session_line("cat"), &input, Duration::from_secs(120));
     assert_eq!(out.code(), Some(0), "stderr: {}", out.err());
     assert_bytes_eq(&out.stdout, &input, "6 MiB 메아리");
 }
@@ -400,7 +480,9 @@ fn many_concurrent_vias() {
     }
 
     // 동시에 큰 데이터를 흘린다
-    let payloads: Vec<Vec<u8>> = (0..N).map(|i| pattern(512 * 1024, i as u32 + 100)).collect();
+    let payloads: Vec<Vec<u8>> = (0..N)
+        .map(|i| pattern(512 * 1024, i as u32 + 100))
+        .collect();
     let dones: Vec<Receiver<()>> = vias
         .iter_mut()
         .zip(&payloads)
@@ -437,7 +519,10 @@ fn killing_via_cleans_up_remote_children() {
         let child = p.b.read_pid("child.pid");
         let grandchild = p.b.read_pid("grandchild.pid");
         assert!(process_alive(&child), "[{sig}] 원격 자식이 처음부터 없음");
-        assert!(process_alive(&grandchild), "[{sig}] 원격 손자가 처음부터 없음");
+        assert!(
+            process_alive(&grandchild),
+            "[{sig}] 원격 손자가 처음부터 없음"
+        );
 
         let st = Command::new("kill")
             .args([&format!("-{sig}"), &v.child.id().to_string()])
@@ -446,7 +531,11 @@ fn killing_via_cleans_up_remote_children() {
         assert!(st.success());
         v.wait(Duration::from_secs(5));
 
-        wait_gone(&[&child, &grandchild], Duration::from_secs(10), &format!("{sig} 로 via 종료"));
+        wait_gone(
+            &[&child, &grandchild],
+            Duration::from_secs(10),
+            &format!("{sig} 로 via 종료"),
+        );
     }
 
     // 연결과 에이전트는 계속 동작한다.
@@ -469,7 +558,11 @@ fn permissions_when_agent_creates_dir() {
     let meta = fs::symlink_metadata(n.sock()).unwrap();
     assert!(meta.file_type().is_socket(), "agent.sock 이 소켓이 아님");
     assert_eq!(mode_of(&n.sock()), 0o600, "소켓 권한");
-    assert_eq!(mode_of(&n.key_file()), 0o600, "secret.key 권한 (에이전트가 키를 만든 경우)");
+    assert_eq!(
+        mode_of(&n.key_file()),
+        0o600,
+        "secret.key 권한 (에이전트가 키를 만든 경우)"
+    );
 }
 
 #[test]
@@ -498,11 +591,19 @@ fn via_stdout_carries_only_remote_bytes() {
     // 원격이 아무것도 쓰지 않으면 stdout 은 정확히 비어 있다.
     let out = p.a.run_via("b", &session_line("cat"), b"");
     assert_eq!(out.code(), Some(0), "stderr: {}", out.err());
-    assert!(out.stdout.is_empty(), "빈 원격 출력인데 stdout 에 {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "빈 원격 출력인데 stdout 에 {:?}",
+        out.stdout
+    );
 
     let out = p.a.run_via("b", &session_line("exit7"), b"");
     assert_eq!(out.code(), Some(7));
-    assert!(out.stdout.is_empty(), "exit7 인데 stdout 에 {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "exit7 인데 stdout 에 {:?}",
+        out.stdout
+    );
 
     // 원격 stderr 가 있어도 stdout 은 원격 stdout 그대로다.
     let out = p.a.run_via("b", &session_line("stderr"), b"");
@@ -515,7 +616,11 @@ fn via_stdout_carries_only_remote_bytes() {
     assert!(out.stdout.is_empty(), "거부인데 stdout 에 {:?}", out.stdout);
     let out = p.a.run_via("nosuch", DEFAULT_LINE, b"");
     assert_eq!(out.code(), Some(255));
-    assert!(out.stdout.is_empty(), "없는 피어인데 stdout 에 {:?}", out.stdout);
+    assert!(
+        out.stdout.is_empty(),
+        "없는 피어인데 stdout 에 {:?}",
+        out.stdout
+    );
 
     // 바이트 하나도 앞뒤에 붙지 않는다.
     let out = p.a.run_via("b", DEFAULT_LINE, b"\x00");

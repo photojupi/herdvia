@@ -2,12 +2,7 @@ use crate::{frame, ipc};
 use iroh::{EndpointId, SecretKey};
 use std::{
     collections::HashSet,
-    fs::{File, OpenOptions},
     io::{self, Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    },
     path::Path,
 };
 
@@ -56,28 +51,10 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
-fn private_file(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.uid() != ipc::uid() || meta.mode() & 0o177 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "{} must be owned by this user with permissions no wider than 0600",
-                path.display()
-            ),
-        ));
-    }
-    Ok(file)
-}
-
 pub fn load_key(dir: &Path) -> io::Result<SecretKey> {
     ipc::prepare_dir(dir)?;
     let path = dir.join("secret.key");
-    let mut file = match private_file(&path) {
+    let mut file = match ipc::private_file(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             let key = SecretKey::generate();
@@ -90,7 +67,7 @@ pub fn load_key(dir: &Path) -> io::Result<SecretKey> {
                 Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(err) => return Err(err.error),
             }
-            private_file(&path)?
+            ipc::private_file(&path)?
         }
         Err(err) => return Err(err),
     };
@@ -103,7 +80,7 @@ pub fn load_key(dir: &Path) -> io::Result<SecretKey> {
 }
 
 pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
-    let mut file = match private_file(&dir.join("peers")) {
+    let mut file = match ipc::private_file(&dir.join("peers")) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -130,12 +107,8 @@ pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
 
 fn update(dir: &Path, edit: impl FnOnce(&mut Vec<Peer>)) -> io::Result<()> {
     load_key(dir)?;
-    let lock = private_file(&dir.join("secret.key"))?;
-    // The key inode is stable. Use it to serialize peer edits without a separate lock file.
-    // SAFETY: lock owns this descriptor until the entire update finishes.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let lock = ipc::private_file(&dir.join("secret.key"))?;
+    ipc::lock_file(&lock)?;
     let mut peers = load(dir)?;
     edit(&mut peers);
     peers.sort_by(|a, b| a.name.cmp(&b.name));
@@ -179,6 +152,7 @@ pub fn fingerprint(id: EndpointId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::{fs, os::unix::fs::PermissionsExt};
 
     #[test]
@@ -191,6 +165,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn key_survives_reload_and_is_private() {
         let dir = tempfile::tempdir().unwrap();
@@ -211,6 +186,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn allow_updates_and_revoke_persists() {
         let dir = tempfile::tempdir().unwrap();
@@ -237,6 +213,7 @@ mod tests {
         assert!(load(dir.path()).unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn rejects_wide_permissions_and_bad_files() {
         let dir = tempfile::tempdir().unwrap();

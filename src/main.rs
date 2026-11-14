@@ -6,9 +6,14 @@ use std::io;
 
 enum Command {
     Agent,
+    #[cfg(windows)]
+    AgentLog,
     AgentInstall,
     AgentUninstall,
-    Via { peer: String, line: String },
+    Via {
+        peer: String,
+        line: String,
+    },
     Id,
     Allow(Peer),
     Revoke(String),
@@ -18,6 +23,8 @@ enum Command {
 fn parse(args: Vec<String>) -> io::Result<Command> {
     match args.as_slice() {
         [cmd] if cmd == "agent" => Ok(Command::Agent),
+        #[cfg(windows)]
+        [cmd, flag] if cmd == "agent" && flag == "--log" => Ok(Command::AgentLog),
         [cmd, action] if cmd == "agent" && action == "install" => Ok(Command::AgentInstall),
         [cmd, action] if cmd == "agent" && action == "uninstall" => Ok(Command::AgentUninstall),
         [cmd] if cmd == "id" => Ok(Command::Id),
@@ -51,7 +58,11 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         }),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: hlink agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status",
+            if cfg!(windows) {
+                "usage: hlink agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+            } else {
+                "usage: hlink agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status"
+            },
         )),
     }
 }
@@ -67,8 +78,16 @@ async fn main() {
         .collect();
     let result = match ipc::reject_root().and(args).and_then(parse) {
         Ok(Command::Agent) => hlink::agent::run().await.map(|()| 0),
+        #[cfg(windows)]
+        Ok(Command::AgentLog) => match hlink::launchd::redirect_log() {
+            Ok(()) => hlink::agent::run().await.map(|()| 0),
+            Err(err) => Err(err),
+        },
         Ok(Command::AgentInstall) => hlink::launchd::install().await.map(|()| 0),
+        #[cfg(unix)]
         Ok(Command::AgentUninstall) => hlink::launchd::uninstall().map(|()| 0),
+        #[cfg(windows)]
+        Ok(Command::AgentUninstall) => hlink::launchd::uninstall().await.map(|()| 0),
         Ok(Command::Via { peer, line }) => hlink::via::run(&peer, &line).await,
         Ok(command) => manage(command).await.map(|()| 0),
         Err(err) => Err(err),
@@ -108,6 +127,22 @@ async fn manage(command: Command) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_log_is_windows_only_and_requires_exact_arguments() {
+        let result = parse(vec!["agent".into(), "--log".into()]);
+        #[cfg(windows)]
+        assert!(matches!(result.unwrap(), Command::AgentLog));
+        #[cfg(not(windows))]
+        assert!(result.is_err());
+        for args in [
+            vec!["agent", "--log", "extra"],
+            vec!["agent", "install", "--log"],
+            vec!["agent", "uninstall", "--log"],
+        ] {
+            assert!(parse(args.into_iter().map(str::to_owned).collect()).is_err());
+        }
+    }
 
     #[test]
     fn accepts_agent_subcommands_and_via_with_exact_argument_counts() {

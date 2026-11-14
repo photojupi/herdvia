@@ -5,13 +5,11 @@ use crate::{
 use std::io;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::UnixStream,
     task::JoinSet,
 };
 
 pub async fn run(peer: &str, line: &str) -> io::Result<i32> {
-    let stream = UnixStream::connect(ipc::data_dir()?.join("agent.sock")).await?;
-    ipc::check_uid(&stream)?;
+    let stream = ipc::connect(&ipc::data_dir()?).await?;
     relay(
         stream,
         peer,

@@ -1,11 +1,15 @@
-use crate::{
-    frame::{self, *},
-    ipc, template,
-};
-use std::{io, os::unix::process::ExitStatusExt, process::Stdio};
+use crate::frame::{self, *};
+use std::io;
+
+#[cfg(unix)]
+#[path = "exec/unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "exec/windows.rs"]
+mod platform;
+use platform::Command;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::{ChildStdin, Command},
     task::JoinSet,
 };
 
@@ -20,34 +24,32 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         return Err(frame::invalid("first frame must be OPEN"));
     }
     let line = std::str::from_utf8(&open.payload).map_err(|_| frame::invalid("invalid OPEN"))?;
-    if !template::allowed(line) {
-        eprintln!("hlink: rejected command: {line:?}");
-        frame::write(
-            &mut stream,
-            ERROR,
-            b"command does not match an allowed connect template",
-        )
-        .await?;
-        return Err(frame::invalid("command rejected"));
+    match platform::prepare(line)? {
+        Launch::Run(command) => execute(stream, *command).await,
+        #[cfg(windows)]
+        Launch::Exit(message, code) => {
+            frame::write(&mut stream, STDERR, message).await?;
+            frame::write(&mut stream, EXIT, &code.to_be_bytes()).await
+        }
+        Launch::Reject => {
+            eprintln!("hlink: rejected command: {line:?}");
+            frame::write(
+                &mut stream,
+                ERROR,
+                b"command does not match an allowed connect template",
+            )
+            .await?;
+            Err(frame::invalid("command rejected"))
+        }
     }
-    let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(line).current_dir(ipc::home_dir()?);
-    execute(stream, command).await
 }
 
 async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut stream: S,
-    mut command: Command,
+    command: Command,
 ) -> io::Result<()> {
-    let spawned = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
+    let (mut child, mut group) = match platform::spawn(command) {
+        Ok(spawned) => spawned,
         Err(err) => {
             frame::write(
                 &mut stream,
@@ -58,7 +60,6 @@ async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             return Err(err);
         }
     };
-    let mut group = ProcessGroup(child.id().expect("new child has a pid") as i32);
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -72,8 +73,7 @@ async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         }
         result = async {
             send_output(&mut writer, stdout, stderr).await?;
-            let status = child.wait().await?;
-            let code = status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+            let code = platform::wait(&mut child).await?;
             frame::write(&mut writer, EXIT, &code.to_be_bytes()).await
         } => result,
     };
@@ -81,34 +81,24 @@ async fn execute<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     while input.join_next().await.is_some() {}
     if result.is_err() {
         group.kill();
-        let _ = child.wait().await;
+        let _ = platform::wait(&mut child).await;
     } else {
-        group.0 = 0;
+        group.finish();
     }
     result
 }
 
-struct ProcessGroup(i32);
-
-impl ProcessGroup {
-    fn kill(&mut self) {
-        if self.0 > 0 {
-            // SAFETY: the child was placed in its own process group with this pid.
-            unsafe {
-                libc::kill(-self.0, libc::SIGKILL);
-            }
-            self.0 = 0;
-        }
-    }
+enum Launch {
+    Run(Box<Command>),
+    #[cfg(windows)]
+    Exit(&'static [u8], i32),
+    Reject,
 }
 
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        self.kill();
-    }
-}
-
-async fn receive_input<R: AsyncRead + Unpin>(mut reader: R, stdin: ChildStdin) -> io::Result<()> {
+async fn receive_input<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    mut reader: R,
+    stdin: W,
+) -> io::Result<()> {
     let mut stdin = Some(stdin);
     let mut eof = false;
     loop {
@@ -118,8 +108,13 @@ async fn receive_input<R: AsyncRead + Unpin>(mut reader: R, stdin: ChildStdin) -
         match f.tag {
             STDIN if !eof => {
                 if let Some(pipe) = stdin.as_mut() {
-                    match pipe.write_all(&f.payload).await {
-                        Ok(()) => pipe.flush().await?,
+                    let written = async {
+                        pipe.write_all(&f.payload).await?;
+                        pipe.flush().await
+                    }
+                    .await;
+                    match written {
+                        Ok(()) => {}
                         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
                             stdin.take();
                         }
@@ -162,10 +157,10 @@ where
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::frame;
+    use crate::{frame, ipc};
     use std::time::Duration;
     use tokio::time::timeout;
 
@@ -173,6 +168,28 @@ mod tests {
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c").arg(script);
         cmd
+    }
+
+    #[tokio::test]
+    async fn continues_receiving_after_buffered_stdin_broken_pipe() {
+        use std::os::fd::OwnedFd;
+
+        let (writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(reader);
+        let stdin = tokio::fs::File::from_std(std::fs::File::from(OwnedFd::from(writer)));
+        let mut input = Vec::new();
+        frame::write(&mut input, STDIN, b"late input")
+            .await
+            .unwrap();
+        frame::write(&mut input, STDIN, b"more input")
+            .await
+            .unwrap();
+        frame::write(&mut input, STDIN_EOF, &[]).await.unwrap();
+
+        // A buffered write fails during flush. Keep reading frames so child
+        // output and EXIT can still finish, until the peer itself disconnects.
+        let err = receive_input(input.as_slice(), stdin).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[tokio::test]

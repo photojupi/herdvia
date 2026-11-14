@@ -1,8 +1,14 @@
 pub mod agent;
+#[cfg(any(windows, test))]
+mod autostart_logic;
 pub mod control;
 pub mod exec;
 pub mod frame;
 pub mod ipc;
+#[cfg(unix)]
+pub mod launchd;
+#[cfg(windows)]
+#[path = "autostart_windows.rs"]
 pub mod launchd;
 pub mod network;
 pub mod peers;

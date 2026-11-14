@@ -3,11 +3,9 @@ use crate::{
     ipc,
 };
 use std::{io, path::Path};
-use tokio::net::UnixStream;
 
 pub async fn request(dir: &Path, command: &str) -> io::Result<String> {
-    let mut stream = UnixStream::connect(dir.join("agent.sock")).await?;
-    ipc::check_uid(&stream)?;
+    let mut stream = ipc::connect(dir).await?;
     frame::write(&mut stream, CONTROL, command.as_bytes()).await?;
     let mut output = Vec::new();
     loop {
@@ -45,7 +43,7 @@ pub async fn reload_if_running(dir: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use tokio::net::UnixListener;

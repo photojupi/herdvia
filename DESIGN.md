@@ -160,6 +160,85 @@ tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 
 - `install`은 이미 등록돼 있으면 새 내용으로 바꾸고 다시 시작한다. `uninstall`은 등록이 없어도 성공한다.
 - 에이전트가 이미 수동으로 떠 있으면 `install`은 실패한다고 알리고 아무것도 바꾸지 않는다.
 
+## M5: Windows
+
+### 실측 (hc 0.1.21, macOS에서 Windows인 척하는 가짜 via로 측정)
+
+- hc는 먼저 Unix 줄(`sh -c '...'`)을 보낸다. 그것이 0도 127도 아닌 코드(측정은 1)로 끝나면 Windows 줄을 보낸다.
+- Windows 줄(기본):
+  `cmd /d /c "if exist .\AppData\Local\Programs\herdr-core\herdr-core.exe (.\AppData\Local\Programs\herdr-core\herdr-core.exe connect) else (echo herdr-core is not installed here 1>&2 & exit /b 127)"`
+- Windows 줄(세션 지정): 위에서 `connect`가 `connect --session <이름>`으로 바뀐다.
+- hc의 세션 이름 규칙: `a-z 0-9 - _ .` 1~32자, 글자나 숫자로 시작.
+- 경로가 상대 경로이므로 실행 위치는 사용자 홈(`%USERPROFILE%`)이어야 한다.
+- Windows의 hc는 via를 "프로그램 + 인자"로 직접 실행하고(셸 없음, 콘솔 창 없음) 원격 줄을 마지막 인자 하나로 붙인다(hc 도움말).
+- herdr-core의 Windows 빌드는 x64만 있다.
+
+### 범위
+
+M5a: Windows에서 `agent`, `via`, `id`, `allow`, `revoke`, `status`가 동작한다(에이전트는 콘솔에서 수동 실행).
+M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤에 한다.
+
+### M5a 설계
+
+- 대상은 `x86_64-pc-windows-gnu`(맥에서 mingw-w64로 교차 빌드)다. 공개 배포용 빌드 방식은 M7에서 정한다.
+- 운영체제별 코드는 `ipc`, `exec`, `template`의 줄 판정, 데이터 폴더, root 거부에만 둔다.
+  프레임, 네트워크, 피어 목록, via·에이전트의 흐름은 공유한다.
+- 데이터 폴더: `%APPDATA%\hlink`. `HLINK_DIR`이 있으면 그것을 쓴다(Unix와 같다).
+- 로컬 통신: 이름 있는 파이프 `\\.\pipe\hlink-<사용자 SID>`. `HLINK_DIR`이 있으면 그 경로의 해시를 이름 끝에 붙여 구분한다.
+  - 파이프의 보안 설정은 현재 사용자 SID에만 전체 권한을 준다. 원격 클라이언트는 거부한다.
+  - 에이전트는 첫 인스턴스로만 파이프를 만든다(이미 있으면 "agent is already running"). 이것이 단일 실행 보장이다.
+  - via·관리 명령은 접속한 파이프의 소유자 SID가 자신과 같은지 확인하고, 다르면 접속을 끊고 오류를 낸다.
+  - 파이프가 없으면 Unix의 "에이전트 없음"과 같은 오류·종료 코드(255)를 낸다.
+- 실행 쪽(Windows 에이전트가 OPEN을 받았을 때):
+  - Windows 줄 두 형태와 정확히 일치하면 셸 없이 직접 실행한다. `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`가
+    있으면 인자 `connect` 또는 `connect --session <이름>`으로, 작업 폴더 `%USERPROFILE%`에서, 콘솔 창 없이 띄운다.
+    없으면 STDERR `herdr-core is not installed here`와 EXIT 127을 보낸다.
+  - Unix 줄 두 형태와 정확히 일치하면 아무것도 실행하지 않고 STDERR
+    `'sh' is not recognized as an internal or external command,`를 보낸 뒤 EXIT 1을 보낸다(hc가 Windows 줄로 다시 시도한다).
+  - 그 밖의 줄은 Unix와 같이 ERROR로 거부한다.
+  - 연결이 끊기면 직접 띄운 자식(`herdr-core.exe connect`)만 종료한다. 자손은 건드리지 않는다.
+    `connect`가 코어 서버를 자손으로 띄울 수 있고, 그것까지 죽이면 그 PC의 터미널이 모두 사라지기 때문이다.
+    Job Object는 쓰지 않는다. 에이전트가 죽으면 자식은 stdin이 닫혀 스스로 끝난다(M1 실측: stdin EOF 후 약 0.1초).
+  - EXIT 코드는 자식의 종료 코드 그대로다.
+- Unix 에이전트는 Windows 줄을 계속 거부한다.
+- root 거부는 Unix에만 있다. Windows에서는 검사하지 않는다.
+- `secret.key`와 `peers`는 사용자 프로필의 기본 권한을 그대로 쓴다(별도 ACL을 걸지 않는다).
+- `agent install`/`uninstall`은 M5a의 Windows에서 "지원하지 않음" 오류를 낸다.
+- 기존 통합 테스트(`tests/`)는 Unix 전용으로 둔다. Windows 쪽은 줄 판정 등 순수 로직만 단위 테스트한다.
+
+### M5a 실기 결과 (Windows 11 10.0.26300, hc 0.1.21)
+
+- 맥북→Windows: 직접 연결 4ms, 원격 명령 중앙값 89ms, 8MB 0.66초, 통로 재시작 후 5.1초에 복구, 원격 터미널 유지.
+- Windows→맥북 28ms, Windows→맥미니 33ms(원격 명령 중앙값). Windows 로컬 `hc exec`가 75ms라서 89ms의 대부분은 Windows의 프로세스 생성 시간이다.
+- `DeviceIoControl(FSCTL_PIPE_PEEK)`는 이 Windows에서 오류 1(ERROR_INVALID_FUNCTION)로 실패했다.
+  끊김 감지는 `NtQueryInformationFile(FilePipeLocalInformation)`으로 바꿨고, 조회가 실패하면 감시를 포기하되 세션은 유지한다.
+
+### M5b 설계: Windows 자동 시작
+
+| 명령 | 역할 |
+|---|---|
+| `hlink agent install` | 로그온 시 에이전트가 창 없이 뜨도록 등록하고 바로 시작한다 |
+| `hlink agent uninstall` | 에이전트를 멈추고 등록을 지운다 |
+
+- 관리자 권한 없이 동작해야 한다. 등록은 현재 사용자 레지스트리의 Run 키다:
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, 값 이름 `hlink`,
+  값 `conhost.exe --headless "<실행 파일 절대 경로>" agent --log`.
+  `conhost.exe --headless`는 콘솔 창을 만들지 않고 콘솔 프로그램을 띄운다. 서비스나 "로그온 여부와 무관" 작업으로는 등록하지 않는다
+  (herdr-core가 사용자의 대화형 세션에서 돌아야 한다).
+- `agent --log`는 Windows 전용이다. 표준 출력·오류를 `%LOCALAPPDATA%\hlink\hlink.log`에 이어 쓰도록 바꾼 뒤 평소의 `agent`로 동작한다.
+- `install`은 등록한 뒤 같은 명령을 콘솔 창 없이, 자신과 분리된 프로세스로 바로 띄운다(재로그온을 기다리지 않는다).
+  시작한 에이전트의 파이프가 5초 안에 생기지 않으면 오류를 낸다(등록은 남긴다. 오류 문구에 로그 경로를 적는다).
+- 실행 경로는 `install`을 실행한 그 실행 파일이다. 임시 폴더나 `target` 안이면 경고하되 등록은 한다(macOS와 같다).
+- `HLINK_DIR`이 설정된 채 `install`하면 거부한다(macOS와 같다).
+- `install`은 변경 전에 `TokenElevation`을 검사해 상승된 관리자 토큰이면 거부하고, 관리자 권한이 아닌 일반 PowerShell에서 실행하도록 안내한다(`uninstall`에는 적용하지 않는다).
+- `install`은 등록 전에 실행 파일 경로에 `%`가 있으면 거부한다(conhost의 환경 변수 확장 방지). Run 명령줄은 NUL을 제외하고 최대 259 UTF-16 코드 단위다.
+- 에이전트가 이미 떠 있을 때의 `install`: Run 값이 이미 있으면(재설치) 떠 있는 에이전트를 끝내고 새로 등록·시작한다.
+  Run 값이 없으면(수동 실행 중) 실패한다고 알리고 아무것도 바꾸지 않는다.
+- `uninstall`은 Run 값을 지우고 떠 있는 에이전트를 끝낸다. 등록이 없거나 에이전트가 없어도 성공한다. 데이터 폴더와 로그는 남긴다.
+- 떠 있는 에이전트를 끝내는 방법: 파이프에 접속해 소유자 SID를 확인한 뒤 `GetNamedPipeServerProcessId`로 얻은 프로세스를 종료하고,
+  파이프가 사라질 때까지 최대 5초 기다린다.
+- 넣지 않는 것: 에이전트가 죽었을 때의 자동 재시작(다음 로그온까지 꺼져 있다), 로그 파일 크기 관리. 둘 다 M6 실사용 결과를 보고 정한다.
+
 ## 단계
 
 - M1 (완료): 가짜 via로 hc 동작 실측.
