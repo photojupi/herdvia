@@ -301,7 +301,7 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
                 return Err(not_a_dir());
             }
             require_uid(metadata.uid())?;
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            chmod_nofollow(dir, 0o700)?;
             open()?
         }
         result => result?,
@@ -309,6 +309,42 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     require_uid(file.metadata()?.uid())?;
     file.set_permissions(fs::Permissions::from_mode(0o700))?;
     check_acl(&file, dir)
+}
+
+/// Sets the mode of `path` without following a symbolic link there, which may have replaced
+/// the directory since it was checked. macOS sets the link's own mode; Linux (glibc 2.32 or
+/// later, or musl) refuses a link with EOPNOTSUPP. Where Linux does not support the flag at
+/// all, a path that is still a real directory gets the path-based chmod instead.
+fn chmod_nofollow(path: &Path, mode: libc::mode_t) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: c_path is a NUL-terminated string that lives for the call.
+    if unsafe {
+        libc::fchmodat(
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+            mode,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let err = io::Error::last_os_error();
+        // glibc before 2.32 refuses the flag for any path, and later glibc or musl without
+        // /proc refuses it for a directory too. Fall back to the path-based chmod for what is
+        // still a real directory, as before.
+        let code = err.raw_os_error();
+        if (code == Some(libc::ENOTSUP) || code == Some(libc::EOPNOTSUPP))
+            && fs::symlink_metadata(path)?.is_dir()
+        {
+            // SAFETY: as above.
+            if unsafe { libc::chmod(c_path.as_ptr(), mode) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            return Ok(());
+        }
+        return Err(err);
+    }
+    Ok(())
 }
 
 pub(crate) fn lock_dir(dir: &Path) -> io::Result<File> {
@@ -475,6 +511,24 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
         prepare_dir(&dir).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn chmod_nofollow_leaves_the_target_of_a_link_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"x").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = temp.path().join("link");
+        symlink(&target, &link).unwrap();
+        // macOS changes the link itself; Linux refuses to.
+        let _ = chmod_nofollow(&link, 0o700);
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o600);
+        let dir = temp.path().join("dir");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        chmod_nofollow(&dir, 0o700).unwrap();
         assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
     }
 

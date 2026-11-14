@@ -595,11 +595,7 @@ pub async fn run() -> io::Result<i32> {
                 DirState::Missing | DirState::Directory | DirState::Loose(_)
             ) {
                 report.add(key_check(&key_state(&dir.join("secret.key"))));
-                let path = dir.join("peers");
-                report.add(match open_private(&path) {
-                    Ok((_, Some(note))) => check(Level::Warn, format!("peers: {note}")),
-                    _ => peers_check(&path, peers::load(&dir).as_deref()),
-                });
+                report.add(peers_state_check(&dir));
             }
             usable.then_some(dir)
         }
@@ -808,6 +804,19 @@ fn owned(metadata: &Metadata) -> bool {
 #[cfg(windows)]
 fn owned(_metadata: &Metadata) -> bool {
     true
+}
+
+/// The peers file, read-only with the agent's own checks. A DACL that the next run restricts
+/// (Windows) gives a warning, unless the content is broken, which that run does not fix.
+fn peers_state_check(dir: &Path) -> Check {
+    let path = dir.join("peers");
+    match open_private(&path) {
+        Ok((file, Some(note))) => match peers::read(file) {
+            Ok(_) => check(Level::Warn, format!("peers: {note}")),
+            Err(err) => peers_check(&path, Err(&err)),
+        },
+        _ => peers_check(&path, peers::load(dir).as_deref()),
+    }
 }
 
 /// Opens the key read-only with the agent's own checks. Never creates it.
@@ -1257,6 +1266,41 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(&path, [1; 31]).unwrap();
         assert!(matches!(key_state(&path), KeyState::Unreadable(_)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checks_the_content_of_peers_that_the_next_run_restricts() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("herdvia");
+        ipc::prepare_dir(&dir).unwrap();
+        let path = dir.join("peers");
+        fs::write(&path, "broken\n").unwrap();
+        // An explicit grant to Users, which the next run removes.
+        let status = std::process::Command::new("icacls")
+            .arg(&path)
+            .args(["/grant", "*S-1-5-32-545:R"])
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let note = ipc::inspect_file(&path).unwrap().1.unwrap();
+        // Restricting it does not fix the content.
+        let broken = peers_state_check(&dir);
+        assert_eq!(broken.level, Level::Fail);
+        assert!(
+            broken
+                .text
+                .starts_with("peers: invalid or duplicate peer name in peers ("),
+            "{}",
+            broken.text
+        );
+        let id = SecretKey::generate().public();
+        fs::write(&path, format!("work {id} both\n")).unwrap();
+        assert_eq!(ipc::inspect_file(&path).unwrap().1.as_deref(), Some(&*note));
+        let valid = peers_state_check(&dir);
+        assert_eq!(valid.level, Level::Warn);
+        assert_eq!(valid.text, format!("peers: {note}"));
     }
 
     #[cfg(target_os = "macos")]

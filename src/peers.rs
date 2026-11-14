@@ -2,6 +2,7 @@ use crate::{frame, ipc};
 use iroh::{EndpointId, SecretKey};
 use std::{
     collections::HashSet,
+    fs::File,
     io::{self, Read, Write},
     path::Path,
 };
@@ -80,11 +81,15 @@ pub fn load_key(dir: &Path) -> io::Result<SecretKey> {
 }
 
 pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
-    let mut file = match ipc::private_file(&dir.join("peers")) {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
+    match ipc::private_file(&dir.join("peers")) {
+        Ok(file) => read(file),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
+/// The peers in an open peers file.
+pub(crate) fn read(mut file: File) -> io::Result<Vec<Peer>> {
     let mut text = String::new();
     file.read_to_string(&mut text)?;
     let mut peers = Vec::new();

@@ -292,14 +292,45 @@ fn is_stderr(file: &File) -> io::Result<bool> {
         && stat.st_ino as u64 == metadata.ino())
 }
 
+/// Whether standard error writes to `file`, as it does under `agent --log`. A link or other
+/// reparse point at the log's name is not.
+#[cfg(windows)]
+fn is_stderr(file: &File) -> io::Result<bool> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Ok(false);
+    }
+    same_file(io::stderr(), file)
+}
+
+/// Whether `handle` and `file` are open on the same file. A console, a pipe, or no handle
+/// at all has no file index and is not.
+#[cfg(windows)]
+fn same_file(handle: impl std::os::windows::io::AsHandle, file: &File) -> io::Result<bool> {
+    Ok(crate::ipc::file_id(handle).ok() == Some(crate::ipc::file_id(file)?))
+}
+
+/// Opens the log for reading and writing; on Windows the entry at its name itself, not the
+/// target of a link.
+fn open_log(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+    );
+    options.open(path)
+}
+
 fn trim(path: &Path, now: u64, expire: bool) -> io::Result<()> {
     // Hold standard error so that no log line of this process lands mid-rewrite and is lost.
     let _stderr = io::stderr().lock();
-    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+    let mut file = match open_log(path) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         result => result?,
     };
-    #[cfg(unix)]
     if !is_stderr(&file)? {
         return Ok(());
     }
@@ -751,7 +782,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), numbered(3));
     }
 
-    #[cfg(unix)]
     #[test]
     fn leaves_a_file_that_is_not_standard_error_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -761,6 +791,24 @@ mod tests {
         trim(&path, CUTOFF, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), data);
         trim(&dir.path().join("missing.log"), CUTOFF, true).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compares_open_files_by_volume_and_file_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdvia.log");
+        let other = dir.path().join("other.log");
+        fs::write(&path, b"").unwrap();
+        fs::write(&other, b"").unwrap();
+        // As agent --log opens standard error, and as trim opens the log.
+        let append = OpenOptions::new().append(true).open(&path).unwrap();
+        let log = open_log(&path).unwrap();
+        assert!(same_file(&append, &log).unwrap());
+        assert!(!same_file(&append, &open_log(&other).unwrap()).unwrap());
+        // Nor is a pipe, as standard error may be.
+        let (reader, _writer) = io::pipe().unwrap();
+        assert!(!same_file(&reader, &log).unwrap());
     }
 
     #[tokio::test]
