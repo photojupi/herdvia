@@ -563,7 +563,10 @@ fn check_owner(stream: &ClientStream, sid: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+    use windows_sys::Win32::{
+        Foundation::ERROR_PRIVILEGE_NOT_HELD,
+        Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    };
 
     /// The DACL of a file or directory in SDDL.
     fn dacl(path: &Path) -> String {
@@ -640,8 +643,25 @@ mod tests {
     fn protects_the_directory_and_its_new_files_inherit_that() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        // An inheritable grant to Users, and a file that inherited it before the upgrade.
+        let status = std::process::Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)R"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let old = dir.join("old");
+        fs::write(&old, b"x").unwrap();
+        assert!(dacl(&old).contains(";;;BU)"), "{}", dacl(&old));
         prepare_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
+        // SetSecurityInfo propagates the new inheritable ACEs to existing children.
+        let existing = dacl(&old);
+        assert!(
+            existing.contains(&format!(";;;{sid})")) && !existing.contains(";;;BU)"),
+            "{existing}"
+        );
         // SetSecurityInfo also marks the DACL auto-inherited (AI).
         let protected = dacl(&dir);
         assert!(protected.starts_with("D:P"), "{protected}");
@@ -701,14 +721,33 @@ mod tests {
             check_dir(&file).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
+        // Without FILE_FLAG_BACKUP_SEMANTICS, CreateFileW itself refuses a directory.
         assert_eq!(
-            private_file(&target).unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
+            private_file(&target).unwrap_err().raw_os_error(),
+            Some(ERROR_ACCESS_DENIED as i32)
         );
         assert_eq!(
             private_file(&temp.path().join("none")).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    #[test]
+    fn refuses_a_file_symbolic_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::write(&target, b"x").unwrap();
+        let link = temp.path().join("secret.key");
+        if let Err(err) = std::os::windows::fs::symlink_file(&target, &link) {
+            // Creating symbolic links needs elevation or Developer Mode.
+            assert_eq!(err.raw_os_error(), Some(ERROR_PRIVILEGE_NOT_HELD as i32));
+            eprintln!("skipped: {err}");
+            return;
+        }
+        let err = private_file(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("must be a regular file"), "{err}");
+        private_file(&target).unwrap();
     }
 
     #[test]
