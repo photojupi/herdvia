@@ -88,11 +88,7 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
 /// entry that allows access. Mode bits do not limit what an ACL allows.
 #[cfg(target_os = "macos")]
 pub(crate) fn check_dir(dir: &Path) -> io::Result<()> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
-        .open(dir)?;
-    check_acl(&file, dir)
+    check_acl(&open_dir(dir)?, dir)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -270,21 +266,46 @@ pub(crate) async fn disconnected(socket: OwnedFd) -> io::Error {
     }
 }
 
+fn open_dir(dir: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open(dir)
+}
+
+/// Creates `dir` if it is missing, then checks and fixes it through one descriptor, so that it
+/// cannot be swapped between the checks and the chmod.
 pub fn prepare_dir(dir: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
-    let metadata = fs::symlink_metadata(dir)?;
-    if !metadata.is_dir() {
-        return Err(io::Error::new(
+    let not_a_dir = || {
+        io::Error::new(
             io::ErrorKind::PermissionDenied,
             "data path must be a real directory",
-        ));
-    }
-    require_uid(metadata.uid())?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    check_dir(dir)
+        )
+    };
+    let file = match open_dir(dir) {
+        // A symbolic link, or not a directory.
+        Err(err) if matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+            return Err(not_a_dir());
+        }
+        // A directory that this user cannot read is fixed by path first, as before.
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            let metadata = fs::symlink_metadata(dir)?;
+            if !metadata.is_dir() {
+                return Err(not_a_dir());
+            }
+            require_uid(metadata.uid())?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            open_dir(dir)?
+        }
+        result => result?,
+    };
+    require_uid(file.metadata()?.uid())?;
+    file.set_permissions(fs::Permissions::from_mode(0o700))?;
+    check_acl(&file, dir)
 }
 
 pub(crate) fn lock_dir(dir: &Path) -> io::Result<File> {
@@ -437,6 +458,21 @@ mod tests {
         let link = temp.path().join("link");
         symlink(temp.path(), &link).unwrap();
         assert!(listen(&link).is_err());
+    }
+
+    #[test]
+    fn prepare_dir_refuses_a_symlink_and_fixes_a_directory_this_user_cannot_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("link");
+        symlink(temp.path(), &link).unwrap();
+        let err = prepare_dir(&link).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(err.to_string(), "data path must be a real directory");
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        prepare_dir(&dir).unwrap();
+        assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
     }
 
     #[cfg(target_os = "macos")]
