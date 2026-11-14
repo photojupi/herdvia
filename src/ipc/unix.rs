@@ -286,20 +286,23 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
             "data path must be a real directory",
         )
     };
-    let file = match open_dir(dir) {
-        // A symbolic link, or not a directory.
-        Err(err) if matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
-            return Err(not_a_dir());
-        }
+    let open = || {
+        open_dir(dir).map_err(|err| match err.raw_os_error() {
+            // A symbolic link, or not a directory.
+            Some(libc::ELOOP | libc::ENOTDIR) => not_a_dir(),
+            _ => err,
+        })
+    };
+    let file = match open() {
         // A directory that this user cannot read is fixed by path first, as before.
-        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+        Err(err) if err.raw_os_error() == Some(libc::EACCES) => {
             let metadata = fs::symlink_metadata(dir)?;
             if !metadata.is_dir() {
                 return Err(not_a_dir());
             }
             require_uid(metadata.uid())?;
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-            open_dir(dir)?
+            open()?
         }
         result => result?,
     };
