@@ -390,31 +390,70 @@ jobs:
             Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "herdvia.exe is the built executable again"
             Check (@(Get-ChildItem -LiteralPath $dir -Filter "herdvia.exe*.old").Count -eq 0) "the renamed executables were removed"
 
-            # The manual install in README.md, with its commands. Its own LOCALAPPDATA; System32
-            # first, as on a PC without Git's Unix tools (whose tar cannot read zip) on PATH.
-            $env:LOCALAPPDATA = Join-Path $work "manual\AppData\Local"
-            New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+            # The manual install in README.md, with its commands: the Windows block is read from
+            # README.md and typed into Windows PowerShell 5.1 and PowerShell 7 (Restricted, as
+            # by default), with only the download URL pointed here. Each run has its own
+            # LOCALAPPDATA. System32 first, as on a PC without Git's Unix tools (whose tar cannot
+            # read zip) on PATH. No PSModulePath, as in a new window: a 5.1 started by 7 would
+            # otherwise load 7's modules.
             $env:Path = "$env:SystemRoot\System32;$env:Path"
             Check (@(Get-Command tar.exe)[0].Source -ieq "$env:SystemRoot\System32\tar.exe") "tar.exe is the one in Windows"
-            $tmp = Join-Path $env:TEMP "herdvia-$(Get-Random)"
-            New-Item -ItemType Directory $tmp
-            Set-Location $tmp
-            curl.exe -fLO "$base/good/herdvia-windows-x64.zip"
-            Check ($LASTEXITCODE -eq 0) "curl.exe downloads the archive"
-            curl.exe -fLO "$base/good/SHA256SUMS"
-            Check ($LASTEXITCODE -eq 0) "curl.exe downloads SHA256SUMS"
-            $hash = certutil -hashfile herdvia-windows-x64.zip SHA256
-            Check ($LASTEXITCODE -eq 0) "certutil hashes the archive"
-            $hash | Write-Host
-            $listed = Select-String herdvia-windows-x64.zip SHA256SUMS
-            $listed | Write-Host
-            Check ($hash[1] -cmatch "^[0-9a-f]{64}$") "certutil prints the hash in the form SHA256SUMS uses"
-            Check ($listed.Line -ceq "$($hash[1])  herdvia-windows-x64.zip") "the hash certutil prints is the one SHA256SUMS lists"
-            New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
-            tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
-            Check ($LASTEXITCODE -eq 0) "tar.exe extracts the archive"
-            Check ((Get-FileHash "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" -Algorithm SHA256).Hash -eq $built) "the extracted herdvia.exe is the built executable"
-            Check ((& "$env:LOCALAPPDATA\Programs\herdvia\herdvia.exe" --version) -eq "herdvia $version") "the extracted herdvia.exe runs"
+            $block = [regex]::Match((Get-Content -Raw README.md), '(?s)#### Windows \(x64\).*?```powershell\r?\n(.*?)```').Groups[1].Value
+            $url = "https://github.com/photojupi/herdvia/releases/latest/download"
+            Check ([regex]::Matches($block, [regex]::Escape("$url/")).Count -eq 2) "README.md has the Windows manual install block"
+            $refusal = [regex]::Match($block, 'throw "(.+)"').Groups[1].Value
+            Check ($refusal -ne "") "the block stops with throw"
+            # A changed byte, an archive SHA256SUMS does not list, and no archive.
+            $flipped = Join-Path $work "srv\manual-flipped"
+            $unlisted = Join-Path $work "srv\manual-unlisted"
+            $nozip = Join-Path $work "srv\manual-nozip"
+            New-Item -ItemType Directory -Force $flipped, $unlisted, $nozip | Out-Null
+            $bytes = [IO.File]::ReadAllBytes("$good\herdvia-windows-x64.zip")
+            $i = [int]($bytes.Length / 2)
+            $bytes[$i] = $bytes[$i] -bxor 1
+            [IO.File]::WriteAllBytes("$flipped\herdvia-windows-x64.zip", $bytes)
+            Copy-Item "$good\SHA256SUMS" $flipped
+            Copy-Item "$good\SHA256SUMS" $nozip
+            Copy-Item "$good\herdvia-windows-x64.zip" $unlisted
+            $others = @(Get-Content "$good\SHA256SUMS" | Where-Object { $_ -notmatch "herdvia-windows-x64\.zip" })
+            Check ($others.Count -eq 2) "SHA256SUMS without the archive keeps the other lines"
+            [IO.File]::WriteAllText("$unlisted\SHA256SUMS", (($others -join "`n") + "`n"))
+            function Invoke-Manual($shell, $release) {
+              $ErrorActionPreference = "Continue"
+              $env:LOCALAPPDATA = Join-Path $work "manual-$shell-$release\AppData\Local"
+              New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+              $typed = Join-Path $work "manual-$shell-$release.txt"
+              [IO.File]::WriteAllText($typed, $block.Replace($url, "$base/$release"))
+              $log = "$typed.out"
+              $modules = $env:PSModulePath
+              Remove-Item Env:PSModulePath
+              try {
+                & $shell -NoProfile -ExecutionPolicy Restricted -Command ('Get-ExecutionPolicy; try { Get-Content -Raw -Encoding UTF8 ''' + $typed + ''' | Invoke-Expression } catch { ''thrown: '' + $_.Exception.Message; exit 1 }') *> $log
+                $code = $LASTEXITCODE
+              } finally {
+                $env:PSModulePath = $modules
+              }
+              $text = Get-Content -Raw $log
+              Write-Host "--- manual install, $shell, $release (exit $code)"
+              Write-Host $text
+              Check ($text -match "(?m)^Restricted\r?$") "$shell ran with a Restricted execution policy"
+              [pscustomobject]@{ Code = $code; Text = $text; Dir = Join-Path $env:LOCALAPPDATA "Programs\herdvia" }
+            }
+            foreach ($shell in "powershell", "pwsh") {
+              $r = Invoke-Manual $shell good
+              Check ($r.Code -eq 0 -and $r.Text -notmatch "(?m)^thrown: ") "the manual install with $shell succeeds"
+              foreach ($name in "README.md", "LICENSE-MIT", "LICENSE-APACHE", "THIRD-PARTY-LICENSES.html") {
+                Check (Test-Path -LiteralPath (Join-Path $r.Dir $name)) "the manual install with $shell extracts $name"
+              }
+              Check ((Get-FileHash (Join-Path $r.Dir "herdvia.exe") -Algorithm SHA256).Hash -eq $built) "the herdvia.exe $shell extracted is the built executable"
+              Check ((& (Join-Path $r.Dir "herdvia.exe") --version) -eq "herdvia $version") "the herdvia.exe $shell extracted runs"
+              foreach ($release in "manual-flipped", "manual-unlisted", "manual-nozip") {
+                $r = Invoke-Manual $shell $release
+                Check ($r.Code -ne 0) "the manual install with $shell fails for $release"
+                Check ($r.Text -match "(?m)^thrown: $([regex]::Escape($refusal))\r?$") "the manual install with $shell stops at the block's throw for $release"
+                Check (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA "Programs"))) "the manual install with $shell creates no install folder for $release"
+              }
+            }
 
             # herdvia doctor only reads. No herdr-core or agent here, so it reports failures and exits with 1.
             $env:HERDVIA_DIR = Join-Path $work "doctor"
