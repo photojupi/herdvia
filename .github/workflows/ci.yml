@@ -30,9 +30,36 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      # Unit tests only: the integration tests in tests/ depend on the public n0 relay network and timing assertions.
       - name: Unit tests
         run: cargo test --locked --lib --bins
+
+      # The integration tests in tests/ that never connect two agents. Every other one needs the
+      # public n0 relay and address lookup to connect, so it runs in integration.yml instead of
+      # here. Listed by exact name, so a new test joins this step only when added here.
+      - name: Integration tests (no connection)
+        run: |
+          cargo test --locked --test doctor -- --exact \
+            creates_nothing_for_a_missing_data_directory \
+            fails_without_an_agent_and_reads_the_existing_identity \
+            fails_on_a_malformed_peer_list \
+            reports_the_running_agents_version_and_executable \
+            fails_within_the_timeout_when_the_agent_does_not_answer \
+            warns_within_the_timeout_when_status_or_pending_does_not_answer \
+            an_old_agent_is_told_apart_from_a_stuck_one \
+            fails_on_a_data_directory_this_user_cannot_open \
+            shows_a_core_found_through_a_relative_path_by_its_absolute_path
+          cargo test --locked --test peers -- --exact \
+            wide_secret_key_permission_refuses_start \
+            wide_peers_permission_refuses_start \
+            id_prints_endpoint_id_and_fingerprint_stably \
+            status_without_agent_is_255 \
+            allow_rejects_bad_name_bad_id_and_missing_flag \
+            allow_and_revoke_update_file_without_agent
+          cargo test --locked --test transport -- --exact \
+            no_agent_means_immediate_255 \
+            stale_socket_means_immediate_255 \
+            permissions_when_agent_creates_dir \
+            permissions_when_dir_is_too_open
 
   windows-cross:
     runs-on: ubuntu-latest

@@ -1,0 +1,32 @@
+name: Integration
+
+# All integration tests in tests/. Most connect two agents, which needs the public n0 relay and
+# address lookup and waits up to 45 seconds for a connection, so they are not a required check
+# on pull requests: an n0 outage or a slow runner would fail unrelated PRs. ci.yml runs the
+# ones that never connect.
+on:
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Integration tests
+        run: cargo test --locked --test '*'
