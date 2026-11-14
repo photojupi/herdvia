@@ -151,7 +151,15 @@ async fn manage(command: Command) -> io::Result<()> {
             peers::revoke(&dir, &name)?;
             control::reload_if_running(&dir).await?;
         }
-        Command::Status => print!("{}", control::request(&dir, "status").await?),
+        Command::Status => {
+            let status = control::request(&dir, "status").await?;
+            print!("{status}");
+            if cfg!(target_os = "macos") && on_relay(&status) {
+                eprintln!(
+                    "herdvia: note: a peer is connected through a relay. If it stays that way and the peer is on the same local network as this Mac, allow herdvia under System Settings > Privacy & Security > Local Network."
+                );
+            }
+        }
         Command::Pending => print!("{}", control::request(&dir, "pending").await?),
         Command::Accept {
             name,
@@ -173,6 +181,14 @@ async fn manage(command: Command) -> io::Result<()> {
         _ => unreachable!("agent, via and version are handled separately"),
     }
     Ok(())
+}
+
+/// Whether a `status` response shows a peer connected through a relay.
+fn on_relay(status: &str) -> bool {
+    status.lines().skip(1).any(|line| {
+        let mut fields = line.split_whitespace().skip(2);
+        fields.next() == Some("connected") && fields.next() == Some("relay")
+    })
 }
 
 /// Finds the one entry of a `pending` response whose EndpointId has this fingerprint.
@@ -354,6 +370,22 @@ mod tests {
         ] {
             assert!(parse(args(a)).is_err(), "{a:?}");
         }
+    }
+
+    #[test]
+    fn relay_note_needs_a_peer_connected_through_a_relay() {
+        let header = "name permission connection path rtt\n";
+        assert!(!on_relay(header));
+        assert!(!on_relay(&format!(
+            "{header}a out connected direct 4.12ms\nb in disconnected - -\n"
+        )));
+        assert!(on_relay(&format!(
+            "{header}a out connected direct 4.12ms\nb both connected relay 238.82ms\n"
+        )));
+        // A peer may be named "relay" or "connected"; only the state columns count.
+        assert!(!on_relay(&format!(
+            "{header}relay out connected direct 4.12ms\nconnected in disconnected - -\n"
+        )));
     }
 
     #[test]

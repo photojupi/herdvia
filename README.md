@@ -282,7 +282,7 @@ name permission connection path rtt
 B out connected direct 4.12ms
 ```
 
-`path` is `direct` or `relay`. `status` requires the local agent to be running.
+`path` is `direct` or `relay`. `status` requires the local agent to be running. A connection starts on a relay and usually becomes `direct` within a few seconds. On macOS, if a peer on the same local network stays on `relay`, see [Local network access](#macos) under Automatic startup; `status` prints a note on standard error when a peer is on a relay.
 
 Until B accepts A, `status` on A can briefly show B as `connected` each time A retries, because B closes each attempt only after it is set up; to be sure, run `herdvia status` on B, which shows A as `connected` only once A has really connected.
 
@@ -293,7 +293,7 @@ Until B accepts A, `status` on A can briefly show B as `connected` each time A r
 | `herdvia id` | Print this machine's EndpointId and fingerprint. Creates the secret key if missing. |
 | `herdvia allow <name> <EndpointId> (--inbound \| --outbound \| --both)` | Add a peer or replace its entry. A running agent applies the change immediately; otherwise it is applied when the agent starts. |
 | `herdvia revoke <name>` | Remove a peer. A running agent closes connections to it immediately. |
-| `herdvia status` | Show each peer's name, permission, connection state, direct/relay path, and round-trip time. Requires a running agent. |
+| `herdvia status` | Show each peer's name, permission, connection state, direct/relay path, and round-trip time. Requires a running agent. On macOS, also prints a note on standard error while a peer is on a relay. |
 | `herdvia pending` | Show the machines whose connections the agent rejected because they lack inbound permission here: fingerprint, EndpointId, number of attempts, and seconds since the last attempt, most recent first. The list is kept in memory only, holds at most 16 machines, and drops each one 10 minutes after its last attempt. Requires a running agent. |
 | `herdvia accept <name> <fingerprint> (--inbound \| --both)` | Allow the one machine in `pending` whose EndpointId starts with this fingerprint, as `allow` would with its full EndpointId. Registers nothing if no machine or more than one matches, or if `<name>` is already registered with a different EndpointId. Requires a running agent. |
 | `herdvia --version` | Print `herdvia <version>`. |
@@ -314,6 +314,8 @@ On errors, herdvia prints one line starting with `herdvia:` to standard error an
 - It refuses while an agent you started by hand is running. Stop that agent first.
 - Running `install` again replaces the registration and restarts the agent with the current executable path.
 - It warns, but still installs, if the executable is in a temporary folder or a `target` folder.
+
+**Local network access.** On macOS 15 and later, the automatically started agent cannot reach addresses on your local network until you allow it. macOS asks with an alert when the agent first uses the local network; you can also turn herdvia on under System Settings > Privacy & Security > Local Network. herdvia cannot grant this itself. Until you allow it, a peer on the same local network as the Mac is reached through a relay instead of directly (`relay` in `herdvia status`); peers on other networks are not affected. An agent you start from a terminal with `herdvia agent` does not need this permission.
 
 ### Windows
 

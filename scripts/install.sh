@@ -168,6 +168,8 @@ main() {
     fi
   fi
 
+  say "macOS may ask whether herdvia may find devices on your local network. Allow it: until you do, a machine on the same local network as this Mac is reached only through a relay. The setting is under System Settings > Privacy & Security > Local Network."
+
   say ""
   say "Next steps"
   say "To connect from this machine to another one, run here:"
