@@ -3,7 +3,7 @@ use herdvia::{
     peers::{self, Peer, Permission},
 };
 use iroh::EndpointId;
-use std::io;
+use std::io::{self, Write};
 
 enum Command {
     Agent,
@@ -136,7 +136,8 @@ async fn main() {
     let code = match result {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("herdvia: {err}");
+            // Not eprintln!: it panics when standard error cannot be written (a full disk).
+            let _ = writeln!(io::stderr(), "herdvia: {err}");
             255
         }
     };
