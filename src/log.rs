@@ -1,10 +1,13 @@
 //! The agent's log lines start with their UTC time, which lets the agent drop old ones.
+//! Every line the agent writes while running goes through `line`, which keeps each one to a
+//! single line of limited length and limits how fast lines are written.
 
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, Write},
     path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{LazyLock, Mutex, PoisonError},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAX_AGE: u64 = 180 * 24 * 60 * 60;
@@ -12,6 +15,138 @@ const DAY: u64 = 24 * 60 * 60;
 /// How often the agent checks whether a trim is due. Tokio's timers stop while a Mac sleeps,
 /// so it checks the wall clock every hour instead of waiting 24 hours.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
+/// Longer text is cut to this many characters after escaping.
+const MAX_CHARS: usize = 300;
+
+/// Which rate limit a log line counts against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// Lines that a remote nobody authorized can cause: rejected peers and failed incoming
+    /// handshakes. Up to 30 at once, then one every 10 seconds.
+    Unauthenticated,
+    /// Every other line. Up to 60 at once, then one every second.
+    Other,
+}
+
+/// A token bucket that counts the lines it turns away.
+#[derive(Debug)]
+struct Bucket {
+    burst: u32,
+    every: Duration,
+    tokens: u32,
+    filled: Instant,
+    suppressed: u64,
+}
+
+impl Bucket {
+    fn new(burst: u32, every: Duration, now: Instant) -> Self {
+        Self {
+            burst,
+            every,
+            tokens: burst,
+            filled: now,
+            suppressed: 0,
+        }
+    }
+
+    /// Takes a token at `now`: how many lines were suppressed since the last one written, or
+    /// `None` when the bucket is empty and this line is suppressed too.
+    fn admit(&mut self, now: Instant) -> Option<u64> {
+        let earned = now.saturating_duration_since(self.filled).as_nanos() / self.every.as_nanos();
+        if earned > 0 {
+            if u128::from(self.tokens) + earned >= u128::from(self.burst) {
+                self.tokens = self.burst;
+                self.filled = now;
+            } else {
+                // Less than burst, so it fits in a u32.
+                self.tokens += earned as u32;
+                self.filled += self.every * earned as u32;
+            }
+        }
+        if self.tokens == 0 {
+            self.suppressed += 1;
+            return None;
+        }
+        self.tokens -= 1;
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
+
+/// Separate buckets, so that unauthenticated remotes cannot crowd out the other lines.
+#[derive(Debug)]
+struct Limiter {
+    unauthenticated: Bucket,
+    other: Bucket,
+}
+
+impl Limiter {
+    fn new(now: Instant) -> Self {
+        Self {
+            unauthenticated: Bucket::new(30, Duration::from_secs(10), now),
+            other: Bucket::new(60, Duration::from_secs(1), now),
+        }
+    }
+
+    fn admit(&mut self, kind: Kind, now: Instant) -> Option<u64> {
+        match kind {
+            Kind::Unauthenticated => self.unauthenticated.admit(now),
+            Kind::Other => self.other.admit(now),
+        }
+    }
+}
+
+static LIMITER: LazyLock<Mutex<Limiter>> =
+    LazyLock::new(|| Mutex::new(Limiter::new(Instant::now())));
+
+/// The line that reports `count` suppressed lines of `kind`.
+fn summary(kind: Kind, count: u64) -> String {
+    let lines = if count == 1 { "line" } else { "lines" };
+    match kind {
+        Kind::Unauthenticated => {
+            format!("suppressed {count} log {lines} about unauthenticated connections")
+        }
+        Kind::Other => format!("suppressed {count} other log {lines}"),
+    }
+}
+
+/// `text` with control characters such as newlines and ESC escaped, cut to 300 characters with
+/// the original length in bytes noted. Text that a remote chose cannot fake or flood lines.
+pub(crate) fn sanitize(text: &str) -> String {
+    let mut clean = String::new();
+    for c in text.chars() {
+        if c.is_control() {
+            clean.extend(c.escape_default());
+        } else {
+            clean.push(c);
+        }
+    }
+    if let Some((end, _)) = clean.char_indices().nth(MAX_CHARS) {
+        clean.truncate(end);
+        clean.push_str(&format!("... [truncated, {} bytes]", text.len()));
+    }
+    clean
+}
+
+/// Writes `<UTC time> herdvia: <text>` to standard error as one line, unless `kind` is over its
+/// rate limit. The first line after suppressed ones is preceded by a line that counts them.
+pub(crate) fn line(kind: Kind, text: &str) {
+    // The limiter's lock is released before standard error is locked: a trim holds standard
+    // error while it rewrites the log.
+    let admitted = LIMITER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .admit(kind, Instant::now());
+    let Some(suppressed) = admitted else {
+        return;
+    };
+    let stamp = stamp();
+    let mut out = String::new();
+    if suppressed > 0 {
+        out.push_str(&format!("{stamp} herdvia: {}\n", summary(kind, suppressed)));
+    }
+    out.push_str(&format!("{stamp} herdvia: {}\n", sanitize(text)));
+    eprint!("{out}");
+}
 
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -20,7 +155,7 @@ fn unix_now() -> u64 {
 }
 
 /// The current UTC time for the start of a log line, such as `2026-11-14T14:17:03Z`.
-pub(crate) fn stamp() -> String {
+fn stamp() -> String {
     timestamp(unix_now())
 }
 
@@ -147,10 +282,9 @@ pub(crate) async fn trim_if_due(path: &Path, last: &mut Option<u64>) {
         .await
         .unwrap_or_else(|err| Err(io::Error::other(err)));
     if let Err(err) = result {
-        eprintln!(
-            "{} herdvia: cannot remove old lines from {}: {err}",
-            stamp(),
-            path.display()
+        line(
+            Kind::Other,
+            &format!("cannot remove old lines from {}: {err}", path.display()),
         );
     }
 }
@@ -330,6 +464,100 @@ mod tests {
         // A clock set back by a day or more does not stop the trims.
         assert!(!due(Some(CUTOFF), CUTOFF - DAY + 1));
         assert!(due(Some(CUTOFF), CUTOFF - DAY));
+    }
+
+    #[test]
+    fn sanitize_escapes_control_characters_into_one_line() {
+        assert_eq!(sanitize("plain text, ünïcode"), "plain text, ünïcode");
+        assert_eq!(
+            sanitize("a\nb\r\n2026-11-14T14:17:03Z herdvia: fake\u{1b}[31m\0\u{7f}\u{85}"),
+            r"a\nb\r\n2026-11-14T14:17:03Z herdvia: fake\u{1b}[31m\u{0}\u{7f}\u{85}"
+        );
+        assert!(!sanitize(&"\n\u{1b}".repeat(500)).contains(['\n', '\u{1b}']));
+    }
+
+    #[test]
+    fn sanitize_cuts_after_300_characters_and_notes_the_original_bytes() {
+        let exact = "é".repeat(MAX_CHARS);
+        assert_eq!(sanitize(&exact), exact);
+        let long = format!("{exact}x");
+        assert_eq!(
+            sanitize(&long),
+            format!("{exact}... [truncated, {} bytes]", long.len())
+        );
+        // Escapes count toward the limit.
+        let escaped = sanitize(&"\n".repeat(200));
+        assert_eq!(
+            escaped,
+            format!("{}... [truncated, 200 bytes]", r"\n".repeat(150))
+        );
+    }
+
+    fn admitted(bucket: &mut Bucket, now: Instant, count: usize) -> Vec<Option<u64>> {
+        (0..count).map(|_| bucket.admit(now)).collect()
+    }
+
+    #[test]
+    fn a_bucket_allows_a_burst_then_refills_one_per_period() {
+        let start = Instant::now();
+        let mut bucket = Bucket::new(3, Duration::from_secs(10), start);
+        assert_eq!(admitted(&mut bucket, start, 3), [Some(0); 3]);
+        assert_eq!(admitted(&mut bucket, start, 2), [None; 2]);
+        assert_eq!(bucket.admit(start + Duration::from_secs(9)), None);
+        // The next line written reports the three suppressed ones, and the count starts over.
+        assert_eq!(bucket.admit(start + Duration::from_secs(10)), Some(3));
+        assert_eq!(bucket.admit(start + Duration::from_secs(19)), None);
+        assert_eq!(bucket.admit(start + Duration::from_secs(20)), Some(1));
+        // Two periods earn two lines, and the part of a period already waited counts.
+        let later = start + Duration::from_secs(45);
+        assert_eq!(admitted(&mut bucket, later, 3), [Some(0), Some(0), None]);
+        assert_eq!(bucket.admit(start + Duration::from_secs(50)), Some(1));
+    }
+
+    #[test]
+    fn a_bucket_holds_no_more_than_its_burst() {
+        let start = Instant::now();
+        let mut bucket = Bucket::new(3, Duration::from_secs(1), start);
+        let later = start + Duration::from_secs(3600);
+        assert_eq!(
+            admitted(&mut bucket, later, 4),
+            [Some(0), Some(0), Some(0), None]
+        );
+    }
+
+    #[test]
+    fn unauthenticated_lines_cannot_crowd_out_the_others() {
+        let start = Instant::now();
+        let mut limiter = Limiter::new(start);
+        let unauthenticated: Vec<_> = (0..100)
+            .map(|_| limiter.admit(Kind::Unauthenticated, start))
+            .collect();
+        assert_eq!(unauthenticated.iter().flatten().count(), 30);
+        let other: Vec<_> = (0..100)
+            .map(|_| limiter.admit(Kind::Other, start))
+            .collect();
+        assert_eq!(other.iter().flatten().count(), 60);
+        assert_eq!(
+            limiter.admit(Kind::Other, start + Duration::from_secs(1)),
+            Some(40)
+        );
+        assert_eq!(
+            limiter.admit(Kind::Unauthenticated, start + Duration::from_secs(9)),
+            None
+        );
+        assert_eq!(
+            limiter.admit(Kind::Unauthenticated, start + Duration::from_secs(10)),
+            Some(71)
+        );
+    }
+
+    #[test]
+    fn summaries_name_the_kind_and_count() {
+        assert_eq!(
+            summary(Kind::Unauthenticated, 71),
+            "suppressed 71 log lines about unauthenticated connections"
+        );
+        assert_eq!(summary(Kind::Other, 1), "suppressed 1 other log line");
     }
 
     #[cfg(unix)]

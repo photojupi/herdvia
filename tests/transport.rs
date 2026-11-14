@@ -180,7 +180,8 @@ fn stdout_and_stderr_stay_separate() {
 
 #[test]
 fn disallowed_lines_are_rejected_and_not_executed() {
-    let p = shared();
+    // A new pair, so that the log rate limit has not been used up by other tests.
+    let p = Pair::new();
     let marker_b = p.b.root.join("PWNED");
     let marker_a = p.a.root.join("PWNED");
     let m = marker_b.display().to_string();

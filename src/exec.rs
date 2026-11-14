@@ -1,4 +1,7 @@
-use crate::frame::{self, *};
+use crate::{
+    frame::{self, *},
+    log,
+};
 use std::{io, time::Duration};
 
 #[cfg(unix)]
@@ -37,10 +40,7 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             frame::write(&mut stream, EXIT, &code.to_be_bytes()).await
         }
         Launch::Reject => {
-            eprintln!(
-                "{} herdvia: rejected command: {line:?}",
-                crate::log::stamp()
-            );
+            log::line(log::Kind::Other, &format!("rejected command: {line:?}"));
             frame::write(
                 &mut stream,
                 ERROR,

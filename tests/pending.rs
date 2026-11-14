@@ -113,6 +113,14 @@ fn accept_registers_the_pending_caller_and_it_connects() {
     assert_eq!(out.code(), Some(0), "stderr: {}", out.err());
     assert_eq!(out.stdout, b"accepted");
     assert_eq!(pending_out(&b), HEADER, "연결 뒤 pending 에 다시 보임");
+
+    // Each rejection is logged once, by the hook, not again as a failed incoming connection.
+    let log = b.agent_log();
+    assert!(
+        log.contains(&format!(" herdvia: rejected peer {a_id}\n")),
+        "log:\n{log}"
+    );
+    assert!(!log.contains("rejected locally"), "log:\n{log}");
 }
 
 #[test]

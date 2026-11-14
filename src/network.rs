@@ -1,7 +1,7 @@
 use crate::{
     exec,
     frame::{self, *},
-    log,
+    log::{self, Kind},
     peers::{self, Peer},
 };
 use iroh::{
@@ -123,10 +123,9 @@ impl EndpointHooks for Policy {
                     attempts.record(conn.remote_id(), Instant::now());
                 }
             }
-            eprintln!(
-                "{} herdvia: rejected peer {}",
-                log::stamp(),
-                conn.remote_id()
+            log::line(
+                Kind::Unauthenticated,
+                &format!("rejected peer {}", conn.remote_id()),
             );
             AfterHandshakeOutcome::Reject {
                 error_code: 403u32.into(),
@@ -282,7 +281,7 @@ impl Network {
                     connected.elapsed()
                 }
                 Err(err) => {
-                    eprintln!("{} herdvia: connection to {id} failed: {err}", log::stamp());
+                    log::line(Kind::Other, &format!("connection to {id} failed: {err}"));
                     Duration::ZERO
                 }
             };
@@ -306,7 +305,7 @@ impl Network {
             id: conn.stable_id(),
         };
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
-        eprintln!("{} herdvia: connected {id}", log::stamp());
+        log::line(Kind::Other, &format!("connected {id}"));
         let mut streams = JoinSet::new();
         loop {
             tokio::select! {
@@ -328,7 +327,7 @@ impl Network {
                             _ = conn.closed() => {},
                             _ = stopped => {},
                             result = exec::serve(tokio::io::join(recv, send)) => {
-                                if let Err(err) = result { eprintln!("{} herdvia: stream from {id} ended: {err}", log::stamp()); }
+                                if let Err(err) = result { log::line(Kind::Other, &format!("stream from {id} ended: {err}")); }
                             }
                         }
                     });
@@ -338,7 +337,7 @@ impl Network {
         }
         streams.abort_all();
         while streams.join_next().await.is_some() {}
-        eprintln!("{} herdvia: disconnected {id}", log::stamp());
+        log::line(Kind::Other, &format!("disconnected {id}"));
     }
 
     async fn connection_for(&self, name: &str) -> io::Result<Connection> {
@@ -397,7 +396,13 @@ impl Network {
                     ),
                     _ => unreachable!(),
                 };
-                frame::write(&mut local, ERROR, err.to_string().as_bytes()).await?;
+                // iroh's errors can carry a close reason that the remote chose.
+                frame::write(
+                    &mut local,
+                    ERROR,
+                    log::sanitize(&err.to_string()).as_bytes(),
+                )
+                .await?;
                 return Err(err);
             }
         };

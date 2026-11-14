@@ -4,7 +4,7 @@ use crate::{
     network::Network,
     peers,
 };
-use iroh::EndpointId;
+use iroh::{EndpointId, endpoint::ConnectingError};
 use std::{
     collections::HashMap,
     io,
@@ -42,16 +42,23 @@ pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
                 let Some(incoming) = incoming else { break Ok(()); };
                 let network = network.clone();
                 sessions.spawn(async move {
-                    let conn = incoming.await.map_err(io::Error::other)?;
-                    network.serve_connection(conn).await;
+                    match incoming.await {
+                        Ok(conn) => network.serve_connection(conn).await,
+                        // The hook has already logged the peer it rejected.
+                        Err(ConnectingError::LocallyRejected { .. }) => {}
+                        Err(err) => log::line(
+                            log::Kind::Unauthenticated,
+                            &format!("incoming connection failed: {err}"),
+                        ),
+                    }
                     Ok(())
                 });
             }
             _ = updates.changed() => refresh_workers(&network, &mut workers, &mut connectors),
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 match completed {
-                    Some(Ok(Err(err))) => eprintln!("{} herdvia: {err}", log::stamp()),
-                    Some(Err(err)) => eprintln!("{} herdvia: session task: {err}", log::stamp()),
+                    Some(Ok(Err(err))) => log::line(log::Kind::Other, &err.to_string()),
+                    Some(Err(err)) => log::line(log::Kind::Other, &format!("session task: {err}")),
                     _ => {}
                 }
             }
