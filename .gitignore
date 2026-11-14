@@ -1,3 +1,11 @@
 target/
 dist/
 .DS_Store
+secret.key
+/peers
+agent.sock
+*.log
+.env
+.claude/
+.vscode/
+.idea/
