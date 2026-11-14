@@ -142,13 +142,19 @@ pub(crate) fn line(kind: Kind, text: &str) {
     let Some(suppressed) = admitted else {
         return;
     };
+    write_line(&mut io::stderr().lock(), kind, suppressed, text);
+}
+
+/// Writes the line, preceded by the summary of `suppressed` lines if there are any, with one
+/// write. A failed write is ignored: a full disk or a closed log must not stop a session.
+fn write_line(out: &mut impl Write, kind: Kind, suppressed: u64, text: &str) {
     let stamp = stamp();
-    let mut out = String::new();
+    let mut lines = String::new();
     if suppressed > 0 {
-        out.push_str(&format!("{stamp} herdvia: {}\n", summary(kind, suppressed)));
+        lines.push_str(&format!("{stamp} herdvia: {}\n", summary(kind, suppressed)));
     }
-    out.push_str(&format!("{stamp} herdvia: {}\n", sanitize(text)));
-    eprint!("{out}");
+    lines.push_str(&format!("{stamp} herdvia: {}\n", sanitize(text)));
+    let _ = out.write_all(lines.as_bytes());
 }
 
 fn unix_now() -> u64 {
@@ -588,6 +594,54 @@ mod tests {
             "suppressed 71 log lines about unauthenticated connections"
         );
         assert_eq!(summary(Kind::Other, 1), "suppressed 1 other log line");
+    }
+
+    /// Records each write it is given, or fails every write.
+    struct Writes {
+        calls: Vec<Vec<u8>>,
+        fail: bool,
+    }
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.fail {
+                return Err(io::Error::from(io::ErrorKind::StorageFull));
+            }
+            self.calls.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_the_summary_and_the_line_with_one_write() {
+        let mut out = Writes {
+            calls: Vec::new(),
+            fail: false,
+        };
+        write_line(&mut out, Kind::Other, 2, "a\nb");
+        let [call] = &out.calls[..] else {
+            panic!("{} writes", out.calls.len());
+        };
+        let text = String::from_utf8(call.clone()).unwrap();
+        let lines: Vec<_> = text.lines().map(|line| &line[21..]).collect();
+        assert_eq!(
+            lines,
+            ["herdvia: suppressed 2 other log lines", r"herdvia: a\nb"]
+        );
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn a_failed_write_is_ignored() {
+        let mut out = Writes {
+            calls: Vec::new(),
+            fail: true,
+        };
+        write_line(&mut out, Kind::Other, 1, "session ended");
     }
 
     fn numbered(count: usize) -> String {
