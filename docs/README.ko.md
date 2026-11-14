@@ -389,13 +389,16 @@ Set-Location $tmp
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/herdvia-windows-x64.zip
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA256SUMS
 
-# 3. SHA-256 해시 대조 (두 해시가 반드시 같아야 합니다!)
-certutil -hashfile herdvia-windows-x64.zip SHA256
-Select-String herdvia-windows-x64.zip SHA256SUMS
+# 3. SHA256SUMS와 대조할 SHA-256 해시 계산
+$hash = (Get-FileHash herdvia-windows-x64.zip -Algorithm SHA256).Hash
 
-# 4. %LOCALAPPDATA%\Programs\herdvia 에 압축 해제 (해시가 일치할 때만)
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
-tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+# 4. SHA256SUMS에 그 해시가 있을 때만 %LOCALAPPDATA%\Programs\herdvia 에 압축 해제, 없으면 중단
+if (@(Get-Content SHA256SUMS) -contains "$hash  herdvia-windows-x64.zip") {
+  New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
+  tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+} else {
+  throw "herdvia-windows-x64.zip does not match SHA256SUMS; do not install it"
+}
 ```
 
 `herdvia`를 이름만으로 실행하려면 **사용자 `Path`** (*시작 메뉴 → "계정에 대한 환경 변수 편집" → 사용자 변수 → `Path` → 편집 → 새로 만들기*)에 `%LOCALAPPDATA%\Programs\herdvia`를 추가한 뒤, 새 PowerShell 창을 열고(Herdr가 실행 중이면 재시작) `herdvia id`로 확인하세요. 첫 실행 시 Windows SmartScreen 안내 창이 뜰 수 있습니다.

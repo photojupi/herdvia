@@ -389,13 +389,16 @@ Set-Location $tmp
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/herdvia-windows-x64.zip
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA256SUMS
 
-# 3. SHA-256 ハッシュを照合（必ず一致していることを確認！）
-certutil -hashfile herdvia-windows-x64.zip SHA256
-Select-String herdvia-windows-x64.zip SHA256SUMS
+# 3. SHA256SUMS と照合する SHA-256 ハッシュを計算
+$hash = (Get-FileHash herdvia-windows-x64.zip -Algorithm SHA256).Hash
 
-# 4. %LOCALAPPDATA%\Programs\herdvia に展開（ハッシュが一致した場合のみ）
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
-tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+# 4. SHA256SUMS にそのハッシュがある場合のみ %LOCALAPPDATA%\Programs\herdvia に展開（なければ中断）
+if (@(Get-Content SHA256SUMS) -contains "$hash  herdvia-windows-x64.zip") {
+  New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
+  tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+} else {
+  throw "herdvia-windows-x64.zip does not match SHA256SUMS; do not install it"
+}
 ```
 
 `herdvia` を名前だけで実行できるよう、`%LOCALAPPDATA%\Programs\herdvia` を**ユーザー環境変数 `Path`**（*スタートメニュー → 「アカウントの環境変数を編集」 → ユーザー環境変数 → `Path` → 編集 → 新規*）に追加してから、新しい PowerShell ウィンドウを開き（Herdr が起動中なら再起動）、`herdvia id` で確認してください。初回実行時に Windows SmartScreen の確認画面が表示されることがあります。

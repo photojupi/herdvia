@@ -380,13 +380,16 @@ Set-Location $tmp
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/herdvia-windows-x64.zip
 curl.exe -fLO https://github.com/photojupi/herdvia/releases/latest/download/SHA256SUMS
 
-# 3. Compare the SHA-256 hashes (must match!)
-certutil -hashfile herdvia-windows-x64.zip SHA256
-Select-String herdvia-windows-x64.zip SHA256SUMS
+# 3. Compute the SHA-256 hash to compare with SHA256SUMS
+$hash = (Get-FileHash herdvia-windows-x64.zip -Algorithm SHA256).Hash
 
-# 4. Extract into %LOCALAPPDATA%\Programs\herdvia (only if hashes matched)
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
-tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+# 4. Extract into %LOCALAPPDATA%\Programs\herdvia only if SHA256SUMS lists that hash; otherwise stop
+if (@(Get-Content SHA256SUMS) -contains "$hash  herdvia-windows-x64.zip") {
+  New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\herdvia"
+  tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
+} else {
+  throw "herdvia-windows-x64.zip does not match SHA256SUMS; do not install it"
+}
 ```
 
 To run `herdvia` by name, add `%LOCALAPPDATA%\Programs\herdvia` to your **User `Path`** (*Start menu → "Edit environment variables for your account" → User variables → `Path` → Edit → New*), then open a new PowerShell window (and restart Herdr if running) and verify with `herdvia id`. Windows SmartScreen may display a prompt on first launch.
