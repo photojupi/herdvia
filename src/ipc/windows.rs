@@ -424,7 +424,7 @@ fn loose_dir(dir: &Path, sid: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
         format!(
-            "data directory allows access to accounts other than this user, SYSTEM, and Administrators, and this user cannot change its permissions; in an administrator terminal run icacls \"{}\" /grant *{sid}:(OI)(CI)F and run herdvia again, or use a directory that this user created",
+            "data directory allows access to accounts other than this user, SYSTEM, and Administrators, and this user cannot change its permissions; in an administrator terminal run icacls \"{}\" /grant \"*{sid}:(OI)(CI)F\" and run herdvia again, or use a directory that this user created",
             dir.display()
         ),
     )
@@ -1440,7 +1440,7 @@ mod tests {
             assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
             assert!(
                 err.to_string().contains(&format!(
-                    "icacls \"{}\" /grant *{sid}:(OI)(CI)F",
+                    "icacls \"{}\" /grant \"*{sid}:(OI)(CI)F\" and run herdvia again",
                     dir.display()
                 )),
                 "{err}"
@@ -1481,6 +1481,61 @@ mod tests {
         ] {
             assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
             assert!(err.to_string().ends_with(&expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_icacls_commands_paste_into_powershell_and_cmd() {
+        use std::os::windows::process::CommandExt;
+        let temp = tempfile::tempdir().unwrap();
+        let sid = current_sid().unwrap();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let file = temp.path().join("secret.key");
+        fs::write(&file, b"x").unwrap();
+        // The command in a message, as a user copies it.
+        let command = |message: io::Error| {
+            let message = message.to_string();
+            let start = message.find("run icacls ").unwrap() + "run ".len();
+            let end = message.find(" and run herdvia again").unwrap();
+            message[start..end].to_owned()
+        };
+        // This user is only let open them (SYNCHRONIZE, READ_CONTROL, FILE_READ_ATTRIBUTES)
+        // but, as the owner, may change their DACL all the same.
+        let cases = [
+            (
+                &dir,
+                command(loose_dir(&dir, &sid)),
+                format!("D:P(A;;0x120080;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+                format!("(A;OICI;FA;;;{sid})"),
+            ),
+            (
+                &file,
+                command(loose_file(&file, &sid)),
+                format!("D:P(A;;0x120080;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)"),
+                format!("(A;;FA;;;{sid})"),
+            ),
+        ];
+        for (path, command, start, granted) in cases {
+            for shell in ["powershell", "cmd"] {
+                set_test_dacl(path, &start);
+                assert!(!dacl(path).contains(&granted), "{}", dacl(path));
+                let mut run = std::process::Command::new(shell);
+                if shell == "powershell" {
+                    run.args(["-NoProfile", "-Command"]).arg(&command);
+                } else {
+                    // As typed: cmd /C keeps the quotes of a line that does not start with one.
+                    run.arg("/C").raw_arg(&command);
+                }
+                let output = run.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{shell}: {command}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(dacl(path).contains(&granted), "{shell}: {}", dacl(path));
+            }
         }
     }
 
