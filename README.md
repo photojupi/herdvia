@@ -61,27 +61,7 @@ When you register a remote computer in Herdr (`hc machine add --via <command>`),
 
 `herdvia` does not parse or interpret the Herdr protocol — it simply moves bytes between `hc` on your local computer (**Machine A**) and `herdr-core` on your remote computer (**Machine B**).
 
-```mermaid
-flowchart LR
-    subgraph MA["Machine A (Where you use Herdr)"]
-        HC["Herdr / hc"] --> VIA["herdvia via B"]
-        VIA <-->|"Local IPC"| AGA["herdvia agent"]
-    end
-
-    subgraph NET["Across Different Routers / NAT"]
-        IROH["iroh P2P QUIC (End-to-End Encrypted)"]
-        RELAY["n0 Public Relay (Automatic Fallback)"]
-    end
-
-    subgraph MB["Machine B (Remote PC to reach)"]
-        AGB["herdvia agent"] -->|"Exact line match"| CORE["herdr-core connect"]
-    end
-
-    AGA <-->|"Direct UDP Hole-Punching"| IROH
-    IROH <-->|"Direct UDP Hole-Punching"| AGB
-    AGA -.->|"If direct UDP is blocked"| RELAY
-    RELAY -.->|"If direct UDP is blocked"| AGB
-```
+![How herdvia works](docs/assets/how-it-works.en.svg)
 
 1. **Persistent background agent (`herdvia agent`):** Runs in your user session on each machine, holds the machine's cryptographic identity (`EndpointId`), and maintains encrypted QUIC connections to allowed peers.
 2. **Mutual trust (`allow` / `accept`):** Unknown peers are always rejected. Machine A must explicitly allow dialing Machine B (`--outbound`), and Machine B must explicitly allow sessions from Machine A (`--inbound`).

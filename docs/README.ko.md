@@ -61,27 +61,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 
 `herdvia`는 Herdr 내부 프로토콜을 해석하지 않습니다. 내가 조작하는 컴퓨터(**PC A**)의 `hc`와 원격으로 접속할 컴퓨터(**PC B**)의 `herdr-core` 사이에서 바이트만 그대로 중계합니다.
 
-```mermaid
-flowchart LR
-    subgraph MA["PC A (Herdr를 조작하는 내 PC)"]
-        HC["Herdr / hc"] --> VIA["herdvia via B"]
-        VIA <-->|"로컬 IPC"| AGA["herdvia agent"]
-    end
-
-    subgraph NET["서로 다른 공유기 / 인터넷"]
-        IROH["iroh P2P QUIC (종단간 암호화)"]
-        RELAY["n0 공개 중계 서버 (자동 폴백)"]
-    end
-
-    subgraph MB["PC B (연결할 원격 PC)"]
-        AGB["herdvia agent"] -->|"정확 일치 검사"| CORE["herdr-core connect"]
-    end
-
-    AGA <-->|"직접 UDP 홀펀칭"| IROH
-    IROH <-->|"직접 UDP 홀펀칭"| AGB
-    AGA -.->|"직접 연결이 막힌 환경"| RELAY
-    RELAY -.->|"직접 연결이 막힌 환경"| AGB
-```
+![herdvia 동작 구조도](assets/how-it-works.ko.svg)
 
 1. **상주 에이전트 (`herdvia agent`):** 양쪽 PC의 사용자 세션에서 백그라운드로 실행되며, 기기 고유 키(`EndpointId`)로 허용된 피어와 암호화된 QUIC 연결을 유지합니다.
 2. **양방향 명시적 허용 (`allow` / `accept`):** 처음 보는 기기는 절대 자동으로 신뢰하지 않습니다. 거는 쪽(PC A)은 `--outbound`로 B를 허용하고, 받는 쪽(PC B)은 `--inbound`로 A를 수락해야 연결됩니다.

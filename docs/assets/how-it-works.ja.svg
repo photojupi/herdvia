@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 412" width="880" height="412" role="img" aria-label="herdvia architecture diagram">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1220"/>
+      <stop offset="100%" stop-color="#111C33"/>
+    </linearGradient>
+    <linearGradient id="p2pGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#064E3B" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#0C4A6E" stop-opacity="0.78"/>
+    </linearGradient>
+    <linearGradient id="agentGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0C4A6E" stop-opacity="0.68"/>
+      <stop offset="100%" stop-color="#082F49" stop-opacity="0.88"/>
+    </linearGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#1E293B" stroke-width="0.7" stroke-opacity="0.55"/>
+    </pattern>
+  </defs>
+
+  <!-- Outer Canvas -->
+  <rect x="1" y="1" width="878" height="410" rx="16" fill="url(#bgGrad)" stroke="#334155" stroke-width="1.5"/>
+  <rect x="1" y="1" width="878" height="410" rx="16" fill="url(#grid)"/>
+
+  <!-- ==================== COLUMN 1: MACHINE A ==================== -->
+  <rect x="20" y="22" width="246" height="368" rx="12" fill="#0F172A" fill-opacity="0.92" stroke="#38BDF8" stroke-opacity="0.48" stroke-width="1.5"/>
+  <text x="143" y="50" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="16" font-weight="700" fill="#38BDF8">マシン A (操作側 PC)</text>
+  <text x="143" y="70" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12.5" fill="#94A3B8">Herdr / hc を使用する端末</text>
+  <line x1="36" y1="83" x2="250" y2="83" stroke="#1E293B" stroke-width="1.2"/>
+
+  <!-- Box A1: Herdr / hc -->
+  <rect x="36" y="96" width="214" height="58" rx="9" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <text x="143" y="121" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#F8FAFC">Herdr / hc</text>
+  <text x="143" y="141" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12" fill="#CBD5E1">ローカルアプリ・CLI</text>
+
+  <!-- Arrow A1 -> A2 -->
+  <line x1="143" y1="154" x2="143" y2="177" stroke="#94A3B8" stroke-width="2"/>
+  <polygon points="143,182 138.0,174.25 148.0,174.25" fill="#94A3B8"/>
+
+  <!-- Box A2: herdvia via B -->
+  <rect x="36" y="183" width="214" height="58" rx="9" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <text x="143" y="208" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="14.5" font-weight="700" fill="#F8FAFC">herdvia via B</text>
+  <text x="143" y="228" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12" fill="#CBD5E1">hc が起動する中継プロセス</text>
+
+  <!-- Bidirectional IPC Arrow A2 <-> A3 -->
+  <line x1="143" y1="247" x2="143" y2="295" stroke="#94A3B8" stroke-width="2"/>
+  <polygon points="143,242 138.4,249.13 147.6,249.13" fill="#94A3B8"/>
+  <polygon points="143,300 138.4,292.87 147.6,292.87" fill="#94A3B8"/>
+  <rect x="91" y="260" width="104" height="22" rx="11" fill="#0F172A" stroke="#475569" stroke-width="1.1"/>
+  <text x="143" y="275" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="11.5" font-weight="600" fill="#E2E8F0">ローカル IPC</text>
+
+  <!-- Box A3: herdvia agent -->
+  <rect x="36" y="301" width="214" height="68" rx="9" fill="url(#agentGrad)" stroke="#38BDF8" stroke-width="1.6"/>
+  <text x="143" y="329" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="15.5" font-weight="700" fill="#38BDF8">herdvia agent</text>
+  <text x="143" y="351" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="11.8" fill="#BAE6FD">常駐エージェント (ユーザー権限)</text>
+
+  <!-- ==================== COLUMN 2: NETWORK / IROH ==================== -->
+  <rect x="302" y="22" width="276" height="368" rx="12" fill="#0F172A" fill-opacity="0.58" stroke="#475569" stroke-dasharray="6 4" stroke-width="1.4"/>
+  <text x="440" y="52" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="14.5" font-weight="700" fill="#E2E8F0">別々のルーター (NAT) 越え</text>
+  <line x1="320" y1="83" x2="560" y2="83" stroke="#1E293B" stroke-width="1.2"/>
+
+  <!-- Primary Card: iroh P2P QUIC -->
+  <rect x="318" y="114" width="244" height="106" rx="11" fill="url(#p2pGrad)" stroke="#34D399" stroke-width="1.8"/>
+  <rect x="328" y="126" width="224" height="22" rx="6" fill="#065F46" fill-opacity="0.9"/>
+  <text x="440" y="141" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="10.5" font-weight="700" fill="#6EE7B7">優先経路 · 直接 UDP ホールパンチング</text>
+  <text x="440" y="176" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="17" font-weight="700" fill="#FFFFFF">iroh P2P QUIC</text>
+  <text x="440" y="201" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12.5" font-weight="500" fill="#D1FAE5">エンドツーエンド暗号化</text>
+
+  <!-- Fallback Card: n0 Public Relay -->
+  <rect x="318" y="256" width="244" height="104" rx="11" fill="#1E293B" fill-opacity="0.92" stroke="#FBBF24" stroke-opacity="0.7" stroke-dasharray="5 3" stroke-width="1.5"/>
+  <rect x="328" y="268" width="224" height="22" rx="6" fill="#78350F" fill-opacity="0.6"/>
+  <text x="440" y="283" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="10.8" font-weight="700" fill="#FDE68A">自動代替 · 直接通信できない場合</text>
+  <text x="440" y="317" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="15.5" font-weight="700" fill="#F8FAFC">n0 公開リレー</text>
+  <text x="440" y="342" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12" fill="#CBD5E1">暗号化を維持して自動フォールバック</text>
+
+  <!-- ==================== COLUMN 3: MACHINE B ==================== -->
+  <rect x="614" y="22" width="246" height="368" rx="12" fill="#0F172A" fill-opacity="0.92" stroke="#34D399" stroke-opacity="0.48" stroke-width="1.5"/>
+  <text x="737" y="50" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="16" font-weight="700" fill="#34D399">マシン B (リモート PC)</text>
+  <text x="737" y="70" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12.5" fill="#94A3B8">接続先のターゲット端末</text>
+  <line x1="630" y1="83" x2="844" y2="83" stroke="#1E293B" stroke-width="1.2"/>
+
+  <!-- Box B1: herdr-core connect -->
+  <rect x="630" y="96" width="214" height="58" rx="9" fill="#1E293B" stroke="#475569" stroke-width="1.2"/>
+  <text x="737" y="121" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="14.5" font-weight="700" fill="#F8FAFC">herdr-core connect</text>
+  <text x="737" y="141" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="12" fill="#CBD5E1">リモート Herdr セッション</text>
+
+  <!-- Arrow B2 -> B1 (upward into herdr-core) -->
+  <line x1="737" y1="194" x2="737" y2="160" stroke="#94A3B8" stroke-width="2"/>
+  <polygon points="737,155 732.0,162.75 742.0,162.75" fill="#94A3B8"/>
+
+  <!-- Box B2: Exact command check -->
+  <rect x="630" y="194" width="214" height="58" rx="9" fill="#1E293B" stroke="#64748B" stroke-width="1.2"/>
+  <text x="737" y="219" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="13.5" font-weight="700" fill="#FDE68A">コマンド完全一致チェック</text>
+  <text x="737" y="239" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="11.5" fill="#CBD5E1">hc 接続行のみ許可・他は拒否</text>
+
+  <!-- Arrow B3 -> B2 (upward from agent to check) -->
+  <line x1="737" y1="301" x2="737" y2="258" stroke="#94A3B8" stroke-width="2"/>
+  <polygon points="737,253 732.0,260.75 742.0,260.75" fill="#94A3B8"/>
+
+  <!-- Box B3: herdvia agent -->
+  <rect x="630" y="301" width="214" height="68" rx="9" fill="url(#agentGrad)" stroke="#38BDF8" stroke-width="1.6"/>
+  <text x="737" y="329" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="15.5" font-weight="700" fill="#38BDF8">herdvia agent</text>
+  <text x="737" y="351" text-anchor="middle" font-family="'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP', sans-serif" font-size="11.8" fill="#BAE6FD">常駐エージェント (ユーザー権限)</text>
+
+  <!-- ==================== TUNNEL CONNECTORS ==================== -->
+  <!-- Primary P2P connectors: A3 <-> iroh P2P QUIC <-> B3 -->
+  <path d="M 256 322 L 280 322 Q 288 322 288 314 L 288 175 Q 288 167 296 167 L 311 167" fill="none" stroke="#34D399" stroke-width="2.5"/>
+  <polygon points="251,322 259.32,316.8 259.32,327.2" fill="#34D399"/>
+  <polygon points="317,167 308.68,161.8 308.68,172.2" fill="#34D399"/>
+
+  <path d="M 569 167 L 584 167 Q 592 167 592 175 L 592 314 Q 592 322 600 322 L 624 322" fill="none" stroke="#34D399" stroke-width="2.5"/>
+  <polygon points="563,167 571.32,161.8 571.32,172.2" fill="#34D399"/>
+  <polygon points="629,322 620.68,316.8 620.68,327.2" fill="#34D399"/>
+
+  <!-- Fallback Relay connectors: A3 <..> n0 Public Relay <..> B3 -->
+  <line x1="257" y1="347" x2="311" y2="347" stroke="#FBBF24" stroke-width="2" stroke-dasharray="4 3"/>
+  <polygon points="251,347 258.68,342.2 258.68,351.8" fill="#FBBF24"/>
+  <polygon points="317,347 309.32,342.2 309.32,351.8" fill="#FBBF24"/>
+
+  <line x1="569" y1="347" x2="623" y2="347" stroke="#FBBF24" stroke-width="2" stroke-dasharray="4 3"/>
+  <polygon points="563,347 570.68,342.2 570.68,351.8" fill="#FBBF24"/>
+  <polygon points="629,347 621.32,342.2 621.32,351.8" fill="#FBBF24"/>
+</svg>

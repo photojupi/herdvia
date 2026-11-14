@@ -61,27 +61,7 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 
 `herdvia` は Herdr の内部プロトコルを解釈せず、手元の PC（**マシン A**）の `hc` と接続先 PC（**マシン B**）の `herdr-core` の間でバイト列を中継するだけに徹します。
 
-```mermaid
-flowchart LR
-    subgraph MA["マシン A (Herdr を操作する PC)"]
-        HC["Herdr / hc"] --> VIA["herdvia via B"]
-        VIA <-->|"ローカル IPC"| AGA["herdvia agent"]
-    end
-
-    subgraph NET["別々のルーター / インターネット"]
-        IROH["iroh P2P QUIC (E2E 暗号化)"]
-        RELAY["n0 公開リレー (自動フォールバック)"]
-    end
-
-    subgraph MB["マシン B (接続したいリモート PC)"]
-        AGB["herdvia agent"] -->|"完全一致チェック"| CORE["herdr-core connect"]
-    end
-
-    AGA <-->|"直接 UDP ホールパンチング"| IROH
-    IROH <-->|"直接 UDP ホールパンチング"| AGB
-    AGA -.->|"直接通信できない場合"| RELAY
-    RELAY -.->|"直接通信できない場合"| AGB
-```
+![herdvia の動作仕組み図](assets/how-it-works.ja.svg)
 
 1. **常駐エージェント (`herdvia agent`):** 各マシンのユーザーセッションで動作し、マシン固有の鍵（`EndpointId`）を使って許可済みピアとの暗号化 QUIC 接続を維持します。
 2. **双方向の明示的な許可 (`allow` / `accept`):** 未知の端末が自動的に信頼されることはありません。発信側（マシン A）で `--outbound` を許可し、着信側（マシン B）で `--inbound` を承認して初めて通信が成立します。

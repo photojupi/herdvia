@@ -61,27 +61,7 @@
 
 `herdvia` 不解析也不干预 Herdr 内部协议——它只负责在你操作的主控端（**电脑 A**）上的 `hc` 与远程被控端（**电脑 B**）上的 `herdr-core` 之间安全搬运字节。
 
-```mermaid
-flowchart LR
-    subgraph MA["电脑 A（运行 Herdr 的主控端）"]
-        HC["Herdr / hc"] --> VIA["herdvia via B"]
-        VIA <-->|"本地 IPC"| AGA["herdvia agent"]
-    end
-
-    subgraph NET["跨路由器 / 互联网"]
-        IROH["iroh P2P QUIC（端到端加密）"]
-        RELAY["n0 公共中继服务器（自动回退）"]
-    end
-
-    subgraph MB["电脑 B（待连接的远程电脑）"]
-        AGB["herdvia agent"] -->|"逐字精确匹配"| CORE["herdr-core connect"]
-    end
-
-    AGA <-->|"UDP 打洞直连"| IROH
-    IROH <-->|"UDP 打洞直连"| AGB
-    AGA -.->|"直连受阻时自动切换"| RELAY
-    RELAY -.->|"直连受阻时自动切换"| AGB
-```
+![herdvia 工作原理图](assets/how-it-works.zh-CN.svg)
 
 1. **常驻后台代理 (`herdvia agent`)：** 在每台电脑的当前用户会话中运行，持有设备密钥身份（`EndpointId`），并与已授权对端保持加密 QUIC 连接。
 2. **双向显式授权 (`allow` / `accept`)：** 从不自动信任陌生设备。主控端 A 必须显式允许拨向 B（`--outbound`），被控端 B 也必须显式允许 A 接入（`--inbound`）。
