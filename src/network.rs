@@ -15,7 +15,10 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -162,6 +165,9 @@ pub struct Network {
     connections: Mutex<HashMap<usize, Connection>>,
     attempts: Arc<Mutex<Attempts>>,
     changed: watch::Sender<u64>,
+    stopping: AtomicBool,
+    /// Stream tasks whose `SessionEnd` has not been dropped yet.
+    streams: watch::Sender<usize>,
 }
 
 impl Network {
@@ -188,7 +194,21 @@ impl Network {
             connections: Mutex::new(HashMap::new()),
             attempts,
             changed: watch::channel(0).0,
+            stopping: AtomicBool::new(false),
+            streams: watch::channel(0).0,
         }))
+    }
+
+    /// Called before the agent aborts its tasks, so that sessions cut short say why.
+    pub fn stop(&self) {
+        self.stopping.store(true, Ordering::Relaxed);
+    }
+
+    /// Waits, for at most a second, until aborted stream tasks have written their end lines.
+    /// Aborting serve_connection only aborts its stream tasks; they are dropped later.
+    pub async fn streams_ended(&self) {
+        let mut streams = self.streams.subscribe();
+        let _ = tokio::time::timeout(Duration::from_secs(1), streams.wait_for(|n| *n == 0)).await;
     }
 
     pub fn updates(&self) -> watch::Receiver<Vec<Peer>> {
@@ -334,32 +354,30 @@ impl Network {
                             if !permitted(&peers, id, true) { return; }
                             describe(&peers, id)
                         };
-                        let session = OnceLock::new();
+                        let mut end = SessionEnd::new(&network, &conn);
                         let started = |name: Option<&str>| {
                             let text = match name {
                                 Some(name) => format!("{who}, herdr session {name}"),
                                 None => who.clone(),
                             };
                             log::line(Kind::Other, &format!("session started: {text}"));
-                            let _ = session.set(text);
+                            let _ = end.session.set(text);
                         };
                         let stopped = send.stopped();
-                        let ended = tokio::select! {
+                        let reason = tokio::select! {
                             biased;
                             err = conn.closed() => err.to_string(),
                             _ = stopped => "the peer stopped the stream".to_owned(),
                             result = exec::serve(tokio::io::join(recv, send), started) => match result {
                                 Ok(code) => format!("exit code {code}"),
-                                Err(err) if session.get().is_none() => {
+                                Err(err) if end.session.get().is_none() => {
                                     log::line(Kind::Other, &format!("stream from {id} ended: {err}"));
                                     return;
                                 }
                                 Err(err) => err.to_string(),
                             },
                         };
-                        if let Some(text) = session.get() {
-                            log::line(Kind::Other, &format!("session ended: {text}: {ended}"));
-                        }
+                        end.reason = Some(reason);
                     });
                 }
                 _ = streams.join_next(), if !streams.is_empty() => {},
@@ -458,6 +476,43 @@ impl Network {
         input.abort_all();
         while input.join_next().await.is_some() {}
         result
+    }
+}
+
+/// Writes a session's end line when dropped: the stream task can be aborted before it sees
+/// the connection close (serve_connection aborts its streams once it does) or on agent shutdown.
+struct SessionEnd<'a> {
+    network: &'a Network,
+    conn: &'a Connection,
+    session: OnceLock<String>,
+    reason: Option<String>,
+}
+impl<'a> SessionEnd<'a> {
+    fn new(network: &'a Network, conn: &'a Connection) -> Self {
+        network.streams.send_modify(|n| *n += 1);
+        Self {
+            network,
+            conn,
+            session: OnceLock::new(),
+            reason: None,
+        }
+    }
+}
+impl Drop for SessionEnd<'_> {
+    fn drop(&mut self) {
+        if let Some(text) = self.session.get() {
+            let reason = self.reason.take().unwrap_or_else(|| {
+                if self.network.stopping.load(Ordering::Relaxed) {
+                    "the agent stopped".to_owned()
+                } else {
+                    self.conn
+                        .close_reason()
+                        .map_or_else(|| "connection closed".to_owned(), |err| err.to_string())
+                }
+            });
+            log::line(Kind::Other, &format!("session ended: {text}: {reason}"));
+        }
+        self.network.streams.send_modify(|n| *n -= 1);
     }
 }
 

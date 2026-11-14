@@ -72,10 +72,12 @@ pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
             _ = shutdown.recv() => break Ok(()),
         }
     };
+    network.stop();
     sessions.abort_all();
     connectors.abort_all();
     while sessions.join_next().await.is_some() {}
     while connectors.join_next().await.is_some() {}
+    network.streams_ended().await;
     network.endpoint.close().await;
     result
 }

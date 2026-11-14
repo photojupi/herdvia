@@ -126,6 +126,52 @@ fn the_receiver_logs_who_ran_which_session_and_how_it_ended() {
     }
 }
 
+/// Waits until the node's agent log has `needle`.
+fn wait_log(node: &Node, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let log = node.agent_log();
+        if log.contains(needle) {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("no {needle:?} in {}'s log:\n{log}", node.label);
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_session_cut_by_a_revoke_still_logs_its_end() {
+    let p = Pair::new();
+    let mut v = p.a.spawn_via("b", &session_line("sleep"));
+    assert_eq!(v.read_stdout_exact(6, Duration::from_secs(10)), b"ready\n");
+    let who = format!(
+        "a (fingerprint {}), herdr session sleep",
+        fingerprint_of(&p.a_id)
+    );
+    p.b.revoke("a");
+    wait_log(&p.b, &format!(" herdvia: session ended: {who}: "));
+    let _ = v.wait_end_keep_stdin(Duration::from_secs(10));
+}
+
+#[test]
+fn a_session_cut_by_the_agent_stopping_logs_its_end() {
+    let mut p = Pair::new();
+    let mut v = p.a.spawn_via("b", &session_line("sleep"));
+    assert_eq!(v.read_stdout_exact(6, Duration::from_secs(10)), b"ready\n");
+    let who = format!(
+        "a (fingerprint {}), herdr session sleep",
+        fingerprint_of(&p.a_id)
+    );
+    p.b.stop_agent();
+    wait_log(
+        &p.b,
+        &format!(" herdvia: session ended: {who}: the agent stopped\n"),
+    );
+    let _ = v.wait_end_keep_stdin(Duration::from_secs(60));
+}
+
 #[test]
 fn signal_exit_is_forwarded_as_128_plus_n() {
     let p = shared();
