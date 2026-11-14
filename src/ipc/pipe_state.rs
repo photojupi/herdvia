@@ -5,7 +5,8 @@ pub(super) async fn connected(result: io::Result<bool>) -> bool {
         Ok(connected) => connected,
         Err(err) => {
             eprintln!(
-                "herdvia: warning: pipe state query failed; disconnect monitoring disabled: {err}"
+                "{} herdvia: warning: pipe state query failed; disconnect monitoring disabled: {err}",
+                crate::log::stamp()
             );
             std::future::pending().await
         }

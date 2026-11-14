@@ -136,7 +136,7 @@ fn log_path() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))
 }
 
-pub fn redirect_log() -> io::Result<()> {
+pub fn redirect_log() -> io::Result<PathBuf> {
     let path = log_path()?;
     fs::create_dir_all(path.parent().unwrap())?;
     let file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -151,7 +151,7 @@ pub fn redirect_log() -> io::Result<()> {
     if unsafe { SetStdHandle(STD_ERROR_HANDLE, handle) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    Ok(path)
 }
 
 fn registry_result(result: u32) -> io::Result<()> {

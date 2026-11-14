@@ -442,7 +442,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install`은 사용자별 LaunchAgent(`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`)를 만들고 `launchctl bootstrap`으로 시작합니다. 로그인 시 자동 실행되며 종료되면 `launchd`가 자동으로 다시 띄웁니다. 로그는 `~/Library/Logs/herdvia.log`에 쌓입니다.
+`herdvia agent install`은 사용자별 LaunchAgent(`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`)를 만들고 `launchctl bootstrap`으로 시작합니다. 로그인 시 자동 실행되며 종료되면 `launchd`가 자동으로 다시 띄웁니다. 로그는 `~/Library/Logs/herdvia.log`에 쌓이며, 180일이 지난 줄은 에이전트가 지웁니다([설정 및 파일 위치](#configuration-and-files) 참고).
 
 - `HERDVIA_DIR`이 설정된 상태이거나(자동 시작은 항상 기본 데이터 폴더를 사용함) 수동으로 띄운 포그라운드 에이전트가 이미 돌아가고 있으면 설치를 거부합니다.
 - `herdvia agent install`을 다시 실행하면 현재 실행 파일 경로로 등록을 갱신하고 에이전트를 재시작합니다.
@@ -458,7 +458,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 - **반드시 일반 PowerShell 창에서 실행하세요.** 관리자 권한 PowerShell에서는 실행을 거부합니다.
 - `HERDVIA_DIR`이 설정돼 있거나, 아직 자동 시작 등록이 없는 상태에서 수동 실행 중인 에이전트가 있으면 거부합니다(이미 자동 시작이 등록돼 있다면 기존 기본 폴더 에이전트를 멈추고 새 에이전트로 교체합니다).
 - 실행 파일 경로에 `%`가 포함되면 안 되며, 등록 명령줄 전체 길이는 259 UTF-16 코드 단위 이내여야 합니다.
-- 로그는 `%LOCALAPPDATA%\herdvia\herdvia.log`에 기록됩니다. 에이전트가 예기치 않게 종료되면 Windows가 자동으로 재시작하지 않으며 다음 로그온 때 다시 시작됩니다.
+- 로그는 `%LOCALAPPDATA%\herdvia\herdvia.log`에 기록됩니다(180일이 지난 줄은 지워집니다). 에이전트가 예기치 않게 종료되면 Windows가 자동으로 재시작하지 않으며 다음 로그온 때 다시 시작됩니다.
 
 ### Linux
 
@@ -618,7 +618,7 @@ ok   pending: no rejected connection attempts
 | **로그 (Windows 자동 시작)** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **로그 (`herdvia agent` 수동 실행)** | 표준 오류 (`stderr`) |
 
-*참고: `herdvia`는 로그 파일을 자동으로 순환(rotate)하지 않습니다.*
+*참고: 에이전트가 실행 중에 로그에 쓰는 줄은 `2026-11-14T14:17:03Z herdvia: connected <id>`처럼 UTC 시각으로 시작합니다. 자동 시작으로 실행된 에이전트는 시작 직후와 그 뒤 24시간마다 로그 파일에서 180일이 지난 줄을 지웁니다. 파일을 나누어 순환(rotate)하지 않고 같은 파일의 앞부분만 지웁니다. 시각이 없는 줄(이전 버전이 쓴 줄, 에이전트가 시작하다 실패할 때 남기는 오류 줄 등)은 그다음 시각이 있는 줄과 함께 지워집니다. 수동 실행한 `herdvia agent`의 `stderr`가 터미널이나 다른 파일로 가면 건드리지 않습니다. macOS에서는 수동 실행이라도 `stderr`를 `~/Library/Logs/herdvia.log`에 이어 쓰면 똑같이 지웁니다.*
 
 ---
 

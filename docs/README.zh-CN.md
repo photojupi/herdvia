@@ -442,7 +442,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install` 会创建当前用户的 LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在进程退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`。
+`herdvia agent install` 会创建当前用户的 LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`），并通过 `launchctl bootstrap` 立即启动。`launchd` 会在用户登录时自动拉起代理，并在进程退出时自动重启。日志输出至 `~/Library/Logs/herdvia.log`，代理会删除其中超过 180 天的行（参见[配置与文件路径](#configuration-and-files)）。
 
 - 若设置了 `HERDVIA_DIR` 环境变量（自动启动始终使用默认数据目录），或已有手动启动的前台代理在运行，则会拒绝安装。
 - 再次运行 `herdvia agent install` 会更新为当前可执行文件路径并重启代理。
@@ -458,7 +458,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 - **必须在普通（非管理员）PowerShell 窗口中运行**——管理员窗口中会拒绝执行。
 - 若设置了 `HERDVIA_DIR`，或尚未注册自启时已有前台代理正在运行，则会拒绝安装（若已注册过自启，再次运行 `install` 会停止正在运行的默认数据目录代理并启动新代理）。
 - 可执行文件路径不能包含 `%`，且完整注册命令行长度不得超过 259 个 UTF-16 代码单元。
-- 日志写入 `%LOCALAPPDATA%\herdvia\herdvia.log`。若代理意外退出，Windows 不会自动重启，将在下次登录时重新启动。
+- 日志写入 `%LOCALAPPDATA%\herdvia\herdvia.log`（超过 180 天的行会被删除）。若代理意外退出，Windows 不会自动重启，将在下次登录时重新启动。
 
 ### Linux
 
@@ -618,7 +618,7 @@ ok   pending: no rejected connection attempts
 | **日志（Windows 自动启动）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **日志（`herdvia agent` 前台运行）** | 标准错误输出（`stderr`） |
 
-*注：`herdvia` 不会自动轮转（rotate）日志文件。*
+*注：代理在运行期间写入日志的每一行都以 UTC 时间开头，例如 `2026-11-14T14:17:03Z herdvia: connected <id>`。通过自动启动运行的代理会在启动后立即、此后每 24 小时从日志文件中删除超过 180 天的行；不会轮转（rotate）拆分文件，而是直接删除同一文件的开头部分。没有时间的行（例如旧版本写入的行，或代理启动失败时输出的错误行）会与其后第一条带时间的行一并删除。前台运行的 `herdvia agent` 的 `stderr` 若输出到终端或其他文件，则不受影响；在 macOS 上，即使是前台运行，只要 `stderr` 追加写入 `~/Library/Logs/herdvia.log`，也会同样删除。*
 
 ---
 

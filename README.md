@@ -429,7 +429,7 @@ On any error, `herdvia` writes a single line prefixed with `herdvia:` to `stderr
 
 ### macOS
 
-`herdvia agent install` creates a per-user LaunchAgent (`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`) and starts it via `launchctl bootstrap`. `launchd` launches the agent at login and automatically restarts it if it exits. Logs go to `~/Library/Logs/herdvia.log`.
+`herdvia agent install` creates a per-user LaunchAgent (`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`) and starts it via `launchctl bootstrap`. `launchd` launches the agent at login and automatically restarts it if it exits. Logs go to `~/Library/Logs/herdvia.log`, and the agent removes lines older than 180 days from it (see [Configuration and files](#configuration-and-files)).
 
 - Refuses to install if `HERDVIA_DIR` is set (automatic startup always uses the default data folder) or if a foreground agent is currently running.
 - Re-running `herdvia agent install` updates the plist executable path and restarts the agent.
@@ -445,7 +445,7 @@ On any error, `herdvia` writes a single line prefixed with `herdvia:` to `stderr
 - **Must be run from a normal (non-elevated) PowerShell window** — `install` refuses to run as administrator.
 - Refuses if `HERDVIA_DIR` is set, or if a foreground agent is running before auto-start has been registered. (If auto-start is already registered, re-running `install` stops the running default-folder agent and starts the new one.)
 - Executable path must not contain `%`, and the full registered command line must fit within 259 UTF-16 code units.
-- Logs are appended to `%LOCALAPPDATA%\herdvia\herdvia.log`. If the agent exits unexpectedly, Windows does not restart it until the next sign-in.
+- Logs are appended to `%LOCALAPPDATA%\herdvia\herdvia.log` (lines older than 180 days are removed). If the agent exits unexpectedly, Windows does not restart it until the next sign-in.
 
 ### Linux
 
@@ -596,7 +596,7 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 | **Log (Windows auto-start)** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **Log (`herdvia agent` foreground)** | `stderr` |
 
-*Note: `herdvia` does not automatically rotate log files.*
+*Note: Each line the agent writes to its log while running starts with the UTC time, such as `2026-11-14T14:17:03Z herdvia: connected <id>`. An agent started by automatic startup removes lines older than 180 days from its log file right after it starts and every 24 hours after that. It trims the start of the same file in place rather than rotating it into separate files. Lines without a time (such as those written by earlier versions, or the error an agent prints when it fails to start) are removed together with the next line that has one. A foreground `herdvia agent` leaves its `stderr` alone when it goes to a terminal or another file. On macOS, even a foreground agent trims `~/Library/Logs/herdvia.log` the same way if its `stderr` appends to that file.*
 
 ---
 

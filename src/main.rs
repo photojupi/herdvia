@@ -108,10 +108,15 @@ async fn main() {
         })
         .collect();
     let result = match ipc::reject_root().and(args).and_then(parse) {
-        Ok(Command::Agent) => herdvia::agent::run().await.map(|()| 0),
+        #[cfg(unix)]
+        Ok(Command::Agent) => herdvia::agent::run(herdvia::launchd::log_path())
+            .await
+            .map(|()| 0),
+        #[cfg(windows)]
+        Ok(Command::Agent) => herdvia::agent::run(None).await.map(|()| 0),
         #[cfg(windows)]
         Ok(Command::AgentLog) => match herdvia::launchd::redirect_log() {
-            Ok(()) => herdvia::agent::run().await.map(|()| 0),
+            Ok(path) => herdvia::agent::run(Some(path)).await.map(|()| 0),
             Err(err) => Err(err),
         },
         Ok(Command::AgentInstall) => herdvia::launchd::install().await.map(|()| 0),

@@ -11,6 +11,7 @@ pub mod launchd;
 #[cfg(windows)]
 #[path = "autostart_windows.rs"]
 pub mod launchd;
+mod log;
 pub mod network;
 pub mod peers;
 pub mod template;

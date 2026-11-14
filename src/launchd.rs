@@ -4,13 +4,14 @@ use std::{
     ffi::OsStr,
     fs,
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 use tokio::net::UnixStream;
 
 const LABEL: &str = "io.github.photojupi.herdvia.agent";
 const PLIST: &str = "Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist";
+const LOG: &str = "Library/Logs/herdvia.log";
 /// The agent's PATH after `$HOME/.local/bin`.
 pub(crate) const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 // A service that launchd respawned moments ago took 2.3s to leave after bootout
@@ -32,6 +33,15 @@ pub async fn install() -> io::Result<()> {
 pub fn uninstall() -> io::Result<()> {
     require_macos()?;
     uninstall_at(&ipc::home_dir()?, ipc::uid(), launchctl)
+}
+
+/// The file that the LaunchAgent sends the agent's output to, on macOS only.
+pub fn log_path() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        ipc::home_dir().ok().map(|home| home.join(LOG))
+    } else {
+        None
+    }
 }
 
 fn require_macos() -> io::Result<()> {
@@ -199,7 +209,7 @@ fn xml_path(path: &Path) -> io::Result<String> {
 
 fn plist(home: &Path, executable: &Path) -> io::Result<String> {
     let executable = xml_path(executable)?;
-    let log = xml_path(&home.join("Library/Logs/herdvia.log"))?;
+    let log = xml_path(&home.join(LOG))?;
     let path = xml_path(&home.join(".local/bin"))?;
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

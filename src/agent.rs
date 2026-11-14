@@ -1,19 +1,24 @@
 use crate::{
     frame::{self, *},
-    ipc,
+    ipc, log,
     network::Network,
     peers,
 };
 use iroh::EndpointId;
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
 use tokio::task::{AbortHandle, JoinSet};
 
-pub async fn run() -> io::Result<()> {
+/// `log_file`: the file that standard error was sent to, whose lines older than 180 days are removed.
+/// On Unix they are removed only while standard error still appends to that file.
+pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
     ipc::reject_root()?;
     let mut shutdown = ipc::Shutdown::new()?;
     let dir = ipc::data_dir()?;
     let network = Network::bind(dir.clone()).await?;
     let mut listener = ipc::listen(&dir)?;
+    // The first tick is immediate, so the first trim comes right after listening.
+    let mut trim_checks = tokio::time::interval(log::CHECK_EVERY);
+    let mut last_trim = None;
     let mut updates = network.updates();
     let mut sessions = JoinSet::new();
     let mut connectors = JoinSet::new();
@@ -39,12 +44,18 @@ pub async fn run() -> io::Result<()> {
             _ = updates.changed() => refresh_workers(&network, &mut workers, &mut connectors),
             completed = sessions.join_next(), if !sessions.is_empty() => {
                 match completed {
-                    Some(Ok(Err(err))) => eprintln!("herdvia: {err}"),
-                    Some(Err(err)) => eprintln!("herdvia: session task: {err}"),
+                    Some(Ok(Err(err))) => eprintln!("{} herdvia: {err}", log::stamp()),
+                    Some(Err(err)) => eprintln!("{} herdvia: session task: {err}", log::stamp()),
                     _ => {}
                 }
             }
             _ = connectors.join_next(), if !connectors.is_empty() => {},
+            // Awaited here, so the agent stops listening only after a trim finishes.
+            _ = trim_checks.tick(), if log_file.is_some() => {
+                if let Some(path) = &log_file {
+                    log::trim_if_due(path, &mut last_trim).await;
+                }
+            }
             _ = shutdown.recv() => break Ok(()),
         }
     };

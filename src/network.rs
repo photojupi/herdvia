@@ -1,6 +1,7 @@
 use crate::{
     exec,
     frame::{self, *},
+    log,
     peers::{self, Peer},
 };
 use iroh::{
@@ -120,7 +121,11 @@ impl EndpointHooks for Policy {
                     attempts.record(conn.remote_id(), Instant::now());
                 }
             }
-            eprintln!("herdvia: rejected peer {}", conn.remote_id());
+            eprintln!(
+                "{} herdvia: rejected peer {}",
+                log::stamp(),
+                conn.remote_id()
+            );
             AfterHandshakeOutcome::Reject {
                 error_code: 403u32.into(),
                 reason: b"peer not allowed".to_vec(),
@@ -263,7 +268,7 @@ impl Network {
                     connected.elapsed()
                 }
                 Err(err) => {
-                    eprintln!("herdvia: connection to {id} failed: {err}");
+                    eprintln!("{} herdvia: connection to {id} failed: {err}", log::stamp());
                     Duration::ZERO
                 }
             };
@@ -287,7 +292,7 @@ impl Network {
             id: conn.stable_id(),
         };
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
-        eprintln!("herdvia: connected {id}");
+        eprintln!("{} herdvia: connected {id}", log::stamp());
         let mut streams = JoinSet::new();
         loop {
             tokio::select! {
@@ -309,7 +314,7 @@ impl Network {
                             _ = conn.closed() => {},
                             _ = stopped => {},
                             result = exec::serve(tokio::io::join(recv, send)) => {
-                                if let Err(err) = result { eprintln!("herdvia: stream from {id} ended: {err}"); }
+                                if let Err(err) = result { eprintln!("{} herdvia: stream from {id} ended: {err}", log::stamp()); }
                             }
                         }
                     });
@@ -319,7 +324,7 @@ impl Network {
         }
         streams.abort_all();
         while streams.join_next().await.is_some() {}
-        eprintln!("herdvia: disconnected {id}");
+        eprintln!("{} herdvia: disconnected {id}", log::stamp());
     }
 
     async fn connection_for(&self, name: &str) -> io::Result<Connection> {

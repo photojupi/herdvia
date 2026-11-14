@@ -442,7 +442,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install` はユーザー単位の LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`）を作成し、`launchctl bootstrap` で起動します。ログイン時に自動起動し、終了しても `launchd` が再起動します。ログは `~/Library/Logs/herdvia.log` に出力されます。
+`herdvia agent install` はユーザー単位の LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`）を作成し、`launchctl bootstrap` で起動します。ログイン時に自動起動し、終了しても `launchd` が再起動します。ログは `~/Library/Logs/herdvia.log` に出力され、180 日を過ぎた行はエージェントが削除します（[設定とファイルの保存場所](#configuration-and-files)を参照）。
 
 - `HERDVIA_DIR` が設定されている場合（自動起動は常にデフォルトのデータフォルダを使用します）や、フォアグラウンドのエージェントが動作中の場合はインストールを拒否します。
 - 再度 `herdvia agent install` を実行すると、現在の実行ファイルパスで登録を更新しエージェントを再起動します。
@@ -458,7 +458,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 - **必ず通常の（管理者ではない）PowerShell ウィンドウから実行してください。** 管理者 PowerShell では拒否されます。
 - `HERDVIA_DIR` が設定されている場合や、自動起動未登録の状態でエージェントが動作中の場合は拒否します（自動起動登録済みなら、既存のデフォルトフォルダのエージェントを停止して新しい方を起動します）。
 - 実行ファイルのパスに `%` を含めることはできず、登録コマンドライン全体が 259 UTF-16 コード単位以内に収まる必要があります。
-- ログは `%LOCALAPPDATA%\herdvia\herdvia.log` に出力されます。エージェントが途中で終了した場合、Windows は自動再起動せず次回サインイン時に起動します。
+- ログは `%LOCALAPPDATA%\herdvia\herdvia.log` に出力されます（180 日を過ぎた行は削除されます）。エージェントが途中で終了した場合、Windows は自動再起動せず次回サインイン時に起動します。
 
 ### Linux
 
@@ -618,7 +618,7 @@ ok   pending: no rejected connection attempts
 | **ログ（Windows 自動起動時）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **ログ（`herdvia agent` 手動起動時）** | 標準エラー出力（`stderr`） |
 
-*注：`herdvia` はログファイルのローテーションを行いません。*
+*注：エージェントが実行中にログに書き込む各行は、`2026-11-14T14:17:03Z herdvia: connected <id>` のように UTC 時刻で始まります。自動起動されたエージェントは、起動直後とその後 24 時間ごとにログファイルから 180 日を過ぎた行を削除します。ファイルを分けてローテーションするのではなく、同じファイルの先頭部分だけを削除します。時刻のない行（以前のバージョンが書き込んだ行や、エージェントが起動に失敗したときのエラー行など）は、その次の時刻付きの行と一緒に削除されます。手動起動した `herdvia agent` の `stderr` がターミナルや別のファイルに出力される場合は手を加えません。macOS では手動起動でも `stderr` を `~/Library/Logs/herdvia.log` に追記していれば、同じように削除します。*
 
 ---
 

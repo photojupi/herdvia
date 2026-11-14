@@ -32,7 +32,10 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             frame::write(&mut stream, EXIT, &code.to_be_bytes()).await
         }
         Launch::Reject => {
-            eprintln!("herdvia: rejected command: {line:?}");
+            eprintln!(
+                "{} herdvia: rejected command: {line:?}",
+                crate::log::stamp()
+            );
             frame::write(
                 &mut stream,
                 ERROR,
