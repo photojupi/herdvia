@@ -1,5 +1,5 @@
 use crate::frame::{self, *};
-use std::io;
+use std::{io, time::Duration};
 
 #[cfg(unix)]
 #[path = "exec/unix.rs"]
@@ -13,12 +13,17 @@ use tokio::{
     task::JoinSet,
 };
 
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Receives a network-format OPEN (just the command line), independent of transport.
 pub async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut stream: S,
 ) -> io::Result<()> {
-    let open = frame::read(&mut stream)
-        .await?
+    // The caller sends OPEN right after opening the stream. A stream that sends nothing must not
+    // hold a slot forever.
+    let open = tokio::time::timeout(OPEN_TIMEOUT, frame::read(&mut stream))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no OPEN within 10 seconds"))??
         .ok_or_else(|| frame::invalid("missing OPEN"))?;
     if open.tag != OPEN {
         return Err(frame::invalid("first frame must be OPEN"));
@@ -203,6 +208,31 @@ mod tests {
         assert_eq!(response.tag, ERROR);
         assert!(frame::read(&mut client).await.unwrap().is_none());
         assert!(task.await.unwrap().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_when_open_does_not_arrive_within_10_seconds() {
+        let (_client, server) = tokio::io::duplex(1024);
+        let start = tokio::time::Instant::now();
+        let err = serve(server).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(start.elapsed(), OPEN_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_open_just_before_the_limit_is_still_served() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let task = tokio::spawn(serve(server));
+        tokio::time::sleep(OPEN_TIMEOUT - Duration::from_millis(1)).await;
+        frame::write(&mut client, OPEN, b"touch /must-not-run")
+            .await
+            .unwrap();
+        // Rejected by the template check, not by the timeout.
+        assert_eq!(frame::read(&mut client).await.unwrap().unwrap().tag, ERROR);
+        assert_eq!(
+            task.await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[tokio::test]
