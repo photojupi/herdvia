@@ -202,7 +202,7 @@ Verify that the first 16 characters of the `EndpointId` you pasted match the fin
 | `--inbound` | **That peer** may connect and open sessions on this machine. |
 | `--both` | Allow both directions. |
 
-*The peer name (`A`, `B`, `home-pc`, etc.) is a local label of 1–32 characters using `A-Z a-z 0-9 . _ -`. Running `allow` again with the same name updates that entry.*
+*The peer name (`A`, `B`, `home-pc`, etc.) is a local label of 1–32 characters using `A-Z a-z 0-9 . _ -`. Running `allow` again with the same name updates that entry, and `allow` prints the entry it saved (such as `B <EndpointId> out`). An `EndpointId` can have only one name: `allow` refuses an `EndpointId` that is already registered under another name.*
 
 ### Step 4. On B, accept A
 
@@ -343,6 +343,8 @@ Each `.zip` extracts flat (no wrapper directory) and contains the executable, `R
 
 The binaries are not code-signed or notarized. Prebuilt Intel Mac binaries are not provided; see [From source](#from-source).
 
+Release files published after `v0.1.2` come with a GitHub build provenance attestation. With the [GitHub CLI](https://cli.github.com), `gh attestation verify <file> --repo photojupi/herdvia` (for example, `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`) checks that the file was built by this repository's release workflow. It shows where a file was built, not that it is safe: a release built from a tag pushed by someone who took over the maintainer's account would also pass. `SHA256SUMS` comes from the same release, so it catches damaged downloads, not a replaced release.
+
 #### macOS (Apple Silicon)
 
 ```sh
@@ -394,7 +396,7 @@ To run `herdvia` by name, add `%LOCALAPPDATA%\Programs\herdvia` to your **User `
 Requires **Rust 1.91 or later** (required by `iroh`).
 
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`) and Rust via [rustup](https://rustup.rs).
-- **Windows:** Rust via [rustup](https://rustup.rs) plus Visual Studio Build Tools ("Desktop development with C++"). *(Note: official Windows release binaries are cross-compiled on Linux with MinGW `x86_64-pc-windows-gnu`; native MSVC builds are not tested in CI.)*
+- **Windows:** Rust via [rustup](https://rustup.rs) plus Visual Studio Build Tools ("Desktop development with C++"). *(Note: official Windows release binaries are cross-compiled on Linux with MinGW `x86_64-pc-windows-gnu`; CI runs only the unit tests with MSVC.)*
 
 ```sh
 cargo install --locked --git https://github.com/photojupi/herdvia
@@ -409,11 +411,11 @@ This builds `main` and installs into `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` 
 | Command | Description |
 |---|---|
 | `herdvia id` | Print this machine's `EndpointId` (line 1) and 16-char fingerprint (line 2). Generates `secret.key` if missing. |
-| `herdvia allow <name> <EndpointId> (--inbound \| --outbound \| --both)` | Add or update a peer. Applied immediately on a running agent (or on next agent start). |
-| `herdvia revoke <name>` | Remove a peer and immediately close any active connections/sessions with it. |
+| `herdvia allow <name> <EndpointId> (--inbound \| --outbound \| --both)` | Add or update a peer and print the saved entry (`<name> <EndpointId> <in\|out\|both>`). Refuses an `EndpointId` already registered under another name. Applied immediately on a running agent (or on next agent start). |
+| `herdvia revoke <name>` | Remove a peer, print `revoked <name> <EndpointId>`, and immediately close its connections, ending the `herdr-core connect` processes they started (see [Security model](#security-model) for what this does not undo). Fails if no peer has that name. Warns if the same `EndpointId` is still registered under another name (in a `peers` file written by an earlier version). |
 | `herdvia status` | Show each peer's name, permission, connection state, `direct`/`relay` path, and RTT. Requires a running agent. |
 | `herdvia pending` | List machines whose inbound connection attempts were rejected (fingerprint, `EndpointId`, attempt count, time since last seen). In-memory only: max 16 entries, expires 10 minutes after last attempt. Requires a running agent. |
-| `herdvia accept <name> <fingerprint> (--inbound \| --both)` | Authorize the single `pending` peer matching `<fingerprint>`. Refuses if 0 or >1 entries match, or if `<name>` already points to a different `EndpointId`. Requires a running agent. |
+| `herdvia accept <name> <fingerprint> (--inbound \| --both)` | Authorize the single `pending` peer matching `<fingerprint>`. Refuses if 0 or >1 entries match, if the list is full (16 entries: someone may be flooding this PC with attempts, so use `allow` with the full `EndpointId`), if `<name>` already points to a different `EndpointId`, or if the `EndpointId` is registered under another name. Requires a running agent. |
 | `herdvia doctor` | Check this machine's setup (executable, data folder, `secret.key`, `peers`, `herdr-core`, automatic startup, agent, relay, peer connections, pending attempts) without changing anything. Prints `ok`/`warn`/`fail` lines (including one per peer, omitting dependent checks when an earlier step fails) and exits with `1` if any check fails. See [Run `herdvia doctor`](#run-herdvia-doctor). |
 | `herdvia --version` | Print `herdvia <version>`. |
 | `herdvia agent` | Run the agent in the foreground (stop with `Ctrl-C`). |
@@ -429,7 +431,7 @@ On any error, `herdvia` writes a single line prefixed with `herdvia:` to `stderr
 
 ### macOS
 
-`herdvia agent install` creates a per-user LaunchAgent (`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`) and starts it via `launchctl bootstrap`. `launchd` launches the agent at login and automatically restarts it if it exits. Logs go to `~/Library/Logs/herdvia.log`, and the agent removes lines older than 180 days from it (see [Configuration and files](#configuration-and-files)).
+`herdvia agent install` creates a per-user LaunchAgent (`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`) and starts it via `launchctl bootstrap`. `launchd` launches the agent at login and automatically restarts it if it exits. Logs go to `~/Library/Logs/herdvia.log`, and the agent removes lines older than 180 days from it and cuts it down when it grows past 10 MiB (see [Configuration and files](#configuration-and-files)).
 
 - Refuses to install if `HERDVIA_DIR` is set (automatic startup always uses the default data folder) or if a foreground agent is currently running.
 - Re-running `herdvia agent install` updates the plist executable path and restarts the agent.
@@ -442,10 +444,10 @@ On any error, `herdvia` writes a single line prefixed with `herdvia:` to `stderr
 
 `herdvia agent install` adds a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that runs `conhost.exe --headless "<path to herdvia.exe>" agent --log` at sign-in without a console window, and starts it immediately. No administrator privileges, Windows services, or scheduled tasks are used.
 
-- **Must be run from a normal (non-elevated) PowerShell window** — `install` refuses to run as administrator.
+- **Must be run from a normal (non-elevated) PowerShell window** — `install` refuses to run as administrator, and the agent itself refuses to start from a window opened with "Run as administrator" (see [Security model](#security-model)).
 - Refuses if `HERDVIA_DIR` is set, or if a foreground agent is running before auto-start has been registered. (If auto-start is already registered, re-running `install` stops the running default-folder agent and starts the new one.)
 - Executable path must not contain `%`, and the full registered command line must fit within 259 UTF-16 code units.
-- Logs are appended to `%LOCALAPPDATA%\herdvia\herdvia.log` (lines older than 180 days are removed). If the agent exits unexpectedly, Windows does not restart it until the next sign-in.
+- Logs are appended to `%LOCALAPPDATA%\herdvia\herdvia.log` (lines older than 180 days are removed, and the file is cut down when it grows past 10 MiB). If the agent exits unexpectedly, Windows does not restart it until the next sign-in.
 
 ### Linux
 
@@ -460,9 +462,9 @@ Automatic startup (`agent install` / `agent uninstall`) is not supported on Linu
 `herdvia doctor` checks, in order:
 
 1. **This executable:** its version and path (warns if it runs from a temporary or Cargo `target` directory, because `agent install` records that path).
-2. **Data folder:** its path (and whether it comes from `HERDVIA_DIR`), whether it exists, whether it is a directory (not a symlink on macOS/Unix), and whether this user can open it (and owns it on macOS/Unix; if it cannot be opened, fails and suggests `chmod 700` on macOS/Unix). On macOS/Unix, also checks that the agent socket path fits the Unix socket length limit.
-3. **`secret.key`:** whether it exists and, on macOS/Unix, has the permissions herdvia requires. Only the fingerprint is printed.
-4. **`peers`:** whether it can be read and parsed, and how many peers it lists per direction.
+2. **Data folder:** its path (and whether it comes from `HERDVIA_DIR`, which must be an absolute path), whether it exists, whether it is a directory (not a symlink, nor a junction on Windows), and whether this user can open it (and owns it on macOS/Unix; if it cannot be opened, fails and suggests `chmod 700` on macOS/Unix). It also fails on macOS if the folder has an access control list (ACL) entry that allows access (suggesting `chmod -N`), and on Windows if it is another kind of reparse point or is owned by someone other than this user, Administrators, or SYSTEM. On macOS/Unix, also checks that the agent socket path fits the Unix socket length limit.
+3. **`secret.key`:** whether it exists and passes the agent's checks (on macOS/Unix: owned by this user, mode `0600` or narrower, and on macOS no ACL entry that allows access; on Windows: a regular file, not a link, owned by this user, Administrators, or SYSTEM). Only the fingerprint is printed.
+4. **`peers`:** whether it can be read (with the same checks as `secret.key`) and parsed, and how many peers it lists per direction.
 5. **`herdr-core`:** whether it is where the agent looks for it (on macOS, the auto-started agent's `PATH`), and whether `herdr-core --version` reports the verified `0.1.21`.
 6. **Automatic startup:** whether it is registered (LaunchAgent plist on macOS, `Run` value on Windows) and points to this executable. On Windows, also warns when run as administrator.
 7. **Agent:** whether the agent for this data folder answers, its version and executable, and whether it is connected to its home relay.
@@ -499,7 +501,7 @@ ok   pending: no rejected connection attempts
 | Herdr shows `herdr-core is not installed here` on a Mac where Homebrew installed it | macOS LaunchAgent only searches `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | Symlink it: `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core`. |
 | `hc machine add --install` or `hc machine update` fails | `herdvia` rejects all remote commands except `hc`'s exact `herdr-core connect` string | Run Herdr's `herdr-core` install script directly on each machine instead. |
 | `herdvia: command not found` right after installing | Current shell / Herdr app still has the old `PATH` | Open a brand-new terminal window (and on Windows, restart the Herdr desktop app). |
-| `herdvia agent install` fails on Windows mentioning administrator | PowerShell was launched "Run as Administrator" | Open a normal, non-elevated PowerShell window and run `herdvia agent install`. |
+| `herdvia agent install` or `herdvia agent` fails on Windows mentioning administrator | PowerShell was launched "Run as Administrator" | Open a normal, non-elevated PowerShell window and run `herdvia agent install`. |
 | `herdvia status` on A briefly says `connected` even before B accepts | QUIC handshake finishes before B closes unauthorized peers | Check `herdvia status` on **B** to confirm real bidirectional acceptance. |
 
 ---
@@ -540,14 +542,25 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 > [!WARNING]
 > **Granting `--inbound` (or `--both`) gives that peer a `herdr-core` session as your user account — effectively full shell access.** Only authorize devices you trust as much as yourself.
 
-- **End-to-end peer authentication:** Every connection is mutually authenticated by `iroh` using Ed25519 key pairs (`EndpointId`). Connections are rejected if the peer list is empty or lacks the matching direction (`in`, `out`, `both`). Permissions are re-checked on every stream, and `revoke` / `allow` changes take effect immediately on a running agent.
+- **End-to-end peer authentication:** Every connection is mutually authenticated by `iroh` using Ed25519 key pairs (`EndpointId`). Connections are rejected if the peer list is empty or lacks the matching direction (`in`, `out`, `both`). Permissions are re-checked on every stream, and `revoke` / `allow` changes take effect immediately on a running agent (including changes made while it was starting).
+- **What `revoke` does not undo:** `revoke` closes the tunnel to that peer and ends the `herdr-core connect` processes the tunnel started. Remote terminals the peer already opened stay in `herdr-core`, and processes it started and changes it made stay too. If you suspect a peer was compromised, revoke it, then check this PC's Herdr sessions and the `session started` / `session ended` lines in the agent log (see [Configuration and files](#configuration-and-files)).
+- **Inbound trust chains:** A PC that gives a peer `--inbound` is only as secure as that peer, because whoever controls the peer can open sessions here. Give `--outbound` only on the machine where you use Herdr and `--inbound` only on the machines it reaches, and use `--both` only when both machines really dial each other.
+- **Outbound peers also send bytes to you:** A peer you dial sends the bytes that this PC's `hc` reads, along with error text and exit codes. Dial only PCs you trust.
 - **Command allowlist is defense-in-depth, not a sandbox:** Rejecting anything other than `hc`'s exact `herdr-core connect` command reduces accidental misuse and surfaces anomalies in logs, but `herdr-core connect` itself provides shell execution. **Your `peers` key list is the true security boundary.**
-- **No root execution:** `herdvia` refuses to run as `root` on macOS/Unix.
+- **No root or elevated execution:** `herdvia` refuses to run as `root` on macOS/Unix. On Windows, `herdvia agent` refuses to start from a terminal opened with "Run as administrator" (the elevated half of a UAC split token), and `herdvia agent install` refuses any elevated token. With UAC turned off, or as the built-in Administrator, the agent still starts.
+- **Connection limits:** A connected peer can have at most 16 streams (one per `hc` session) open at once on a connection, and cannot open unidirectional streams or send datagrams. A stream that does not send its opening request within 10 seconds is closed.
 - **User-isolated local IPC:**
   - **macOS / Unix:** Unix domain socket (`0600`) inside a `0700` data directory, plus peer UID verification.
-  - **Windows:** Named pipe restricted via DACL solely to your user SID, with remote network pipe clients rejected.
-- **Secret key protection (`secret.key`):** Created with mode `0600` on macOS/Unix (`herdvia` refuses to start if permissions are wider). On Windows it inherits your user profile's default ACLs. Anyone with `secret.key` can impersonate this machine to peers that trust it — if compromised, immediately run `herdvia revoke <name>` on every peer and delete `secret.key` to generate a fresh identity.
-- **Fingerprints & `pending` / `accept`:** Fingerprints represent only the first 16 hex characters (64 bits) of the 256-bit `EndpointId` for human comparison; `herdvia` always stores and verifies the full `EndpointId`. `pending` only records peers that completed an authenticated `iroh` handshake, keeps at most 16 entries in RAM for 10 minutes, and `accept` refuses ambiguous prefix collisions. Always read the fingerprint from **the other machine's own screen**, never from `pending` itself.
+  - **Windows:** Named pipe restricted via DACL solely to your user SID, with remote network pipe clients rejected. The agent holds a lock on `agent.lock` in the data folder, so a second agent for the same folder refuses to start, and if another account already holds the pipe name, the agent refuses to start and names that account's SID.
+- **Data folder, `secret.key`, and `peers`:** On macOS/Unix, the data folder is set to `0700` and `secret.key` is created with mode `0600`; `herdvia` stops with an error if `secret.key` or `peers` belongs to another user or has wider permissions, and on macOS if the folder or either file has an access control list (ACL) entry that allows access (the error shows the `chmod -N` command that removes it). On Windows, `herdvia` refuses a data folder that is a junction or other reparse point, or that is owned by someone other than this user, Administrators, or SYSTEM, and sets a protected DACL on it that gives access only to those three, inherited by the files inside. It refuses a `secret.key` or `peers` that is a link or has another owner.
+- **`secret.key` is this PC's identity:** Anyone with it can impersonate this machine to peers that trust it. Replace it if it may have leaked, or if you restored it from a backup or copied it to another PC:
+  1. On every peer, run `herdvia revoke <name>` for this PC's entry.
+  2. Stop the agent (`herdvia agent uninstall`, or `Ctrl-C` on a foreground agent).
+  3. Delete `secret.key`.
+  4. Run `herdvia id` to create a new identity.
+  5. Run `herdvia agent install` (or start `herdvia agent` again).
+  6. Pair again with every peer.
+- **Fingerprints & `pending` / `accept`:** Fingerprints represent only the first 16 hex characters (64 bits) of the 256-bit `EndpointId` for human comparison; `herdvia` always stores and verifies the full `EndpointId`. `pending` only records peers that completed an authenticated `iroh` handshake, keeps at most 16 entries in RAM for 10 minutes, and `accept` refuses ambiguous prefix collisions and a full list, which anyone who knows this PC's `EndpointId` can fill. Always read the fingerprint from **the other machine's own screen**, never from `pending` itself.
 
 **Reporting vulnerabilities:** Please use GitHub's [private vulnerability reporting](https://github.com/photojupi/herdvia/security/advisories/new) for sensitive security issues, or open a regular issue for non-sensitive bugs.
 
@@ -560,9 +573,10 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 - **Public relays ([n0](https://n0.computer)):** Each agent connects to a home relay for signaling and initial connection setup, and falls back to relaying encrypted traffic only when direct peer-to-peer UDP fails.
 - **DNS discovery (`dns.iroh.link`):** Each agent publishes a signed record containing its **`EndpointId` and home relay URL** so peers can look each other up by `EndpointId`.
 - **Router port mapping:** UPnP, PCP, and NAT-PMP are enabled to assist direct hole-punching when supported by your router.
+- **Your IP address and `EndpointId`:** The lookup service gets only the home relay URL, but anyone who knows this PC's `EndpointId` can connect to it through the relay, and `iroh` can send them this PC's direct address candidates (including LAN addresses and a port-mapped public address) before `herdvia` rejects the connection. So they can learn this PC's current IP addresses. The `EndpointId` is not a secret, but do not post it publicly.
 - **Encryption & metadata:** All session traffic is end-to-end encrypted via QUIC/TLS; relays cannot read payload bytes, though n0 notes relays can observe connection metadata (IP addresses, timestamps, byte counts).
 - **Service expectations:** n0 operates its public relays for **development and hobby use**, rate-limited and without an SLA. See [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) and [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup).
-- **Local logging:** `iroh` internal tracing is disabled. The `herdvia` agent logs connection lifecycle events (connects, rejections, disconnects) — never session contents.
+- **Local logging:** `iroh` internal tracing is disabled. The `herdvia` agent logs connection lifecycle events (connects, rejections, disconnects) and the start and end of each session a peer runs on this PC — never session contents. Text a remote can choose is escaped and cut short, and lines are rate-limited (see [Configuration and files](#configuration-and-files)).
 
 ---
 
@@ -588,15 +602,18 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 | **Data folder (macOS)** | `~/Library/Application Support/herdvia` |
 | **Data folder (Windows)** | `%APPDATA%\herdvia` |
 | **Data folder (Linux)** | `$XDG_DATA_HOME/herdvia` (defaults to `~/.local/share/herdvia`) |
-| **Override env var** | `HERDVIA_DIR=<path>` overrides the data folder (every command, including `hc`'s `via` process, must see the same value; incompatible with `agent install`). |
+| **Override env var** | `HERDVIA_DIR=<path>` overrides the data folder (it must be an absolute path; every command, including `hc`'s `via` process, must see the same value; incompatible with `agent install`). |
 | **`secret.key`** | Machine's 32-byte Ed25519 secret key (inside data folder). |
 | **`peers`** | Allowed peer list (`<name> <EndpointId> <in\|out\|both>` per line). Managed via `allow` / `accept` / `revoke`. |
 | **`agent.sock`** | Local Unix domain socket on macOS/Unix (Windows uses a per-SID named pipe instead). |
+| **`agent.lock`** | Windows only: the file the agent locks while it runs, so that only one agent uses the data folder. It stays after the agent stops. |
 | **Log (macOS auto-start)** | `~/Library/Logs/herdvia.log` |
 | **Log (Windows auto-start)** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **Log (`herdvia agent` foreground)** | `stderr` |
 
-*Note: Each line the agent writes to its log while running starts with the UTC time, such as `2026-11-14T14:17:03Z herdvia: connected <id>`. An agent started by automatic startup removes lines older than 180 days from its log file right after it starts and every 24 hours after that. It trims the start of the same file in place rather than rotating it into separate files. Lines without a time (such as those written by earlier versions, or the error an agent prints when it fails to start) are removed together with the next line that has one. A foreground `herdvia agent` leaves its `stderr` alone when it goes to a terminal or another file. On macOS, even a foreground agent trims `~/Library/Logs/herdvia.log` the same way if its `stderr` appends to that file.*
+*Note: Each line the agent writes to its log while running starts with the UTC time, such as `2026-11-14T14:17:03Z herdvia: connected <id>`, and is always one line: control characters such as newlines and ESC are escaped (`\n`, `\u{1b}`), and text longer than 300 characters is cut and ends with `... [truncated, <N> bytes]`. Lines about unauthenticated connections (rejected peers and failed incoming handshakes) are limited to 30 at once and then one every 10 seconds, and all other lines to 60 at once and then one per second. Before the next line of a kind it writes, the agent writes how many of that kind it dropped, such as `suppressed 71 log lines about unauthenticated connections` or `suppressed 3 other log lines`. On the receiving side, each session a peer runs is logged as `session started: <name> (fingerprint <fingerprint>), herdr session <session>` (without the `herdr session` part when `hc` names no session) and `session ended: <the same>: <reason>`, where the reason is, for example, `exit code 0`, `closed` (after a `revoke` or permission change on this PC), or `the agent stopped`.*
+
+*An agent started by automatic startup checks its log file right after it starts and every hour after that, and cuts a file over 10 MiB down to the whole lines in its last 5 MiB. It also removes lines older than 180 days right after it starts and every 24 hours after that. It trims the start of the same file in place rather than rotating it into separate files. Lines without a time (such as those written by earlier versions, or the error an agent prints when it fails to start) are removed together with the next line that has one. A foreground `herdvia agent` leaves its `stderr` alone when it goes to a terminal or another file. On macOS, even a foreground agent trims `~/Library/Logs/herdvia.log` the same way if its `stderr` appends to that file.*
 
 ---
 

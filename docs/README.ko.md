@@ -206,7 +206,7 @@ herdvia allow B <B의 EndpointId> --outbound
 | `--inbound` | **저 피어가** 이 PC로 들어와 세션을 열 수 있음 |
 | `--both` | 양방향 모두 허용 |
 
-*이름(`A`, `B`, `home-pc` 등)은 이 PC 안에서 부르는 로컬 별칭입니다(`A-Z a-z 0-9 . _ -` 조합 1~32자). 같은 이름으로 `allow`를 다시 실행하면 기존 항목을 덮어씁니다.*
+*이름(`A`, `B`, `home-pc` 등)은 이 PC 안에서 부르는 로컬 별칭입니다(`A-Z a-z 0-9 . _ -` 조합 1~32자). 같은 이름으로 `allow`를 다시 실행하면 기존 항목을 덮어쓰고, `allow`는 저장한 항목(예: `B <EndpointId> out`)을 출력합니다. `EndpointId` 하나에는 이름 하나만 붙일 수 있어서, 이미 다른 이름으로 등록된 `EndpointId`는 `allow`가 거부합니다.*
 
 ### 4단계. PC B에서 PC A 수락하기 (`--inbound`)
 
@@ -350,6 +350,8 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 
 실행 파일에는 코드 서명이나 공증(notarization)이 되어 있지 않습니다. Intel Mac용 미리 빌드된 바이너리는 없으므로 [소스 코드에서 빌드](#from-source)를 이용하세요.
 
+`v0.1.2` 이후에 게시된 릴리스 파일에는 GitHub 빌드 출처 증명(build provenance attestation)이 붙습니다. [GitHub CLI](https://cli.github.com)로 `gh attestation verify <파일> --repo photojupi/herdvia`(예: `gh attestation verify herdvia-macos-arm64.zip --repo photojupi/herdvia`)를 실행하면 그 파일이 이 저장소의 릴리스 워크플로에서 빌드되었는지 확인할 수 있습니다. 이 증명은 파일을 어디서 빌드했는지 보여 줄 뿐 안전하다는 보증은 아닙니다. 관리자 계정을 탈취한 사람이 올린 태그로 빌드한 릴리스도 통과합니다. `SHA256SUMS`는 같은 릴리스에서 받으므로 다운로드 중 손상은 잡지만 릴리스 자체가 바뀐 것은 잡지 못합니다.
+
 <a id="macos-apple-silicon"></a>
 #### macOS (Apple Silicon)
 
@@ -404,7 +406,7 @@ tar.exe -xf herdvia-windows-x64.zip -C "$env:LOCALAPPDATA\Programs\herdvia"
 `iroh` 의존성 요구 사항으로 **Rust 1.91 이상**이 필요합니다.
 
 - **macOS:** Xcode Command Line Tools (`xcode-select --install`) 및 [rustup](https://rustup.rs)으로 설치한 Rust
-- **Windows:** [rustup](https://rustup.rs) 및 Visual Studio Build Tools("C++를 사용한 데스크톱 개발"). *(참고: 공식 릴리스용 Windows 실행 파일은 Linux에서 MinGW `x86_64-pc-windows-gnu`로 교차 빌드하며, Windows MSVC 빌드는 CI에서 검증하지 않습니다.)*
+- **Windows:** [rustup](https://rustup.rs) 및 Visual Studio Build Tools("C++를 사용한 데스크톱 개발"). *(참고: 공식 릴리스용 Windows 실행 파일은 Linux에서 MinGW `x86_64-pc-windows-gnu`로 교차 빌드하며, CI는 MSVC로 단위 테스트만 실행합니다.)*
 
 ```sh
 cargo install --locked --git https://github.com/photojupi/herdvia
@@ -420,11 +422,11 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 | 명령어 | 설명 |
 |---|---|
 | `herdvia id` | 이 PC의 `EndpointId`(첫째 줄)와 16자 지문(둘째 줄)을 출력합니다. `secret.key`가 없으면 새로 생성합니다. |
-| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 바꿉니다. 실행 중인 에이전트에는 즉시 반영됩니다(또는 다음 에이전트 시작 시 반영). |
-| `herdvia revoke <이름>` | 피어를 삭제하고 해당 피어와 맺어진 활성 연결·세션을 즉시 끊습니다. |
+| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 바꾸고, 저장한 항목(`<이름> <EndpointId> <in\|out\|both>`)을 출력합니다. 이미 다른 이름으로 등록된 `EndpointId`는 거부합니다. 실행 중인 에이전트에는 즉시 반영됩니다(또는 다음 에이전트 시작 시 반영). |
+| `herdvia revoke <이름>` | 피어를 삭제하고 `revoked <이름> <EndpointId>`를 출력하며, 그 피어와의 연결을 즉시 끊어 그 연결이 띄운 `herdr-core connect` 프로세스를 끝냅니다(이것으로 되돌려지지 않는 것은 [보안 모델](#security-model) 참고). 그 이름의 피어가 없으면 실패합니다. 같은 `EndpointId`가 다른 이름으로 아직 등록돼 있으면(이전 버전이 쓴 `peers` 파일) 경고합니다. |
 | `herdvia status` | 각 피어의 이름, 권한, 연결 상태, 경로(`direct`/`relay`), 왕복 시간(RTT)을 표시합니다. 에이전트 실행 필요. |
 | `herdvia pending` | 인바운드 접속 시도가 거부된 기기 목록을 보여 줍니다(지문, `EndpointId`, 시도 횟수, 마지막 확인 후 경과 시간). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
-| `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문으로 시작하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, `<이름>`이 이미 다른 ID로 등록돼 있으면 거부합니다. 에이전트 실행 필요. |
+| `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문으로 시작하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, 목록이 가득 찼거나(16개. 누군가 접속 시도를 쏟아붓고 있을 수 있으므로 전체 `EndpointId`로 `allow`를 쓰세요), `<이름>`이 이미 다른 ID로 등록돼 있거나, 그 `EndpointId`가 다른 이름으로 등록돼 있으면 거부합니다. 에이전트 실행 필요. |
 | `herdvia doctor` | 아무것도 변경하지 않고 이 PC의 설정 상태(실행 파일, 데이터 폴더, `secret.key`, `peers`, `herdr-core`, 자동 시작, 에이전트, 중계 서버, 피어 연결, 대기 중인 접속 시도)를 점검합니다. `ok`/`warn`/`fail` 줄들을 출력하며(피어 연결은 피어마다 한 줄, 앞 단계가 실패하면 뒤 점검 생략), 실패한 항목이 하나라도 있으면 종료 코드 `1`로 끝납니다. [`herdvia doctor` 실행하기](#run-herdvia-doctor) 참고. |
 | `herdvia --version` | `herdvia <버전>`을 출력합니다. |
 | `herdvia agent` | 에이전트를 포그라운드에서 실행합니다 (`Ctrl-C`로 종료). |
@@ -442,7 +444,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 <a id="macos"></a>
 ### macOS
 
-`herdvia agent install`은 사용자별 LaunchAgent(`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`)를 만들고 `launchctl bootstrap`으로 시작합니다. 로그인 시 자동 실행되며 종료되면 `launchd`가 자동으로 다시 띄웁니다. 로그는 `~/Library/Logs/herdvia.log`에 쌓이며, 180일이 지난 줄은 에이전트가 지웁니다([설정 및 파일 위치](#configuration-and-files) 참고).
+`herdvia agent install`은 사용자별 LaunchAgent(`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`)를 만들고 `launchctl bootstrap`으로 시작합니다. 로그인 시 자동 실행되며 종료되면 `launchd`가 자동으로 다시 띄웁니다. 로그는 `~/Library/Logs/herdvia.log`에 쌓이며, 에이전트가 180일이 지난 줄을 지우고 파일이 10 MiB를 넘으면 줄입니다([설정 및 파일 위치](#configuration-and-files) 참고).
 
 - `HERDVIA_DIR`이 설정된 상태이거나(자동 시작은 항상 기본 데이터 폴더를 사용함) 수동으로 띄운 포그라운드 에이전트가 이미 돌아가고 있으면 설치를 거부합니다.
 - `herdvia agent install`을 다시 실행하면 현재 실행 파일 경로로 등록을 갱신하고 에이전트를 재시작합니다.
@@ -455,10 +457,10 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 `herdvia agent install`은 현재 사용자의 레지스트리 `Run` 키(`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`)에 `conhost.exe --headless "<herdvia.exe 경로>" agent --log`를 등록하고, 콘솔 창 없이 즉시 백그라운드로 띄웁니다. 관리자 권한이나 Windows 서비스·작업 스케줄러를 사용하지 않습니다.
 
-- **반드시 일반 PowerShell 창에서 실행하세요.** 관리자 권한 PowerShell에서는 실행을 거부합니다.
+- **반드시 일반 PowerShell 창에서 실행하세요.** 관리자 권한 PowerShell에서는 실행을 거부하며, 에이전트 자체도 "관리자 권한으로 실행"한 창에서는 시작을 거부합니다([보안 모델](#security-model) 참고).
 - `HERDVIA_DIR`이 설정돼 있거나, 아직 자동 시작 등록이 없는 상태에서 수동 실행 중인 에이전트가 있으면 거부합니다(이미 자동 시작이 등록돼 있다면 기존 기본 폴더 에이전트를 멈추고 새 에이전트로 교체합니다).
 - 실행 파일 경로에 `%`가 포함되면 안 되며, 등록 명령줄 전체 길이는 259 UTF-16 코드 단위 이내여야 합니다.
-- 로그는 `%LOCALAPPDATA%\herdvia\herdvia.log`에 기록됩니다(180일이 지난 줄은 지워집니다). 에이전트가 예기치 않게 종료되면 Windows가 자동으로 재시작하지 않으며 다음 로그온 때 다시 시작됩니다.
+- 로그는 `%LOCALAPPDATA%\herdvia\herdvia.log`에 기록됩니다(180일이 지난 줄은 지워지고, 파일이 10 MiB를 넘으면 줄어듭니다). 에이전트가 예기치 않게 종료되면 Windows가 자동으로 재시작하지 않으며 다음 로그온 때 다시 시작됩니다.
 
 ### Linux
 
@@ -475,9 +477,9 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 `herdvia doctor`는 다음 항목을 순서대로 점검합니다:
 
 1. **이 실행 파일:** 버전과 경로 (`agent install`이 이 경로를 그대로 기록하므로 임시 폴더나 Cargo `target` 폴더에서 실행 중이면 경고).
-2. **데이터 폴더:** 경로(`HERDVIA_DIR`로 지정되었는지 여부 포함), 존재 여부, 디렉터리인지 여부(macOS/Unix에서는 심볼릭 링크 거부), 그리고 이 사용자가 열 수 있는지 여부(macOS/Unix에서는 소유자도 확인하며, 열 수 없으면 `fail`이고 macOS/Unix에서는 `chmod 700`을 안내). macOS/Unix에서는 에이전트 소켓 경로가 Unix 소켓 길이 한도 안에 들어오는지도 함께 확인합니다.
-3. **`secret.key`:** 존재 여부 및 macOS/Unix에서 `herdvia`가 요구하는 권한을 만족하는지 여부. 출력에는 지문만 표시됩니다.
-4. **`peers`:** 파일을 읽고 해석할 수 있는지 여부와 방향별 등록된 피어 수.
+2. **데이터 폴더:** 경로(`HERDVIA_DIR`로 지정되었는지 여부 포함. `HERDVIA_DIR`은 절대 경로여야 함), 존재 여부, 디렉터리인지 여부(심볼릭 링크 거부, Windows에서는 정션도 거부), 그리고 이 사용자가 열 수 있는지 여부(macOS/Unix에서는 소유자도 확인하며, 열 수 없으면 `fail`이고 macOS/Unix에서는 `chmod 700`을 안내). macOS에서는 폴더에 접근을 허용하는 ACL(접근 제어 목록) 항목이 있어도 `fail`이며 `chmod -N`을 안내하고, Windows에서는 다른 종류의 재분석 지점(reparse point)이거나 소유자가 이 사용자, Administrators, SYSTEM이 아니면 `fail`입니다. macOS/Unix에서는 에이전트 소켓 경로가 Unix 소켓 길이 한도 안에 들어오는지도 함께 확인합니다.
+3. **`secret.key`:** 존재 여부 및 에이전트와 같은 검사를 통과하는지 여부(macOS/Unix: 이 사용자 소유, 권한 `0600` 이하, macOS에서는 접근을 허용하는 ACL 항목 없음. Windows: 링크가 아닌 일반 파일이고 소유자가 이 사용자, Administrators, SYSTEM 중 하나). 출력에는 지문만 표시됩니다.
+4. **`peers`:** 파일을 읽을 수 있는지(`secret.key`와 같은 검사)와 해석할 수 있는지 여부, 방향별 등록된 피어 수.
 5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.21`을 출력하는지 여부.
 6. **자동 시작:** 등록되어 있는지(macOS의 LaunchAgent plist, Windows의 레지스트리 `Run` 값), 그리고 이 실행 파일을 가리키는지 여부. Windows에서 관리자 권한으로 실행 중이면 이에 대해서도 경고합니다.
 7. **에이전트:** 이 데이터 폴더의 에이전트가 응답하는지, 실행 중인 버전과 실행 파일 경로, 홈 중계 서버(relay) 연결 여부.
@@ -515,7 +517,7 @@ ok   pending: no rejected connection attempts
 | Homebrew로 `herdr-core`를 깐 Mac에서 Herdr에 `herdr-core is not installed here`가 표시됨 | macOS LaunchAgent는 `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`만 검색함 | `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` 실행 |
 | `hc machine add --install`이나 `hc machine update` 실패 | `herdvia`는 `herdr-core connect` 외의 모든 명령을 차단함 | 각 PC에서 직접 Herdr의 `herdr-core` 설치 스크립트를 실행해 설치·업데이트 |
 | 설치 직후 `herdvia` 명령어를 찾을 수 없다고 나옴 | 현재 열려 있는 터미널·Herdr 앱에 새 `PATH`가 아직 반영되지 않음 | 새 터미널 창을 열고, Windows에서는 실행 중이던 Herdr 앱도 재시작 |
-| Windows에서 `herdvia agent install`이 관리자 권한 오류로 멈춤 | 관리자 권한으로 실행된 PowerShell 창에서 실행함 | 일반(비관리자) PowerShell 창을 새로 열어 `herdvia agent install` 실행 |
+| Windows에서 `herdvia agent install`이나 `herdvia agent`가 관리자 권한 오류로 멈춤 | 관리자 권한으로 실행된 PowerShell 창에서 실행함 | 일반(비관리자) PowerShell 창을 새로 열어 `herdvia agent install` 실행 |
 | B가 아직 수락 안 했는데 A의 `status`에 잠깐 `connected`가 뜸 | 핸드셰이크 직후 B가 연결을 끊기 전 찰나에 A 목록에 잡힘 | 실제 연결 여부는 받는 쪽인 **B**에서 `herdvia status`로 확인 |
 
 ---
@@ -559,14 +561,25 @@ ok   pending: no rejected connection attempts
 > [!WARNING]
 > **`--inbound`(또는 `--both`) 권한을 준 피어는 이 PC에서 내 사용자 권한으로 `herdr-core` 세션을 열 수 있으며, 이는 사실상 셸(터미널) 권한을 주는 것과 같습니다.** 본인이 직접 소유하거나 완전히 신뢰하는 기기만 허용하세요.
 
-- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 Ed25519 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 스트림마다 권한을 재확인하며, `revoke` / `allow` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다.
+- **피어 공개키 상호 인증:** 모든 연결은 `iroh`가 양쪽 기기의 Ed25519 키 쌍(`EndpointId`)으로 인증합니다. 피어 목록이 비어 있거나 방향 권한(`in`, `out`, `both`)이 맞지 않으면 모든 연결을 거부합니다. 스트림마다 권한을 재확인하며, `revoke` / `allow` 변경 사항은 실행 중인 에이전트에 즉시 반영됩니다(에이전트가 시작하는 도중의 변경도 포함).
+- **`revoke`가 되돌리지 않는 것:** `revoke`는 그 피어와의 통로를 끊고 통로가 띄운 `herdr-core connect` 프로세스를 끝냅니다. 그 피어가 이미 연 원격 터미널은 `herdr-core` 안에 남고, 이미 띄운 프로세스와 이미 바꾼 것도 그대로 남습니다. 피어의 침해가 의심되면 revoke한 뒤 이 PC의 Herdr 세션과 에이전트 로그의 `session started` / `session ended` 줄을 확인하세요([설정 및 파일 위치](#configuration-and-files) 참고).
+- **inbound 신뢰는 이어집니다:** 피어에 `--inbound`를 준 PC의 보안은 그 피어의 보안을 넘지 못합니다. 그 피어를 손에 넣은 사람은 이 PC에서도 세션을 열 수 있기 때문입니다. Herdr를 쓰는 PC에만 `--outbound`를, 그 PC가 접속할 대상 PC에만 `--inbound`를 주고, `--both`는 양쪽에서 실제로 서로 접속할 때만 쓰세요.
+- **outbound로 거는 피어도 바이트를 보냅니다:** 이 PC가 거는 피어는 이 PC의 `hc`가 읽는 바이트와 오류 문구, 종료 코드를 보냅니다. 믿는 PC에만 거세요.
 - **명령줄 허용 목록의 역할:** `hc`의 정확한 `herdr-core connect` 줄만 허용하고 나머지를 로그에 남기며 차단하는 것은 오용 표면을 줄이고 이상 징후를 포착하기 위함입니다. `herdr-core connect` 자체가 임의 명령을 실행할 수 있으므로, **실질적인 보안 경계는 피어 키 목록(`peers`)입니다.**
-- **`root` 실행 거부:** macOS/Unix에서 `herdvia`는 `root` 권한으로 실행되지 않습니다.
+- **`root`·관리자 권한 실행 거부:** macOS/Unix에서 `herdvia`는 `root` 권한으로 실행되지 않습니다. Windows에서 `herdvia agent`는 "관리자 권한으로 실행"한 터미널(UAC로 분리된 토큰의 상승된 쪽)에서는 시작을 거부하고, `herdvia agent install`은 상승된 토큰을 모두 거부합니다. UAC를 끈 PC나 기본 제공 Administrator 계정에서는 에이전트가 시작됩니다.
+- **연결 한도:** 연결된 피어는 한 연결에서 동시에 최대 16개의 스트림(`hc` 세션당 하나)만 열 수 있고, 단방향 스트림과 데이터그램은 쓸 수 없습니다. 스트림을 열고 10초 안에 첫 요청을 보내지 않으면 그 스트림을 닫습니다.
 - **사용자 전용 로컬 통신(IPC):**
   - **macOS / Unix:** 권한 `0700` 데이터 폴더 안의 `0600` 소켓을 사용하며 접속 프로세스의 UID를 검사합니다.
-  - **Windows:** DACL로 현재 사용자 SID에만 접근을 제한한 이름 있는 파이프(Named Pipe)를 쓰며 원격 네트워크 파이프 클라이언트를 차단합니다.
-- **비밀키(`secret.key`) 관리:** macOS/Unix에서는 권한 `0600`으로 생성되며 권한이 더 넓으면 시작을 거부합니다(Windows는 사용자 프로필 기본 권한 사용). 이 파일이 유출되면 공격자가 내 PC로 위장할 수 있으므로, 유출 시 모든 피어에서 즉시 `herdvia revoke <이름>`을 실행하고 `secret.key`를 삭제해 새 ID를 발급받으세요.
-- **지문과 `pending` / `accept`:** 지문은 사람이 대조하기 위해 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)만 나타낸 것이며, `herdvia`는 항상 전체 `EndpointId`를 저장하고 검증합니다. `pending`은 `iroh` 핸드셰이크 인증을 통과한 시도만 메모리에 최대 16개·10분간 유지하며, `accept`는 일치하는 항목이 정확히 1개일 때만 등록합니다. 지문은 `pending` 목록 자체가 아니라 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
+  - **Windows:** DACL로 현재 사용자 SID에만 접근을 제한한 이름 있는 파이프(Named Pipe)를 쓰며 원격 네트워크 파이프 클라이언트를 차단합니다. 에이전트는 데이터 폴더의 `agent.lock`을 잠가 두므로 같은 폴더로 두 번째 에이전트를 띄우면 시작을 거부합니다. 다른 계정이 이미 파이프 이름을 차지하고 있으면 그 계정의 SID를 알리며 시작을 거부합니다.
+- **데이터 폴더, `secret.key`, `peers`:** macOS/Unix에서는 데이터 폴더를 `0700`으로 맞추고 `secret.key`를 권한 `0600`으로 만듭니다. `secret.key`나 `peers`가 다른 사용자 소유이거나 권한이 더 넓으면 오류로 멈추고, macOS에서는 폴더나 두 파일에 접근을 허용하는 ACL(접근 제어 목록) 항목이 있어도 멈춥니다(오류 문구에 ACL을 지우는 `chmod -N` 명령이 나옵니다). Windows에서는 데이터 폴더가 정션 같은 재분석 지점이거나 소유자가 이 사용자, Administrators, SYSTEM이 아니면 거부하고, 이 셋에만 접근을 주는 보호 DACL을 폴더에 걸어 안의 파일이 상속하게 합니다. 링크이거나 소유자가 다른 `secret.key`·`peers`도 거부합니다.
+- **`secret.key`는 이 PC의 신원입니다:** 이 파일을 가진 사람은 이 PC를 신뢰하는 피어에게 이 PC로 위장할 수 있습니다. 유출됐을 수 있거나, 백업에서 복원했거나, 다른 PC로 옮겼다면 키를 바꾸세요:
+  1. 모든 피어에서 이 PC의 항목을 `herdvia revoke <이름>`으로 지웁니다.
+  2. 에이전트를 멈춥니다(`herdvia agent uninstall`, 포그라운드 실행 중이면 `Ctrl-C`).
+  3. `secret.key`를 삭제합니다.
+  4. `herdvia id`를 실행해 새 ID를 만듭니다.
+  5. `herdvia agent install`을 실행합니다(또는 `herdvia agent`를 다시 띄웁니다).
+  6. 모든 피어와 다시 페어링합니다.
+- **지문과 `pending` / `accept`:** 지문은 사람이 대조하기 위해 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)만 나타낸 것이며, `herdvia`는 항상 전체 `EndpointId`를 저장하고 검증합니다. `pending`은 `iroh` 핸드셰이크 인증을 통과한 시도만 메모리에 최대 16개·10분간 유지하며, `accept`는 일치하는 항목이 정확히 1개일 때만 등록합니다. 이 PC의 `EndpointId`를 아는 누구나 목록을 채울 수 있으므로, 목록이 가득 차 있으면 등록하지 않습니다. 지문은 `pending` 목록 자체가 아니라 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
 
 **보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주시고, 민감하지 않은 버그는 일반 이슈를 열어 주세요.
 
@@ -580,9 +593,10 @@ ok   pending: no rejected connection attempts
 - **공개 중계 서버 ([n0](https://n0.computer)):** 각 에이전트는 홈 중계 서버(relay)와 연결을 유지하며 초기 연결 수립 및 직접 연결 불가 시의 암호화 트래픽 중계에 사용합니다.
 - **DNS 주소 조회 (`dns.iroh.link`):** 피어가 `EndpointId`만으로 서로를 찾을 수 있도록 각 에이전트는 자신의 **`EndpointId`와 홈 중계 서버 URL**이 담긴 서명된 레코드를 공개 조회 서비스에 게시합니다.
 - **공유기 포트 매핑:** 직접 연결 성공률을 높이기 위해 공유기가 지원하는 경우 UPnP, PCP, NAT-PMP로 포트 매핑을 요청합니다.
+- **IP 주소와 `EndpointId`:** 주소 조회 서비스에는 홈 중계 서버 URL만 게시되지만, 이 PC의 `EndpointId`를 아는 사람은 중계 서버를 거쳐 이 PC에 접속할 수 있고, `herdvia`가 그 연결을 거부하기 전에 `iroh`가 이 PC의 직접 연결용 주소 후보(LAN 주소, 포트 매핑된 공인 주소 포함)를 그 사람에게 보낼 수 있습니다. 그래서 이 PC의 현재 IP 주소가 알려질 수 있습니다. `EndpointId`는 비밀이 아니지만 공개된 곳에 올리지 마세요.
 - **종단간 암호화 및 메타데이터:** 모든 세션 트래픽은 QUIC/TLS로 종단간 암호화되어 중계 서버가 내용을 읽을 수 없습니다. 다만 n0 안내에 따르면 중계 서버는 IP 주소, 접속 시각, 전송 데이터양 같은 연결 메타데이터는 볼 수 있습니다.
 - **서비스 수준 안내:** n0의 공개 중계 서버는 **개발 및 취미 용도(development and hobby use only)**로 제공되며 가동률 보장(SLA)이 없고 속도 제한이 있습니다. 자세한 내용은 iroh 문서의 [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) 및 [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup)을 참고하세요.
-- **로그 기록 범위:** `iroh` 내부 로그는 꺼져 있으며, 에이전트는 연결·거부·종료 같은 이벤트만 남기고 세션 안의 입출력 내용은 기록하지 않습니다.
+- **로그 기록 범위:** `iroh` 내부 로그는 꺼져 있으며, 에이전트는 연결·거부·종료 같은 이벤트와 피어가 이 PC에서 연 세션의 시작과 끝만 남기고 세션 안의 입출력 내용은 기록하지 않습니다. 원격이 정할 수 있는 글은 이스케이프하고 길이를 줄여 남기며, 로그 줄에는 속도 제한이 있습니다([설정 및 파일 위치](#configuration-and-files) 참고).
 
 ---
 
@@ -610,15 +624,18 @@ ok   pending: no rejected connection attempts
 | **데이터 폴더 (macOS)** | `~/Library/Application Support/herdvia` |
 | **데이터 폴더 (Windows)** | `%APPDATA%\herdvia` |
 | **데이터 폴더 (Linux)** | `$XDG_DATA_HOME/herdvia` (기본값 `~/.local/share/herdvia`) |
-| **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (`hc`가 띄우는 `via`를 포함해 모든 명령에 동일한 값이 보여야 하며, `agent install`과는 함께 쓸 수 없음) |
+| **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (절대 경로여야 하며, `hc`가 띄우는 `via`를 포함해 모든 명령에 동일한 값이 보여야 하며, `agent install`과는 함께 쓸 수 없음) |
 | **`secret.key`** | 이 PC의 32바이트 Ed25519 비밀키 (데이터 폴더 내) |
 | **`peers`** | 피어 허용 목록 (줄마다 `<이름> <EndpointId> <in\|out\|both>`, `allow`·`accept`·`revoke`로 관리) |
 | **`agent.sock`** | macOS/Unix 로컬 Unix 도메인 소켓 (Windows는 대신 사용자 SID별 이름 있는 파이프 사용) |
+| **`agent.lock`** | Windows 전용. 에이전트가 실행되는 동안 잠가 두는 파일로, 데이터 폴더 하나에 에이전트가 하나만 돌게 합니다. 에이전트가 멈춘 뒤에도 남습니다. |
 | **로그 (macOS 자동 시작)** | `~/Library/Logs/herdvia.log` |
 | **로그 (Windows 자동 시작)** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **로그 (`herdvia agent` 수동 실행)** | 표준 오류 (`stderr`) |
 
-*참고: 에이전트가 실행 중에 로그에 쓰는 줄은 `2026-11-14T14:17:03Z herdvia: connected <id>`처럼 UTC 시각으로 시작합니다. 자동 시작으로 실행된 에이전트는 시작 직후와 그 뒤 24시간마다 로그 파일에서 180일이 지난 줄을 지웁니다. 파일을 나누어 순환(rotate)하지 않고 같은 파일의 앞부분만 지웁니다. 시각이 없는 줄(이전 버전이 쓴 줄, 에이전트가 시작하다 실패할 때 남기는 오류 줄 등)은 그다음 시각이 있는 줄과 함께 지워집니다. 수동 실행한 `herdvia agent`의 `stderr`가 터미널이나 다른 파일로 가면 건드리지 않습니다. macOS에서는 수동 실행이라도 `stderr`를 `~/Library/Logs/herdvia.log`에 이어 쓰면 똑같이 지웁니다.*
+*참고: 에이전트가 실행 중에 로그에 쓰는 줄은 `2026-11-14T14:17:03Z herdvia: connected <id>`처럼 UTC 시각으로 시작하고 항상 한 줄입니다. 개행이나 ESC 같은 제어 문자는 이스케이프되고(`\n`, `\u{1b}`), 300자를 넘는 글은 잘린 뒤 `... [truncated, <N> bytes]`로 끝납니다. 인증되지 않은 연결에 관한 줄(거부한 피어, 실패한 들어오는 핸드셰이크)은 한꺼번에 30줄, 그 뒤로는 10초에 1줄까지 쓰고, 나머지 줄은 한꺼번에 60줄, 그 뒤로는 1초에 1줄까지 씁니다. 버린 줄이 있으면 그 종류의 다음 줄 앞에 `suppressed 71 log lines about unauthenticated connections`나 `suppressed 3 other log lines`처럼 버린 줄 수를 씁니다. 받는 쪽에서는 피어가 연 세션마다 `session started: <이름> (fingerprint <지문>), herdr session <세션>` 줄(`hc`가 세션을 지정하지 않으면 `herdr session` 부분은 빠짐)과 `session ended: <같은 설명>: <사유>` 줄을 남깁니다. 사유는 예를 들어 `exit code 0`, `closed`(이 PC에서 `revoke`나 권한 변경을 한 경우), `the agent stopped`입니다.*
+
+*자동 시작으로 실행된 에이전트는 시작 직후와 그 뒤 한 시간마다 로그 파일 크기를 보고, 10 MiB를 넘으면 끝의 5 MiB 안에 있는 온전한 줄만 남깁니다. 또 시작 직후와 그 뒤 24시간마다 180일이 지난 줄을 지웁니다. 파일을 나누어 순환(rotate)하지 않고 같은 파일의 앞부분만 지웁니다. 시각이 없는 줄(이전 버전이 쓴 줄, 에이전트가 시작하다 실패할 때 남기는 오류 줄 등)은 그다음 시각이 있는 줄과 함께 지워집니다. 수동 실행한 `herdvia agent`의 `stderr`가 터미널이나 다른 파일로 가면 건드리지 않습니다. macOS에서는 수동 실행이라도 `stderr`를 `~/Library/Logs/herdvia.log`에 이어 쓰면 똑같이 지웁니다.*
 
 ---
 
