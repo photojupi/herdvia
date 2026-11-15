@@ -237,6 +237,196 @@ pub fn parse_fingerprint(input: &str) -> Option<String> {
     ))
 }
 
+pub fn check_connect_target(
+    dir: &Path,
+    name: &str,
+    known_target: Option<EndpointId>,
+) -> io::Result<()> {
+    if !valid_name(name) {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    let peers = load(dir)?;
+    if let Some(target) = known_target {
+        refuse_another_name(
+            &peers,
+            &Peer {
+                name: name.to_owned(),
+                id: target,
+                permission: Permission::Out,
+            },
+        )?;
+        if peers.iter().any(|p| p.name == name && p.id != target) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "peer {name} is already registered with a different EndpointId; revoke it first or choose another name"
+                ),
+            ));
+        }
+    } else if peers
+        .iter()
+        .any(|p| p.name == name && p.permission.outbound())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("peer {name} is already registered; revoke it first or choose another name"),
+        ));
+    }
+    Ok(())
+}
+
+pub fn resolve_inbound_peer(
+    peers: &[Peer],
+    explicit_name: Option<&str>,
+    caller_name: &str,
+    id: EndpointId,
+) -> io::Result<Peer> {
+    if !valid_name(caller_name) {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    if let Some(exp) = explicit_name
+        && !valid_name(exp)
+    {
+        return Err(frame::invalid("invalid peer name"));
+    }
+
+    let existing_for_id: Vec<_> = peers.iter().filter(|p| p.id == id).collect();
+    if !existing_for_id.is_empty() {
+        if let Some(exp) = explicit_name
+            && !existing_for_id.iter().any(|p| p.name == exp)
+        {
+            let names: Vec<_> = existing_for_id.iter().map(|p| p.name.as_str()).collect();
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "EndpointId {id} is already registered as peer {}; revoke it first or use that name",
+                    names.join(", ")
+                ),
+            ));
+        }
+        let chosen = explicit_name
+            .and_then(|exp| existing_for_id.iter().copied().find(|p| p.name == exp))
+            .unwrap_or(existing_for_id[0]);
+        let permission = if chosen.permission.outbound() {
+            Permission::Both
+        } else {
+            Permission::In
+        };
+        return Ok(Peer {
+            name: chosen.name.clone(),
+            id,
+            permission,
+        });
+    }
+
+    if let Some(exp) = explicit_name {
+        if peers.iter().any(|p| p.name == exp) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "peer {exp} is already registered with a different EndpointId; revoke it first or use another name"
+                ),
+            ));
+        }
+        return Ok(Peer {
+            name: exp.to_owned(),
+            id,
+            permission: Permission::In,
+        });
+    }
+
+    if !peers.iter().any(|p| p.name == caller_name) {
+        return Ok(Peer {
+            name: caller_name.to_owned(),
+            id,
+            permission: Permission::In,
+        });
+    }
+
+    let id_hex = id.to_string();
+    for suffix_len in [4usize, 8, 12, 16, 20, 24] {
+        let max_base = 32usize.saturating_sub(1 + suffix_len);
+        let base = caller_name[..caller_name.len().min(max_base)].trim_end_matches('-');
+        let candidate = if base.is_empty() {
+            id_hex[..suffix_len].to_owned()
+        } else {
+            format!("{base}-{}", &id_hex[..suffix_len])
+        };
+        if valid_name(&candidate) && !peers.iter().any(|p| p.name == candidate) {
+            return Ok(Peer {
+                name: candidate,
+                id,
+                permission: Permission::In,
+            });
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "unable to choose an unused peer name",
+    ))
+}
+
+pub fn grant_inbound(
+    dir: &Path,
+    explicit_name: Option<&str>,
+    caller_name: &str,
+    id: EndpointId,
+) -> io::Result<Peer> {
+    if !valid_name(caller_name) {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    if let Some(exp) = explicit_name
+        && !valid_name(exp)
+    {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    update(dir, |peers| {
+        let peer = resolve_inbound_peer(peers, explicit_name, caller_name, id)?;
+        peers.retain(|p| p.name != peer.name);
+        peers.push(peer.clone());
+        Ok(peer)
+    })
+}
+
+pub fn grant_outbound(dir: &Path, name: &str, id: EndpointId) -> io::Result<Peer> {
+    if !valid_name(name) {
+        return Err(frame::invalid("invalid peer name"));
+    }
+    update(dir, |peers| {
+        if peers.iter().any(|p| p.name == name && p.id != id) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "peer {name} is already registered with a different EndpointId; revoke it first or choose another name"
+                ),
+            ));
+        }
+        let probe = Peer {
+            name: name.to_owned(),
+            id,
+            permission: Permission::Out,
+        };
+        refuse_another_name(peers, &probe)?;
+        let permission = if peers
+            .iter()
+            .any(|p| p.name == name && p.id == id && p.permission.inbound())
+        {
+            Permission::Both
+        } else {
+            Permission::Out
+        };
+        let peer = Peer {
+            name: name.to_owned(),
+            id,
+            permission,
+        };
+        peers.retain(|p| p.name != name);
+        peers.push(peer.clone());
+        Ok(peer)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +653,140 @@ mod tests {
             fs::write(dir.path().join("peers"), row).unwrap();
             assert!(load(dir.path()).is_err());
         }
+    }
+
+    #[test]
+    fn grant_inbound_disambiguates_colliding_caller_names_and_stays_within_32_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let id_1 = SecretKey::from_bytes(&[1u8; 32]).public();
+        let id_2 = SecretKey::from_bytes(&[2u8; 32]).public();
+        let id_3 = SecretKey::from_bytes(&[3u8; 32]).public();
+
+        let p1 = grant_inbound(dir.path(), None, "macbook", id_1).unwrap();
+        assert_eq!(
+            p1,
+            Peer {
+                name: "macbook".into(),
+                id: id_1,
+                permission: Permission::In
+            }
+        );
+
+        let p2 = grant_inbound(dir.path(), None, "macbook", id_2).unwrap();
+        assert_eq!(p2.name, format!("macbook-{}", &id_2.to_string()[..4]));
+        assert_eq!(p2.id, id_2);
+        assert_eq!(p2.permission, Permission::In);
+
+        let long_name = "m".repeat(32);
+        allow(
+            dir.path(),
+            Peer {
+                name: long_name.clone(),
+                id: SecretKey::from_bytes(&[4u8; 32]).public(),
+                permission: Permission::In,
+            },
+        )
+        .unwrap();
+        let p3 = grant_inbound(dir.path(), None, &long_name, id_3).unwrap();
+        assert!(valid_name(&p3.name));
+        assert!(p3.name.len() <= 32);
+        assert_eq!(p3.name, format!("{}-{}", "m".repeat(27), &id_3.to_string()[..4]));
+    }
+
+    #[test]
+    fn grant_inbound_and_outbound_upgrade_existing_reverse_permission_to_both() {
+        let dir_b = tempfile::tempdir().unwrap();
+        let id_a = SecretKey::from_bytes(&[10u8; 32]).public();
+        let id_c = SecretKey::from_bytes(&[11u8; 32]).public();
+        allow(
+            dir_b.path(),
+            Peer {
+                name: "laptop".into(),
+                id: id_a,
+                permission: Permission::Out,
+            },
+        )
+        .unwrap();
+
+        let err = grant_inbound(dir_b.path(), Some("wrong"), "other-host", id_a).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains("laptop"), "{err}");
+
+        let err = grant_inbound(dir_b.path(), Some("laptop"), "other-host", id_c).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        let upgraded = grant_inbound(dir_b.path(), None, "other-host", id_a).unwrap();
+        assert_eq!(
+            upgraded,
+            Peer {
+                name: "laptop".into(),
+                id: id_a,
+                permission: Permission::Both
+            }
+        );
+
+        let again = grant_inbound(dir_b.path(), Some("laptop"), "other-host", id_a).unwrap();
+        assert_eq!(again.permission, Permission::Both);
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let id_b = SecretKey::from_bytes(&[12u8; 32]).public();
+        allow(
+            dir_a.path(),
+            Peer {
+                name: "home".into(),
+                id: id_b,
+                permission: Permission::In,
+            },
+        )
+        .unwrap();
+        check_connect_target(dir_a.path(), "home", None).unwrap();
+        let out_upgraded = grant_outbound(dir_a.path(), "home", id_b).unwrap();
+        assert_eq!(
+            out_upgraded,
+            Peer {
+                name: "home".into(),
+                id: id_b,
+                permission: Permission::Both
+            }
+        );
+    }
+
+    #[test]
+    fn check_connect_target_fails_fast_on_existing_outbound_or_conflicting_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let id_1 = SecretKey::from_bytes(&[21u8; 32]).public();
+        let id_2 = SecretKey::from_bytes(&[22u8; 32]).public();
+
+        allow(
+            dir.path(),
+            Peer {
+                name: "home".into(),
+                id: id_1,
+                permission: Permission::Out,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            check_connect_target(dir.path(), "home", None)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        check_connect_target(dir.path(), "home", Some(id_1)).unwrap();
+        assert_eq!(
+            check_connect_target(dir.path(), "home", Some(id_2))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        let err = check_connect_target(dir.path(), "office", Some(id_1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains("home"), "{err}");
+
+        let err = grant_outbound(dir.path(), "office", id_1).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert!(err.to_string().contains("home"), "{err}");
     }
 }
