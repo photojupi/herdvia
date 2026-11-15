@@ -5,8 +5,9 @@ plan wherever they disagree, except for the "Plan decisions" below, which settle
 left to the builder).
 
 Worktree: `/Users/jupi/Repos/herdvia-worktrees/usability`, branch `usability-batch`.
-Base: snapshot commit `3a9fe05` (a copy of another session's in-flight work). This batch is later
-rebased onto that session's final commits, so keep edits to existing lines small and local.
+Base: `main` at `c1a5521`. The branch first sat on a snapshot of another session's in-flight work
+(`3a9fe05`) and was rebased with `git rebase --onto main 3a9fe05 usability-batch` once that work
+landed. Keep edits to existing lines small and local.
 
 ## Rules for every task
 
