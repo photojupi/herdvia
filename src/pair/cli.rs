@@ -5,7 +5,7 @@ use crate::{
     ipc,
     pair::{
         codec::decode_invite,
-        hc::{self, HcResult},
+        hc::{self, HcResult, Listed},
     },
     peers,
 };
@@ -528,11 +528,85 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
             );
             Ok(1)
         }
-        HcResult::Failed { reason, manual_cmd } => {
+        HcResult::Failed {
+            reason, manual_cmd, ..
+        } => {
             let _ = writeln!(io::stdout(), "Paired with {name} in herdvia.");
             let _ = writeln!(
                 io::stderr(),
                 "herdvia: warning: failed to register '{name}' in Herdr ({reason}). To register manually, run:\n  {manual_cmd}"
+            );
+            Ok(1)
+        }
+    }
+}
+
+/// Adds an already paired outbound peer to Herdr again, without touching keys, permissions, or
+/// the agent.
+pub async fn run_register(name: String) -> io::Result<i32> {
+    let dir = ipc::data_dir()?;
+    if !peers::load(&dir)?
+        .iter()
+        .any(|p| p.name == name && p.permission.outbound())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no outbound peer named {name}; pair it with herdvia connect first"),
+        ));
+    }
+
+    let exe = std::env::current_exe()?;
+    match hc::listed_machine(&exe, &name).await {
+        Some(Listed::Same) => {
+            let _ = writeln!(io::stdout(), "{name} is already registered in Herdr");
+            return Ok(0);
+        }
+        Some(Listed::OtherHerdvia(old)) => {
+            let _ = writeln!(
+                io::stderr(),
+                "herdvia: Herdr's {name} uses another herdvia executable ({old}); remove it with hc machine rm {name}, then run herdvia register {name}"
+            );
+            return Ok(1);
+        }
+        Some(Listed::Foreign) => {
+            let _ = writeln!(
+                io::stderr(),
+                "herdvia: Herdr already has a machine named {name} that does not use herdvia; rename or remove it (hc machine rename / hc machine rm), then run herdvia register {name}"
+            );
+            return Ok(1);
+        }
+        None => {}
+    }
+
+    match hc::register_machine(&exe, &name).await {
+        HcResult::Added => {
+            let _ = writeln!(io::stdout(), "Registered machine '{name}' in Herdr.");
+            Ok(0)
+        }
+        HcResult::MissingHc { manual_cmd } => {
+            let _ = writeln!(
+                io::stderr(),
+                "herdvia: 'hc' was not found, so '{name}' was not added to Herdr. After installing Herdr, run:\n  {manual_cmd}"
+            );
+            Ok(1)
+        }
+        HcResult::Failed {
+            timed_out: true,
+            manual_cmd,
+            ..
+        } => {
+            let _ = writeln!(
+                io::stderr(),
+                "herdvia: hc machine add did not finish within 15 seconds, so whether Herdr registered '{name}' is unknown; check hc machine ls, and if '{name}' is missing, run:\n  {manual_cmd}"
+            );
+            Ok(1)
+        }
+        HcResult::Failed {
+            reason, manual_cmd, ..
+        } => {
+            let _ = writeln!(
+                io::stderr(),
+                "herdvia: failed to register '{name}' in Herdr ({reason}). To register manually, run:\n  {manual_cmd}"
             );
             Ok(1)
         }

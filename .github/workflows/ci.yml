@@ -92,7 +92,12 @@ jobs:
             connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_contract \
             a_blank_line_at_the_lan_menu_cancels_and_other_input_is_an_error \
             connect_keeps_an_agent_frame_split_around_the_confirmation_answer \
-            listen_keeps_an_agent_frame_split_around_the_allow_answer
+            listen_keeps_an_agent_frame_split_around_the_allow_answer \
+            register_adds_the_machine_when_hc_does_not_list_it \
+            register_does_nothing_when_herdr_already_has_this_executable \
+            register_refuses_a_machine_that_uses_another_executable_or_no_herdvia \
+            register_prints_the_manual_command_when_hc_fails_or_is_missing \
+            register_needs_an_outbound_peer_and_creates_nothing
 
   windows-cross:
     runs-on: ubuntu-latest

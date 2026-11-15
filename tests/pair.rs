@@ -204,6 +204,185 @@ fn install_fake_hc(node: &Node) -> std::path::PathBuf {
     record
 }
 
+/// A fake `hc` for `register`: `machine ls --json` prints `ls_json` (or fails when it is None),
+/// `machine add` exits with `add_rc`. Each call's arguments go to the returned file, one per
+/// line, followed by `END`.
+fn install_register_hc(node: &Node, ls_json: Option<&str>, add_rc: i32) -> std::path::PathBuf {
+    let record = node.root.join("hc_calls");
+    let ls = match ls_json {
+        Some(json) => format!("printf '%s' {}; exit 0", sh_single_quote(json)),
+        None => "echo 'hc: no server' >&2; exit 3".into(),
+    };
+    let script = format!(
+        "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; echo END; }} >> {}\ncase \"$1 $2 $3\" in\n  'machine ls --json') {ls} ;;\n  'machine add --via') [ \"$add_rc\" -eq 0 ] || echo 'hc: cannot add' >&2; exit \"$add_rc\" ;;\nesac\nexit 64\n",
+        sh_single_quote(&record.to_string_lossy()),
+    )
+    .replace("\"$add_rc\"", &add_rc.to_string());
+    let hc_path = node.bin.join("hc");
+    fs::write(&hc_path, script).unwrap();
+    fs::set_permissions(&hc_path, fs::Permissions::from_mode(0o755)).unwrap();
+    record
+}
+
+/// The calls the fake `hc` recorded, each as its arguments.
+fn hc_calls(record: &std::path::Path) -> Vec<Vec<String>> {
+    let text = fs::read_to_string(record).unwrap_or_default();
+    text.split_terminator("END\n")
+        .map(|call| call.lines().map(str::to_owned).collect())
+        .collect()
+}
+
+fn json_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// A node with `home` paired outbound; no agent runs.
+fn register_node(label: &str) -> Node {
+    let node = Node::new(label);
+    node.allow("home", &Node::new("reg-peer").id().0, "--outbound");
+    node
+}
+
+#[test]
+fn register_adds_the_machine_when_hc_does_not_list_it() {
+    // An empty list, a list hc fails to print, and one that cannot be read: each goes on to add.
+    for ls in [
+        Some(r#"{"machines":[]}"#),
+        None,
+        Some("not json"),
+        Some(r#"{"machines":[{"name":"home","target":"/x/herdvia via home""#),
+    ] {
+        let node = register_node("reg-add");
+        let record = install_register_hc(&node, ls, 0);
+        let o = node.herdvia(&["register", "home"]);
+        assert_eq!(o.code(), Some(0), "{ls:?} stderr: {}", o.err());
+        assert_eq!(o.out(), "Registered machine 'home' in Herdr.\n", "{ls:?}");
+        assert_eq!(o.err(), "", "{ls:?}");
+        let calls = hc_calls(&record);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_eq!(calls[0], ["machine", "ls", "--json"]);
+        assert_eq!(calls[1][..3], ["machine", "add", "--via"]);
+        assert_eq!(
+            calls[1][3],
+            format!("{} via home", common::HERDVIA),
+            "{calls:?}"
+        );
+        assert_eq!(calls[1][4..], ["--name", "home"]);
+    }
+}
+
+#[test]
+fn register_does_nothing_when_herdr_already_has_this_executable() {
+    let node = register_node("reg-same");
+    // The target exactly as this executable registers it, learned from a first run.
+    let record = install_register_hc(&node, Some(r#"{"machines":[]}"#), 0);
+    assert_eq!(node.herdvia(&["register", "home"]).code(), Some(0));
+    let via = hc_calls(&record)[1][3].clone();
+    fs::remove_file(&record).unwrap();
+
+    let ls = format!(
+        r#"{{"machines":[{{"name":"other","target":"x via home","via":true}},{{"host":"h","name":"home","session":null,"target":{},"version":"0.1.21","via":true}}]}}"#,
+        json_string(&via)
+    );
+    let record = install_register_hc(&node, Some(&ls), 9);
+    let o = node.herdvia(&["register", "home"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), "home is already registered in Herdr\n");
+    assert_eq!(o.err(), "");
+    assert_eq!(hc_calls(&record), [["machine", "ls", "--json"]]);
+}
+
+#[test]
+fn register_refuses_a_machine_that_uses_another_executable_or_no_herdvia() {
+    let cases = [
+        (
+            r#"{"name":"home","target":"/old/place/herdvia via home","via":true}"#,
+            "herdvia: Herdr's home uses another herdvia executable (/old/place/herdvia); remove it with hc machine rm home, then run herdvia register home\n",
+        ),
+        (
+            r#"{"name":"home","target":"me@home.example","via":false}"#,
+            "herdvia: Herdr already has a machine named home that does not use herdvia; rename or remove it (hc machine rename / hc machine rm), then run herdvia register home\n",
+        ),
+    ];
+    for (entry, expected) in cases {
+        let node = register_node("reg-other");
+        let record = install_register_hc(&node, Some(&format!(r#"{{"machines":[{entry}]}}"#)), 0);
+        let o = node.herdvia(&["register", "home"]);
+        assert_eq!(o.code(), Some(1), "{entry} stderr: {}", o.err());
+        assert_eq!(o.out(), "");
+        assert_eq!(o.err(), expected);
+        assert_eq!(hc_calls(&record), [["machine", "ls", "--json"]], "{entry}");
+    }
+}
+
+#[test]
+fn register_prints_the_manual_command_when_hc_fails_or_is_missing() {
+    let node = register_node("reg-fail");
+    let record = install_register_hc(&node, Some(r#"{"machines":[]}"#), 2);
+    let o = node.herdvia(&["register", "home"]);
+    assert_eq!(o.code(), Some(1), "stderr: {}", o.err());
+    assert_eq!(o.out(), "");
+    let manual = format!(
+        "  hc machine add --via '{} via home' --name home\n",
+        common::HERDVIA
+    );
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: failed to register 'home' in Herdr (hc: cannot add). To register manually, run:\n{manual}"
+        )
+    );
+    assert_eq!(hc_calls(&record).len(), 2);
+
+    // No hc on PATH (only the node's bin, /usr/bin, and /bin) or under the node's HOME.
+    fs::remove_file(node.bin.join("hc")).unwrap();
+    for dir in ["/usr/bin", "/bin"] {
+        assert!(
+            !std::path::Path::new(dir).join("hc").exists(),
+            "{dir}/hc exists; this test would run it"
+        );
+    }
+    let o = node.herdvia(&["register", "home"]);
+    assert_eq!(o.code(), Some(1), "stderr: {}", o.err());
+    assert_eq!(o.out(), "");
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: 'hc' was not found, so 'home' was not added to Herdr. After installing Herdr, run:\n{manual}"
+        )
+    );
+}
+
+#[test]
+fn register_needs_an_outbound_peer_and_creates_nothing() {
+    let node = Node::new("reg-none");
+    let record = install_register_hc(&node, Some(r#"{"machines":[]}"#), 0);
+    let missing = node.root.join("none");
+    let mut c = node.cmd(&["register", "home"]);
+    c.env("HERDVIA_DIR", &missing);
+    let o = common::try_run(c, Duration::from_secs(10)).expect("register did not finish");
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert_eq!(
+        o.err(),
+        "herdvia: no outbound peer named home; pair it with herdvia connect first\n"
+    );
+    assert!(!missing.exists(), "register created the data folder");
+
+    node.allow("lap", &Node::new("reg-in").id().0, "--inbound");
+    let before = fs::read_dir(&node.herdvia_dir).unwrap().count();
+    for name in ["home", "lap"] {
+        let o = node.herdvia(&["register", name]);
+        assert_eq!(o.code(), Some(255), "{name} stdout: {}", o.out());
+        assert_eq!(o.out(), "");
+        assert_eq!(
+            o.err(),
+            format!("herdvia: no outbound peer named {name}; pair it with herdvia connect first\n")
+        );
+    }
+    assert_eq!(fs::read_dir(&node.herdvia_dir).unwrap().count(), before);
+    assert!(!record.exists(), "hc ran for a peer that is not outbound");
+}
+
 #[test]
 fn listen_and_connect_fail_without_running_agent() {
     let node = Node::new("offline");

@@ -33,6 +33,7 @@ enum Command {
         name: String,
         invite: Option<String>,
     },
+    Register(String),
     Version,
     Doctor,
 }
@@ -60,6 +61,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
                 name: name.clone(),
                 invite: Some(invite.clone()),
             })
+        }
+        [cmd, name] if cmd == "register" && peers::valid_name(name) => {
+            Ok(Command::Register(name.clone()))
         }
         [cmd] if cmd == "peers" => Ok(Command::Peers),
         [cmd] if cmd == "status" => Ok(Command::Status),
@@ -114,9 +118,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             } else {
-                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             },
         )),
     }
@@ -153,6 +157,7 @@ async fn main() {
         Ok(Command::Connect { name, invite }) => {
             herdvia::pair::cli::run_connect(name, invite).await
         }
+        Ok(Command::Register(name)) => herdvia::pair::cli::run_register(name).await,
         Ok(Command::Doctor) => herdvia::doctor::run().await,
         Ok(Command::Version) => {
             println!("herdvia {}", env!("CARGO_PKG_VERSION"));
@@ -734,6 +739,22 @@ mod tests {
             &["connect"][..],
             &["connect", "bad/name"],
             &["connect", "a", "b", "c"],
+        ] {
+            assert!(parse(args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn register_takes_exactly_one_valid_name() {
+        match parse(args(&["register", "win1"])).unwrap() {
+            Command::Register(name) => assert_eq!(name, "win1"),
+            _ => panic!("expected register"),
+        }
+        for bad in [
+            &["register"][..],
+            &["register", "bad/name"],
+            &["register", "a", "b"],
+            &["Register", "a"],
         ] {
             assert!(parse(args(bad)).is_err(), "{bad:?}");
         }

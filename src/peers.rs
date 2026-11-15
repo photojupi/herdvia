@@ -274,7 +274,9 @@ pub fn check_connect_target(
     {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("peer {name} is already registered; revoke it first or choose another name"),
+            format!(
+                "peer {name} is already registered; revoke it first or choose another name; to re-run only the Herdr registration, run herdvia register {name}"
+            ),
         ));
     }
     Ok(())
@@ -776,11 +778,11 @@ mod tests {
         )
         .unwrap();
 
+        let err = check_connect_target(dir.path(), "home", None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
-            check_connect_target(dir.path(), "home", None)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::AlreadyExists
+            err.to_string(),
+            "peer home is already registered; revoke it first or choose another name; to re-run only the Herdr registration, run herdvia register home"
         );
         check_connect_target(dir.path(), "home", Some(id_1)).unwrap();
         assert_eq!(

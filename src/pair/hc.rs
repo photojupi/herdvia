@@ -11,8 +11,26 @@ use std::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum HcResult {
     Added,
-    MissingHc { manual_cmd: String },
-    Failed { reason: String, manual_cmd: String },
+    MissingHc {
+        manual_cmd: String,
+    },
+    /// `timed_out`: hc did not finish, so whether it added the machine is unknown.
+    Failed {
+        reason: String,
+        manual_cmd: String,
+        timed_out: bool,
+    },
+}
+
+/// What Herdr's machine list says about a machine name.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Listed {
+    /// Reached with the command this executable would register.
+    Same,
+    /// Reached through another herdvia executable, as hc prints that program.
+    OtherHerdvia(String),
+    /// A machine by that name that does not go through herdvia.
+    Foreign,
 }
 
 fn sh_safe_unquoted(text: &str) -> bool {
@@ -155,14 +173,19 @@ fn find_hc() -> Option<PathBuf> {
     is_executable_file(&fallback).then_some(fallback)
 }
 
-pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
-    let manual_cmd = manual_hc_add_line(exe, peer);
-    let Some(hc_path) = find_hc() else {
-        return HcResult::MissingHc { manual_cmd };
-    };
-    let via_cmd = via_command_for_current_os(exe, peer);
-    let mut cmd = tokio::process::Command::new(&hc_path);
-    cmd.args(["machine", "add", "--via", &via_cmd, "--name", peer])
+/// How a run of `hc` ended.
+enum HcRun {
+    Exited(std::process::Output),
+    /// It could not be started or waited for; the sanitized reason.
+    Failed(String),
+    /// It was still running after 15 seconds and was killed.
+    TimedOut,
+}
+
+/// Runs `hc` with `args` for up to 15 seconds, then kills it (on Unix, its whole process group).
+async fn run_hc(hc_path: &Path, args: &[&str]) -> HcRun {
+    let mut cmd = tokio::process::Command::new(hc_path);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -172,20 +195,46 @@ pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
 
     let child = match cmd.spawn() {
         Ok(child) => child,
-        Err(err) => {
-            return HcResult::Failed {
-                reason: log::sanitize(&err.to_string()),
-                manual_cmd,
-            };
-        }
+        Err(err) => return HcRun::Failed(log::sanitize(&err.to_string())),
     };
 
     #[cfg(unix)]
     let child_pid = child.id();
 
     match tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => HcResult::Added,
-        Ok(Ok(output)) => {
+        Ok(Ok(output)) => HcRun::Exited(output),
+        Ok(Err(err)) => HcRun::Failed(log::sanitize(&err.to_string())),
+        Err(_) => {
+            #[cfg(unix)]
+            if let Some(pid) = child_pid {
+                unsafe {
+                    let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            HcRun::TimedOut
+        }
+    }
+}
+
+pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
+    let manual_cmd = manual_hc_add_line(exe, peer);
+    let Some(hc_path) = find_hc() else {
+        return HcResult::MissingHc { manual_cmd };
+    };
+    let via_cmd = via_command_for_current_os(exe, peer);
+    let failed = |reason, timed_out| HcResult::Failed {
+        reason,
+        manual_cmd: manual_cmd.clone(),
+        timed_out,
+    };
+    match run_hc(
+        &hc_path,
+        &["machine", "add", "--via", &via_cmd, "--name", peer],
+    )
+    .await
+    {
+        HcRun::Exited(output) if output.status.success() => HcResult::Added,
+        HcRun::Exited(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             let detail = stderr
@@ -195,27 +244,277 @@ pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
                 .find(|l| !l.is_empty())
                 .map(log::sanitize)
                 .unwrap_or_else(|| output.status.to_string());
-            HcResult::Failed {
-                reason: detail,
-                manual_cmd,
-            }
+            failed(detail, false)
         }
-        Ok(Err(err)) => HcResult::Failed {
-            reason: log::sanitize(&err.to_string()),
-            manual_cmd,
-        },
-        Err(_) => {
-            #[cfg(unix)]
-            if let Some(pid) = child_pid {
-                unsafe {
-                    let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+        HcRun::Failed(reason) => failed(reason, false),
+        HcRun::TimedOut => failed("hc machine add timed out after 15 seconds".into(), true),
+    }
+}
+
+/// What `hc machine ls --json` says about `peer`. None when hc is missing, fails, prints
+/// something this cannot read, or does not list `peer`: the caller then just adds it.
+pub async fn listed_machine(exe: &Path, peer: &str) -> Option<Listed> {
+    let hc_path = find_hc()?;
+    let HcRun::Exited(output) = run_hc(&hc_path, &["machine", "ls", "--json"]).await else {
+        return None;
+    };
+    if !output.status.success() {
+        return None;
+    }
+    let machines = machines(std::str::from_utf8(&output.stdout).ok()?)?;
+    classify(&machines, peer, &via_command_for_current_os(exe, peer))
+}
+
+/// One entry of `hc machine ls --json`, with the fields `register` looks at.
+#[derive(Debug, PartialEq, Eq)]
+struct Machine {
+    name: String,
+    target: Option<String>,
+    via: Option<bool>,
+}
+
+/// `expected` is the `--via` value this executable would register for `peer`. An entry whose
+/// fields cannot tell gives None, never a guess.
+fn classify(machines: &[Machine], peer: &str, expected: &str) -> Option<Listed> {
+    let machine = machines.iter().find(|m| m.name == peer)?;
+    if !machine.via? {
+        return Some(Listed::Foreign);
+    }
+    let target = machine.target.as_deref()?;
+    if target == expected {
+        return Some(Listed::Same);
+    }
+    // The program part, as hc prints it: quoted when the path needs it.
+    let program = target.strip_suffix(&format!(" via {peer}"));
+    let file = program.and_then(|p| p.trim_matches(['\'', '"']).rsplit(['/', '\\']).next());
+    match (program, file) {
+        (Some(program), Some("herdvia" | "herdvia.exe")) => {
+            Some(Listed::OtherHerdvia(log::sanitize(program)))
+        }
+        _ => Some(Listed::Foreign),
+    }
+}
+
+/// The `machines` of `hc machine ls --json`. None for anything else, including a truncated or
+/// otherwise invalid document; entries without a string `name` are left out.
+fn machines(text: &str) -> Option<Vec<Machine>> {
+    let mut reader = JsonReader {
+        text,
+        pos: 0,
+        depth: 0,
+    };
+    let doc = reader.value()?;
+    reader.skip_space();
+    if reader.pos != text.len() {
+        return None;
+    }
+    let Json::Object(fields) = doc else {
+        return None;
+    };
+    let Some((_, Json::Array(entries))) = fields.into_iter().find(|(k, _)| k == "machines") else {
+        return None;
+    };
+    let mut machines = Vec::new();
+    for entry in entries {
+        let Json::Object(fields) = entry else {
+            return None;
+        };
+        let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+        let Some(Json::String(name)) = field("name") else {
+            continue;
+        };
+        machines.push(Machine {
+            name: name.clone(),
+            target: match field("target") {
+                Some(Json::String(target)) => Some(target.clone()),
+                _ => None,
+            },
+            via: match field("via") {
+                Some(Json::Bool(via)) => Some(*via),
+                _ => None,
+            },
+        });
+    }
+    Some(machines)
+}
+
+/// A JSON value, as far as `machines` needs it.
+enum Json {
+    Other,
+    Bool(bool),
+    String(String),
+    Array(Vec<Json>),
+    Object(Vec<(String, Json)>),
+}
+
+/// A small JSON reader for hc's machine list (no JSON crate in the tree).
+struct JsonReader<'a> {
+    text: &'a str,
+    pos: usize,
+    depth: usize,
+}
+
+impl JsonReader<'_> {
+    /// Deeper documents are refused rather than read with unbounded recursion.
+    const MAX_DEPTH: usize = 32;
+
+    fn skip_space(&mut self) {
+        let rest = &self.text[self.pos..];
+        self.pos += rest.len() - rest.trim_start_matches([' ', '\t', '\n', '\r']).len();
+    }
+
+    fn eat(&mut self, token: &str) -> bool {
+        let found = self.text[self.pos..].starts_with(token);
+        if found {
+            self.pos += token.len();
+        }
+        found
+    }
+
+    fn value(&mut self) -> Option<Json> {
+        self.skip_space();
+        if self.eat("true") {
+            return Some(Json::Bool(true));
+        }
+        if self.eat("false") {
+            return Some(Json::Bool(false));
+        }
+        if self.eat("null") {
+            return Some(Json::Other);
+        }
+        match self.text[self.pos..].bytes().next()? {
+            b'"' => self.string().map(Json::String),
+            b'[' | b'{' => {
+                self.depth += 1;
+                if self.depth > Self::MAX_DEPTH {
+                    return None;
                 }
+                let value = if self.eat("[") {
+                    self.array()
+                } else {
+                    self.eat("{");
+                    self.object()
+                };
+                self.depth -= 1;
+                value
             }
-            HcResult::Failed {
-                reason: "hc machine add timed out after 15 seconds".into(),
-                manual_cmd,
+            b'-' | b'0'..=b'9' => {
+                let rest = &self.text[self.pos..];
+                let len = rest.len()
+                    - rest
+                        .trim_start_matches(|c: char| c.is_ascii_digit() || "+-.eE".contains(c))
+                        .len();
+                self.pos += len;
+                Some(Json::Other)
+            }
+            _ => None,
+        }
+    }
+
+    fn array(&mut self) -> Option<Json> {
+        let mut items = Vec::new();
+        self.skip_space();
+        if self.eat("]") {
+            return Some(Json::Array(items));
+        }
+        loop {
+            items.push(self.value()?);
+            self.skip_space();
+            if self.eat("]") {
+                return Some(Json::Array(items));
+            }
+            if !self.eat(",") {
+                return None;
             }
         }
+    }
+
+    fn object(&mut self) -> Option<Json> {
+        let mut fields = Vec::new();
+        self.skip_space();
+        if self.eat("}") {
+            return Some(Json::Object(fields));
+        }
+        loop {
+            self.skip_space();
+            if !self.text[self.pos..].starts_with('"') {
+                return None;
+            }
+            let key = self.string()?;
+            self.skip_space();
+            if !self.eat(":") {
+                return None;
+            }
+            fields.push((key, self.value()?));
+            self.skip_space();
+            if self.eat("}") {
+                return Some(Json::Object(fields));
+            }
+            if !self.eat(",") {
+                return None;
+            }
+        }
+    }
+
+    /// A string starting at its opening quote.
+    fn string(&mut self) -> Option<String> {
+        self.pos += 1;
+        let mut out = String::new();
+        loop {
+            let rest = &self.text[self.pos..];
+            let run = rest.find(['"', '\\']).unwrap_or(rest.len());
+            if rest[..run].chars().any(|c| c < ' ') {
+                return None;
+            }
+            out.push_str(&rest[..run]);
+            self.pos += run;
+            if self.eat("\"") {
+                return Some(out);
+            }
+            if !self.eat("\\") {
+                return None;
+            }
+            let escaped = match self.text[self.pos..].bytes().next()? {
+                b'u' => {
+                    self.pos += 1;
+                    let high = self.hex4()?;
+                    let code = if (0xD800..0xDC00).contains(&high) {
+                        if !self.eat("\\u") {
+                            return None;
+                        }
+                        let low = self.hex4()?;
+                        if !(0xDC00..0xE000).contains(&low) {
+                            return None;
+                        }
+                        0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+                    } else {
+                        high
+                    };
+                    out.push(char::from_u32(code)?);
+                    continue;
+                }
+                b'"' => '"',
+                b'\\' => '\\',
+                b'/' => '/',
+                b'b' => '\u{8}',
+                b'f' => '\u{c}',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                _ => return None,
+            };
+            self.pos += 1;
+            out.push(escaped);
+        }
+    }
+
+    fn hex4(&mut self) -> Option<u32> {
+        let digits = self.text.get(self.pos..self.pos + 4)?;
+        if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        self.pos += 4;
+        u32::from_str_radix(digits, 16).ok()
     }
 }
 
@@ -223,6 +522,157 @@ pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn machine(name: &str, target: Option<&str>, via: Option<bool>) -> Machine {
+        Machine {
+            name: name.into(),
+            target: target.map(str::to_owned),
+            via,
+        }
+    }
+
+    #[test]
+    fn machines_reads_the_shape_hc_prints() {
+        // As hc 0.1.21 prints it, with fields register does not use.
+        let text = r#"{"machines":[{"host":"mini","id":"9079","keeps_running_after_logout":null,"name":"macmini","session":null,"state":"connected","target":"/Users/jupi/.local/bin/herdvia via macmini","temporary":false,"version":"0.1.21","via":true},{"host":"jupid","name":"win1","since_ms":1794751955566,"state":"unreachable","target":"/Users/jupi/.local/bin/herdvia via win1","via":true,"why":"cannot reach: herdvia: peer did not connect within 5 seconds"},{"name":"vps","target":"can@10.0.0.7:2222","via":false}]}"#;
+        assert_eq!(
+            machines(text).unwrap(),
+            [
+                machine(
+                    "macmini",
+                    Some("/Users/jupi/.local/bin/herdvia via macmini"),
+                    Some(true)
+                ),
+                machine(
+                    "win1",
+                    Some("/Users/jupi/.local/bin/herdvia via win1"),
+                    Some(true)
+                ),
+                machine("vps", Some("can@10.0.0.7:2222"), Some(false)),
+            ]
+        );
+        assert_eq!(machines(" {\"machines\" : [ ] }\n").unwrap(), []);
+    }
+
+    #[test]
+    fn machines_decodes_escapes_and_skips_nested_values() {
+        let text = r#"{"x":{"machines":[{"name":"decoy"}]},"machines":[{"name":"h\u00e9 \ud83d\ude00","target":"\"C:\\Program Files\\herdvia\\herdvia.exe\" via h\/1\n","nested":{"a":[1,-2.5e3,{"b":[]}],"via":false},"via":true}]}"#;
+        assert_eq!(
+            machines(text).unwrap(),
+            [machine(
+                "h\u{e9} \u{1F600}",
+                Some("\"C:\\Program Files\\herdvia\\herdvia.exe\" via h/1\n"),
+                Some(true)
+            )]
+        );
+    }
+
+    #[test]
+    fn machines_leaves_missing_fields_empty_and_skips_entries_without_a_name() {
+        let text = r#"{"machines":[{"target":"/bin/herdvia via a","via":true},{"name":7},{"name":"a"},{"name":"b","target":null,"via":"yes"}]}"#;
+        assert_eq!(
+            machines(text).unwrap(),
+            [machine("a", None, None), machine("b", None, None)]
+        );
+    }
+
+    #[test]
+    fn machines_refuses_anything_else() {
+        let full = r#"{"machines":[{"name":"a","target":"/bin/herdvia via a","via":true}]}"#;
+        for cut in 0..full.len() {
+            assert_eq!(machines(&full[..cut]), None, "{:?}", &full[..cut]);
+        }
+        for text in [
+            "",
+            "not json",
+            "[]",
+            r#"{"machines":{}}"#,
+            r#"{"other":[]}"#,
+            r#"{"machines":[1]}"#,
+            r#"{"machines":[]} trailing"#,
+            r#"{"machines":[],}"#,
+            r#"{"machines":["#,
+            r#"{"machines":[{"name":"a\x"}]}"#,
+            r#"{"machines":[{"name":"\ud800"}]}"#,
+            "{\"machines\":[{\"name\":\"raw\nnewline\"}]}",
+        ] {
+            assert_eq!(machines(text), None, "{text:?}");
+        }
+        let deep = format!(
+            "{{\"machines\":[],\"x\":{}{}}}",
+            "[".repeat(100),
+            "]".repeat(100)
+        );
+        assert_eq!(machines(&deep), None);
+    }
+
+    #[test]
+    fn a_name_inside_a_string_is_not_a_machine() {
+        let text = r#"{"machines":[{"name":"x","target":"{\"name\":\"home\",\"target\":\"/bin/herdvia via home\",\"via\":true}","via":false}]}"#;
+        let list = machines(text).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(classify(&list, "home", "/bin/herdvia via home"), None);
+    }
+
+    #[test]
+    fn classify_tells_this_executable_from_another_herdvia_and_from_other_machines() {
+        let expected = "/Users/me/.local/bin/herdvia via home";
+        let check = |target: Option<&str>, via: Option<bool>| {
+            classify(&[machine("home", target, via)], "home", expected)
+        };
+        assert_eq!(check(Some(expected), Some(true)), Some(Listed::Same));
+        for (target, old) in [
+            ("/Users/me/old/herdvia via home", "/Users/me/old/herdvia"),
+            ("'/tmp/my bin/herdvia' via home", "'/tmp/my bin/herdvia'"),
+            (
+                r#""C:\Program Files\herdvia\herdvia.exe" via home"#,
+                r#""C:\Program Files\herdvia\herdvia.exe""#,
+            ),
+            (r"C:\h\herdvia.exe via home", r"C:\h\herdvia.exe"),
+        ] {
+            assert_eq!(
+                check(Some(target), Some(true)),
+                Some(Listed::OtherHerdvia(old.into())),
+                "{target}"
+            );
+        }
+        for (target, via) in [
+            (Some(expected), Some(false)),
+            (Some("can@vps"), Some(false)),
+            (Some("ssh -p 2222 me@vps"), Some(true)),
+            (Some("/bin/herdvia via other"), Some(true)),
+            (Some("/bin/not-herdvia via home"), Some(true)),
+            (Some("/bin/herdvia2 via home"), Some(true)),
+        ] {
+            assert_eq!(check(target, via), Some(Listed::Foreign), "{target:?}");
+        }
+        // Fields it cannot read give no answer rather than a guess.
+        assert_eq!(check(Some(expected), None), None);
+        assert_eq!(check(None, Some(true)), None);
+        // Not listed, or listed under another name only.
+        assert_eq!(classify(&[], "home", expected), None);
+        assert_eq!(
+            classify(
+                &[machine("Home", Some(expected), Some(true))],
+                "home",
+                expected
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_sanitizes_the_program_it_shows() {
+        let target = "/tmp/\u{1b}[31m/herdvia via home";
+        assert_eq!(
+            classify(
+                &[machine("home", Some(target), Some(true))],
+                "home",
+                "/x via home"
+            ),
+            Some(Listed::OtherHerdvia("/tmp/\\u{1b}[31m/herdvia".into()))
+        );
+    }
 
     #[cfg(unix)]
     #[test]
