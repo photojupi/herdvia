@@ -69,7 +69,7 @@ When you register a remote computer in Herdr (`hc machine add --via <command>`),
 ![How herdvia works](docs/assets/how-it-works.en.svg)
 
 1. **Persistent background agent (`herdvia agent`):** Runs in your user session on each machine, holds the machine's cryptographic identity (`EndpointId`), and maintains encrypted QUIC connections to allowed peers.
-2. **Mutual trust (`listen` / `connect`, or `allow` / `accept`):** Unknown peers are always rejected. Interactive pairing (`herdvia listen` + `herdvia connect`) compares a 6-digit verification code on both screens and waits for human approval before Machine A allows dialing Machine B (`--outbound`) and Machine B allows sessions from Machine A (`--inbound`).
+2. **Mutual trust (`listen` / `connect`, or `allow` / `accept`):** Unknown peers are always rejected. Interactive pairing (`herdvia listen` + `herdvia connect`) shows a 6-digit verification code on both screens. Machine B allows sessions from Machine A (`--inbound`) only after the person on B approves, and Machine A allows dialing Machine B (`--outbound`) only after the person on A also confirms that the codes match.
 3. **Strict command filter:** On the receiving side, `herdvia` executes **only** the exact `herdr-core connect` command line sent by `hc` (verified against **`hc 0.1.21`**). Any other command string is rejected and logged.
 
 ---
@@ -152,11 +152,12 @@ sequenceDiagram
     participant B as Machine B (Remote PC)
 
     Note over A,B: Both have herdvia + herdr-core installed & agent running
-    B->>B: herdvia listen (waits up to 5 min, advertises on LAN & prints hvi1-... invite)
-    A->>B: herdvia connect B (discovers B on LAN, or dials hvi1-... invite across networks)
-    Note over A,B: Both screens display the same 6-digit code (e.g. 482-917)
+    B->>B: herdvia listen (waits up to 5 min, prints B's fingerprint, advertises on LAN & prints hvi1-... invite)
+    A->>B: herdvia connect B (pick B by fingerprint from the PCs found on LAN, or dial hvi1-... invite across networks)
+    Note over A,B: Both screens display the same 6-digit code (e.g. 482-917), answer on A and B in either order
+    A->>A: Confirm code matches and type y at Same code on both PCs? [y/N]:
     B->>B: Confirm code matches and type y at Allow? [y/N]:
-    B-->>A: Saves A (--inbound), A saves B (--outbound) & connects immediately
+    B-->>A: B saves A (--inbound), A saves B (--outbound) after both y answers & connects immediately
     A->>A: Automatically runs hc machine add --via '... via B' --name B
 ```
 
@@ -166,7 +167,7 @@ sequenceDiagram
 herdvia listen
 ```
 
-- `listen` opens a single-use 5-minute pairing window, broadcasts a discovery beacon on your local Wi-Fi/LAN, and also prints a one-time `hvi1-...` invite string for pairing across different networks.
+- `listen` opens a single-use 5-minute pairing window, prints this PC's fingerprint (`This PC's fingerprint: xxxx-xxxx-xxxx-xxxx`), broadcasts a discovery beacon on your local Wi-Fi/LAN, and also prints a one-time `hvi1-...` invite string for pairing across different networks.
 - By default, Machine B registers Machine A under A's sanitized hostname (appending a short hex prefix of A's `EndpointId`, such as `-28af`, if that name is already taken by another key). Pass `herdvia listen <name>` if you want to choose the local peer name for A yourself.
 
 ### Step 2. On Machine A (where Herdr runs), connect to B
@@ -175,7 +176,7 @@ herdvia listen
   ```sh
   herdvia connect B
   ```
-  `connect` scans the local network for ~2 seconds and connects automatically (if several PCs are running `herdvia listen`, it prompts you to pick one; if guest Wi-Fi isolation blocks LAN broadcast, it asks you to paste the `hvi1-...` invite from B).
+  `connect` scans the local network for ~2 seconds and lists the waiting PCs it found with their fingerprints (plus `0) Paste an invite token instead`), even if it found only one. Pick the entry whose fingerprint matches the one on B's `listen` screen; `connect` never picks one by itself, because LAN discovery is not authenticated (see [Security model](#security-model)). If it finds none (for example, when guest Wi-Fi isolation blocks LAN broadcast), it asks you to paste the `hvi1-...` invite from B.
 
 - **Different networks (for example, home ↔ office or cafe):**
   ```sh
@@ -184,15 +185,17 @@ herdvia listen
 
 `B` (or `home-pc`, `office`, etc.) is the name this peer will have both in `herdvia` and in Herdr (`1–32` characters from `A-Z a-z 0-9 . _ -`).
 
-### Step 3. Compare the 6-digit code and approve on Machine B
+### Step 3. Compare the 6-digit code and approve on both machines
 
 Both terminals display a 6-digit verification code (for example, `482-917`):
 
-1. Check that **both screens show the exact same 6-digit code**.
-2. On **Machine B**, type `y` at `Allow? [y/N]:`.
+1. Check that **both screens show the exact same 6-digit code**. If they differ, answer `n`: you may be connected to another PC.
+2. On **Machine A**, type `y` at `Same code on both PCs? [y/N]:`, and on **Machine B**, type `y` at `Allow? [y/N]:` (in either order).
 
-As soon as you approve:
-- **Machine B** saves Machine A with `--inbound` permission, and **Machine A** saves Machine B with `--outbound` permission.
+On Machine A, answering `n`, entering an empty line, or closing input (EOF) cancels pairing with exit code `1`, and if A's answer does not arrive within 60 seconds, `connect` fails with exit code `255`. If you cancel on A after B has approved, B keeps A as an `--inbound` peer, but no connection forms because A saved nothing; remove it on B with `herdvia revoke <name>` if you like.
+
+Once both of you have answered `y`:
+- **Machine B** saves Machine A with `--inbound` permission (as soon as B approves), and **Machine A** saves Machine B with `--outbound` permission.
 - The two agents establish their encrypted tunnel immediately (no retry backoff wait).
 - **Machine A** automatically runs `hc machine add` so `B` appears in Herdr right away. *(If `hc` is not on your `PATH`, `connect` still finishes pairing and prints the exact `hc machine add --via ... --name B` command for you to run.)*
 
@@ -272,7 +275,7 @@ What the script does step by step:
 | `HERDVIA_VERSION` | Install a specific release (e.g. `0.1.0` or `v0.1.0`) instead of the latest. |
 | `HERDVIA_NO_AGENT=1` | Skip running `herdvia agent install`. |
 | `HERDVIA_NO_MODIFY_PATH=1` | Do not modify `~/.zprofile` or the Windows user `PATH`. |
-| `HERDVIA_RELEASE_BASE` | Download files from `<url>/<file>` instead of GitHub Releases (overrides `HERDVIA_VERSION`). |
+| `HERDVIA_RELEASE_BASE` | Download files from `<url>/<file>` instead of GitHub Releases (overrides `HERDVIA_VERSION`). Must start with `https://`; `http://` is accepted only for `127.0.0.1`, `localhost`, or `[::1]` (local testing). Downloads use only HTTPS, including after redirects. |
 
 To install a specific version (note: set `HERDVIA_VERSION` explicitly, even when downloading `install.sh` / `install.ps1` from a versioned tag URL):
 
@@ -387,8 +390,8 @@ This builds `main` and installs into `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` 
 
 | Command | Description |
 |---|---|
-| `herdvia listen [<name>]` | Wait up to 5 minutes on the target PC for an interactive pairing request, advertise on the local network, print a one-time `hvi1-...` invite for cross-network pairing, display a 6-digit verification code, and prompt `[y/N]` before granting `--inbound` (defaults `<name>` to the peer's sanitized hostname). Exits `1` if declined or timed out. Requires a running agent. |
-| `herdvia connect <name> [<invite>]` | Pair from the controller PC (running Herdr) to a listening target PC via LAN auto-discovery or `<invite>` (`hvi1-...`), display the matching 6-digit verification code, grant `--outbound` once approved, and run `hc machine add --via ... --name <name>`. Exits `1` if declined, timed out, or `hc` registration fails (printing the manual `hc machine add` command). Requires a running agent. |
+| `herdvia listen [<name>]` | Wait up to 5 minutes on the target PC for an interactive pairing request, print this PC's fingerprint, advertise on the local network, print a one-time `hvi1-...` invite for cross-network pairing, display a 6-digit verification code, and prompt `[y/N]` before granting `--inbound` (defaults `<name>` to the peer's sanitized hostname). Exits `1` if declined or timed out. Requires a running agent. |
+| `herdvia connect <name> [<invite>]` | Pair from the controller PC (running Herdr) to a listening target PC, chosen by fingerprint from a numbered list of PCs found on the LAN or given by `<invite>` (`hvi1-...`); display the matching 6-digit verification code and ask `Same code on both PCs? [y/N]:`; grant `--outbound` only after you answer `y` and the target PC approves; then run `hc machine add --via ... --name <name>`. Exits `1` if cancelled, declined, timed out on the target PC, or `hc` registration fails (printing the manual `hc machine add` command), and `255` if your answer does not arrive within 60 seconds. Requires a running agent. |
 | `herdvia id` | Print this machine's `EndpointId` (line 1) and 16-char fingerprint (line 2). Generates `secret.key` if missing. |
 | `herdvia allow <name> <EndpointId> (--inbound \| --outbound \| --both)` | Add or update a peer and print the saved entry (`<name> <EndpointId> <in\|out\|both>`). Refuses an `EndpointId` already registered under another name. Applied immediately on a running agent (or on next agent start). |
 | `herdvia revoke <name>` | Remove a peer, print `revoked <name> <EndpointId>`, and immediately close its connections, terminating any `herdr-core connect` processes those connections started (see [Security model](#security-model) for what this does not undo). Fails if no peer has that name. Warns if the same `EndpointId` remains registered under another name (in a `peers` file written by an earlier version). |
@@ -441,7 +444,7 @@ Automatic startup (`agent install` / `agent uninstall`) is not supported on Linu
 `herdvia doctor` checks, in order:
 
 1. **This executable:** its version and path (warns if run from a temporary or Cargo `target` directory, because `agent install` records that path).
-2. **Data folder:** its path (including whether it comes from `HERDVIA_DIR`, which must be an absolute path), whether it exists, whether it is a directory (not a symlink, and not a junction on Windows), and whether this user can open it (and owns it on macOS/Unix; if it cannot be opened, the check fails and suggests `chmod 700` on macOS/Unix).
+2. **Data folder:** its path (including whether it comes from `HERDVIA_DIR`, which must be an absolute path), whether it exists, whether it is a directory (not a symlink, and not a junction on Windows), and whether this user can open it (and owns it on macOS/Unix; if it cannot be opened, the check fails and suggests `chmod 700` on macOS/Unix). For a folder set by `HERDVIA_DIR` (or, on Linux, `XDG_DATA_HOME`), the check also fails if another account could change one of its parent folders, even if the folder does not exist yet (see [Security model](#security-model)).
    - **macOS / Unix:** Fails on macOS if the folder has an access control list (ACL) entry that allows access (suggesting `chmod -N`), and on macOS/Unix checks that the agent socket path fits within the Unix socket length limit.
    - **Windows:** Fails if the folder is another kind of reparse point, is owned by someone other than this user, Administrators, or SYSTEM, or grants access to other accounts while this user cannot change its permissions (suggesting an `icacls … /grant` command for an administrator terminal). If the folder grants access to accounts other than those three, but this user can change its permissions, the check reports a `warn` because herdvia restricts it the next time it runs.
 3. **`secret.key`:** whether it exists and passes the agent's checks — on macOS/Unix: owned by this user, mode `0600` or narrower, and (on macOS) no ACL entry that allows access; on Windows: a regular file (not a link) owned by this user, Administrators, or SYSTEM that grants no access to other accounts. On Windows, if the file grants access to other accounts, the check reports a `warn` when this user can change its permissions (because herdvia restricts it the next time it runs), or a `fail` with an `icacls … /grant` command otherwise. Only the fingerprint is printed.
@@ -538,8 +541,12 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
   - **Windows:** Named pipe restricted via DACL solely to your user SID, with remote network pipe clients rejected. The agent holds a lock on `agent.lock` in the data folder so a second agent for the same folder refuses to start; if another account already holds the pipe name, the agent refuses to start and reports that account's SID (or states that the pipe's owner cannot be read).
 - **Data folder, `secret.key`, and `peers`:**
   - **macOS / Unix:** The data folder is set to mode `0700` and `secret.key` is created with mode `0600`. `herdvia` stops with an error if `secret.key` or `peers` belongs to another user or has wider permissions, and on macOS if the folder or either file has an access control list (ACL) entry that allows access (the error prints the `chmod -N` command to remove it; a filesystem without ACL support counts as having no ACL).
-  - **Windows (applying permissions):** `herdvia` refuses a data folder that is a junction or other reparse point, or whose owner is anyone other than this user, Administrators, or SYSTEM. Unless the folder already has such a DACL, `herdvia` sets a protected DACL granting full access only to those three accounts, inherited by the files it creates inside (a folder that passes an inheritable deny entry to the files inside does not count as already having it). Whenever `secret.key` or `peers` grants access to any other account and this user can change its permissions, it receives its own protected DACL granting full access only to those three accounts, independent of what the folder passes down.
+  - **Windows (applying permissions):** `herdvia` refuses a data folder that is a junction or other reparse point, or whose owner is anyone other than this user, Administrators, or SYSTEM. Unless the folder already has such a DACL, `herdvia` sets a protected DACL granting full access only to those three accounts, inherited by the files it creates inside (a folder that passes an inheritable deny entry to the files inside does not count as already having it). Whenever `secret.key` or `peers` grants access to any other account and this user can change its permissions, it receives its own protected DACL granting full access only to those three accounts, independent of what the folder passes down. As best-effort hardening, `herdvia` also gives the data folder, `secret.key`, and `peers` a Medium integrity label (no-write-up, no-read-up) so that Low-integrity processes of the same user cannot newly open them for reading; in a folder where this user lacks the rights to set the label, it is not applied and `herdvia` still works.
   - **Windows (refusals and exceptions):** `herdvia` refuses `secret.key` or `peers` if the file is a link, has another owner, or still grants access to another account (the error prints an `icacls … /grant` command for an administrator terminal that grants this user full control of the file, after which `herdvia` restricts it when run again). Likewise, if the folder grants access to another account and this user cannot change its permissions, `herdvia` refuses it and prints an `icacls … /grant` command. Both `icacls` commands can be pasted directly into PowerShell or cmd. A folder that grants access only to those three accounts even though this user cannot change its permissions is used as-is, and an unprotected folder continues to inherit entries from its parent.
+  - **Parent folders of a `HERDVIA_DIR` data folder:** When the data folder comes from `HERDVIA_DIR` (or, on Linux, from `XDG_DATA_HOME`), its parent folders must not be changeable by other accounts, so that no one else can swap a parent for a different folder and redirect where the key and peer list are kept. The built-in default data folder is not checked this way (it lives inside your user profile, and automatic startup uses only the default folder).
+    - **macOS / Unix:** Each parent must be owned by this user or root and must not be writable by group or others; a folder owned by this user (or root) inside a sticky-bit folder such as `/tmp` is accepted. On macOS, a parent with an ACL allow entry that permits adding or deleting entries or changing permissions is also refused.
+    - **Windows (paths starting with a drive letter):** Each parent must not be a reparse point such as a junction or symbolic link, must be owned by this user, SYSTEM, Administrators, or TrustedInstaller, and must not grant other accounts the right to delete, rename, or change the permissions of it or the entries inside it (read-only access is fine). UNC paths are not checked.
+    - If a parent fails, every command and the agent stop with an error naming that folder and the reason (exit code `255`), and `herdvia doctor` reports the `data directory` line as `fail`, even if the data folder does not exist yet.
 - **`secret.key` is this PC's identity:** Anyone who obtains this file can impersonate this machine to peers that trust it. Replace the key if it may have leaked, or if you restored it from a backup or copied it to another PC:
   1. On every peer, run `herdvia revoke <name>` for this PC's entry.
   2. Stop the agent (`herdvia agent uninstall`, or `Ctrl-C` on a foreground agent).
@@ -547,7 +554,8 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
   4. Run `herdvia id` to create a new identity.
   5. Run `herdvia agent install` (or start `herdvia agent` again).
   6. Pair again with every peer.
-- **Interactive pairing (`listen` / `connect`):** Pairing runs on a separate `herdvia/pair/1` ALPN that never executes remote commands, never writes to `pending`, and rejects handshakes unless `herdvia listen` is actively waiting. Each `listen` session generates single-use 128-bit tokens that expire after 5 minutes, aborts after 5 invalid handshake proofs, serializes confirmation so only one peer can prompt at a time, and closes immediately once the user approves or declines. Both sides derive the 6-digit verification code (`NNN-NNN`, ~20 bits) from the QUIC TLS 1.3 exporter (`herdvia-pair-v1`) plus a commit-reveal nonce exchange, and the target PC writes nothing to `peers` unless a human types `y` after confirming the code matches on both screens. Pairing grants only `--inbound` on the target PC and `--outbound` on the controller PC (never defaulting to `--both`).
+- **Interactive pairing (`listen` / `connect`):** Pairing runs on a separate `herdvia/pair/1` ALPN that never executes remote commands, never writes to `pending`, and rejects handshakes unless `herdvia listen` is actively waiting. Each `listen` session generates single-use 128-bit tokens that expire after 5 minutes, aborts after 5 invalid handshake proofs, serializes confirmation so only one peer can prompt at a time, and closes immediately once the user approves or declines. Both sides derive the 6-digit verification code (`NNN-NNN`, ~20 bits) from the QUIC TLS 1.3 exporter (`herdvia-pair-v1`) plus a commit-reveal nonce exchange, and the target PC writes nothing to `peers` unless a human types `y` after confirming the code matches on both screens. The controller PC likewise writes nothing to `peers` and does not run `hc machine add` until its own user types `y` at `Same code on both PCs? [y/N]:` and the target PC has approved. This matters because LAN discovery beacons are not signed: anyone on the same LAN can announce their own key and immediately send an approval message, so `connect` never picks a discovered PC by itself. This confirmation step does not change the network protocol, so pairing still works with earlier versions. Pairing grants only `--inbound` on the target PC and `--outbound` on the controller PC (never defaulting to `--both`).
+- **Interactive pairing in `0.1.4` and earlier:** `herdvia connect` picked the PC automatically when it found exactly one on the LAN, and saved it on the other side's approval message alone, without confirmation on this PC, so another device on the same LAN could pose as the target PC. Upgrading `herdvia` on the PC that runs Herdr (the one that runs `connect`) fixes this. Until then, pair with the invite printed on the target PC's screen (`herdvia connect <name> hvi1-...`).
 - **Fingerprints & `pending` / `accept`:** Fingerprints show only the first 16 hex characters (64 bits) of the 256-bit `EndpointId` for visual comparison; `herdvia` always stores and verifies the full `EndpointId`. `pending` records only peers that completed an authenticated `iroh` handshake and retains at most 16 entries in memory for 10 minutes; `accept` refuses ambiguous prefix collisions as well as a full list (which anyone who knows this PC's `EndpointId` can fill). Always read the fingerprint from **the other machine's own screen**, never from `pending` itself.
 
 **Reporting vulnerabilities:** Please use GitHub's [private vulnerability reporting](https://github.com/photojupi/herdvia/security/advisories/new) for sensitive security issues, or open a regular issue for non-sensitive bugs.
@@ -561,7 +569,7 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 - **Public relays ([n0](https://n0.computer)):** Each agent connects to a home relay for signaling and initial connection setup, and falls back to relaying encrypted traffic only when direct peer-to-peer UDP fails.
 - **DNS discovery (`dns.iroh.link`):** Each agent publishes a signed record containing its **`EndpointId` and home relay URL** so peers can look each other up by `EndpointId`.
 - **Router port mapping:** UPnP, PCP, and NAT-PMP are enabled to assist direct hole-punching when supported by your router.
-- **Foreground LAN pairing discovery:** While `herdvia listen` or `herdvia connect` (without an invite) is running in the foreground, it exchanges short UDP discovery packets on port `48721` (IPv4 multicast `239.255.77.86` and broadcast) containing the target's `EndpointId`, agent QUIC port, one-time LAN token, and sanitized hostname. The background `herdvia agent` never opens this UDP port.
+- **Foreground LAN pairing discovery:** While `herdvia listen` or `herdvia connect` (without an invite) is running in the foreground, it exchanges short UDP discovery packets on port `48721` (IPv4 multicast `239.255.77.86` and broadcast) containing the target's `EndpointId`, agent QUIC port, one-time LAN token, and sanitized hostname. These packets are not signed, so any device on the LAN can announce any key (which is why `connect` asks you to choose by fingerprint). `herdvia listen` answers a discovery query directly (unicast) only when the query comes from a private (RFC 1918), link-local (`169.254.0.0/16`), or loopback address, and ignores queries from other addresses so that a remote host that can reach the port does not receive the one-time LAN token; its periodic multicast and broadcast beacons are not affected. The background `herdvia agent` never opens this UDP port.
 - **Your IP address and `EndpointId`:** The lookup service receives only the home relay URL, but anyone who knows this PC's `EndpointId` can connect to it through the relay, and `iroh` can send them this PC's direct address candidates (including LAN addresses and a port-mapped public address) before `herdvia` rejects the connection — exposing this PC's current IP addresses. Your `EndpointId` is not a secret, but do not post it publicly.
 - **Encryption & metadata:** All session traffic is end-to-end encrypted via QUIC/TLS; relays cannot read payload bytes, though n0 notes relays can observe connection metadata (IP addresses, timestamps, byte counts).
 - **Service expectations:** n0 operates its public relays for **development and hobby use**, rate-limited and without an SLA. See [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) and [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup).
@@ -591,7 +599,7 @@ After upgrading, `herdvia doctor` warns if the running agent is still the old ex
 | **Data folder (macOS)** | `~/Library/Application Support/herdvia` |
 | **Data folder (Windows)** | `%APPDATA%\herdvia` |
 | **Data folder (Linux)** | `$XDG_DATA_HOME/herdvia` (defaults to `~/.local/share/herdvia`) |
-| **Override env var** | `HERDVIA_DIR=<path>` overrides the data folder (must be an absolute path; every command, including `hc`'s `via` process, must see the same value; incompatible with `agent install`). |
+| **Override env var** | `HERDVIA_DIR=<path>` overrides the data folder (must be an absolute path whose parent folders other accounts cannot change — see [Security model](#security-model); every command, including `hc`'s `via` process, must see the same value; incompatible with `agent install`). |
 | **`secret.key`** | Machine's 32-byte Ed25519 secret key (inside data folder). |
 | **`peers`** | Allowed peer list (`<name> <EndpointId> <in\|out\|both>` per line). Managed via `listen` / `connect` or `allow` / `accept` / `revoke`. |
 | **`agent.sock`** | Local Unix domain socket on macOS/Unix (Windows uses a per-SID named pipe instead). |

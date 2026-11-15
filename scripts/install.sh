@@ -12,7 +12,9 @@
 #   HERDVIA_VERSION=0.1.0       install this release instead of the latest
 #   HERDVIA_NO_AGENT=1          do not run herdvia agent install
 #   HERDVIA_NO_MODIFY_PATH=1    do not change ~/.zprofile
-#   HERDVIA_RELEASE_BASE=<url>  download <url>/<file> instead (mirrors, tests)
+#   HERDVIA_RELEASE_BASE=<url>  download <url>/<file> instead (mirrors, tests);
+#                               https:// only, or http:// to 127.0.0.1,
+#                               localhost, or [::1]
 set -eu
 
 repo=https://github.com/photojupi/herdvia/releases
@@ -27,6 +29,26 @@ quote() {
   case $1 in
     '' | *[!A-Za-z0-9._/:@%+=,-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
     *) printf '%s' "$1" ;;
+  esac
+}
+# Whether $1 is an http:// URL to 127.0.0.1, localhost, or [::1], with at most
+# a numeric port: no user part, so http://localhost:1@example.com is not one.
+loopback_http() {
+  case $1 in
+    http://*) ;;
+    *) return 1 ;;
+  esac
+  authority=${1#http://}
+  authority=${authority%%/*}
+  case $authority in
+    127.0.0.1 | localhost | '[::1]') return 0 ;;
+    127.0.0.1:*) port=${authority#127.0.0.1:} ;;
+    localhost:*) port=${authority#localhost:} ;;
+    '[::1]:'*) port=${authority#'[::1]:'} ;;
+    *) return 1 ;;
+  esac
+  case $port in
+    '' | *[!0-9]*) return 1 ;;
   esac
 }
 
@@ -62,8 +84,19 @@ main() {
     command -v "$tool" >/dev/null 2>&1 || fail "needs $tool"
   done
 
+  # SHA256SUMS comes from the same place as the archive, so it cannot catch a
+  # download changed on the way: only HTTPS, also after a redirect.
+  proto='=https'
   if [ -n "${HERDVIA_RELEASE_BASE:-}" ]; then
     base=${HERDVIA_RELEASE_BASE%/}
+    case $base in
+      https://*) ;;
+      *)
+        # Plain http only to this machine, for tests with a local server.
+        loopback_http "$base" || fail "HERDVIA_RELEASE_BASE must start with https:// (http:// only to 127.0.0.1, localhost, or [::1]): $HERDVIA_RELEASE_BASE; nothing was installed"
+        proto='=http,https'
+        ;;
+    esac
   elif [ -n "${HERDVIA_VERSION:-}" ]; then
     version=${HERDVIA_VERSION#v}
     case $version in
@@ -83,8 +116,8 @@ main() {
   # Commands below read from /dev/null: under `curl | sh`, standard input is
   # the rest of this script.
   say "Downloading $base/$archive"
-  curl -fsSL "$base/$archive" -o "$tmp/$archive" </dev/null || fail "download failed: $base/$archive; nothing was installed"
-  curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" </dev/null || fail "download failed: $base/SHA256SUMS; nothing was installed"
+  curl -fsSL --proto "$proto" --proto-redir =https --tlsv1.2 "$base/$archive" -o "$tmp/$archive" </dev/null || fail "download failed: $base/$archive; nothing was installed"
+  curl -fsSL --proto "$proto" --proto-redir =https --tlsv1.2 "$base/SHA256SUMS" -o "$tmp/SHA256SUMS" </dev/null || fail "download failed: $base/SHA256SUMS; nothing was installed"
   want=$(tr -d '\r' <"$tmp/SHA256SUMS" | awk -v f="$archive" '$2 == f || $2 == "*" f { print tolower($1); exit }')
   [ -n "$want" ] || fail "SHA256SUMS has no line for $archive; nothing was installed"
   got=$(shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)

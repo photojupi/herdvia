@@ -335,6 +335,35 @@ fn wide_peers_permission_refuses_start() {
     n.start_agent();
 }
 
+#[test]
+fn a_data_directory_below_a_directory_others_can_write_is_refused() {
+    // 다른 계정이 바꿀 수 있는 상위 폴더 아래에서는 아무것도 만들지 않고 거부한다.
+    let mut n = Node::new("A");
+    let shared = n.root.join("shared");
+    fs::create_dir(&shared).unwrap();
+    chmod(&shared, 0o777);
+    n.herdvia_dir = shared.join("hl");
+    let other = Node::new("X");
+    let (other_id, _) = other.id();
+    let refusal = format!(
+        "{} is writable by other users",
+        fs::canonicalize(&shared).unwrap().display()
+    );
+    for args in [
+        &["id"][..],
+        &["allow", "x", other_id.as_str(), "--both"],
+        &["status"],
+    ] {
+        let o = n.herdvia(args);
+        assert_eq!(o.code(), Some(255), "{args:?} stderr: {}", o.err());
+        assert!(o.err().contains(&refusal), "{args:?} stderr: {}", o.err());
+    }
+    assert!(
+        fs::read_dir(&shared).unwrap().next().is_none(),
+        "거부한 명령이 무언가를 만듦"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // id 출력 형식
 // ---------------------------------------------------------------------------

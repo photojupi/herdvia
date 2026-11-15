@@ -1,6 +1,8 @@
 use crate::{ipc, log};
 use std::{
-    env, fs,
+    env,
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -125,18 +127,24 @@ fn is_executable_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
+fn hc_on_path(path_var: &OsStr, bin_name: &str) -> Option<PathBuf> {
+    for dir in env::split_paths(path_var) {
+        // Empty and relative entries name the current directory; hc found there is not run.
+        if !dir.is_absolute() {
+            continue;
+        }
+        let candidate = dir.join(bin_name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn find_hc() -> Option<PathBuf> {
     let bin_name = if cfg!(windows) { "hc.exe" } else { "hc" };
-    if let Some(path_var) = env::var_os("PATH") {
-        for dir in env::split_paths(&path_var) {
-            if dir.as_os_str().is_empty() {
-                continue;
-            }
-            let candidate = dir.join(bin_name);
-            if is_executable_file(&candidate) {
-                return Some(candidate);
-            }
-        }
+    if let Some(path) = env::var_os("PATH").and_then(|p| hc_on_path(&p, bin_name)) {
+        return Some(path);
     }
     let home = ipc::home_dir().ok()?;
     let fallback = if cfg!(windows) {
@@ -215,6 +223,24 @@ pub async fn register_machine(exe: &Path, peer: &str) -> HcResult {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn hc_is_not_found_through_a_relative_path_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let hc = dir.path().join("hc");
+        fs::write(&hc, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&hc, fs::Permissions::from_mode(0o755)).unwrap();
+        // The same directory, named relative to the current directory.
+        let depth = env::current_dir().unwrap().components().count() - 1;
+        let relative =
+            PathBuf::from("../".repeat(depth)).join(dir.path().strip_prefix("/").unwrap());
+        assert!(is_executable_file(&relative.join("hc")));
+
+        assert_eq!(hc_on_path(dir.path().as_os_str(), "hc"), Some(hc));
+        assert_eq!(hc_on_path(relative.as_os_str(), "hc"), None);
+    }
 
     #[test]
     fn sh_via_command_quotes_spaces_and_single_quotes_for_posix_sh() {

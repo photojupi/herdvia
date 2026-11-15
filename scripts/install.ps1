@@ -12,7 +12,9 @@
 #   HERDVIA_VERSION=0.1.0       install this release instead of the latest
 #   HERDVIA_NO_AGENT=1          do not run herdvia agent install
 #   HERDVIA_NO_MODIFY_PATH=1    do not change the user PATH
-#   HERDVIA_RELEASE_BASE=<url>  download <url>/<file> instead (mirrors, tests)
+#   HERDVIA_RELEASE_BASE=<url>  download <url>/<file> instead (mirrors, tests);
+#                               https:// only, or http:// to 127.0.0.1,
+#                               localhost, or [::1]
 
 # Its own scope: under `irm | iex` it would otherwise set the caller's variables.
 & {
@@ -34,8 +36,17 @@ if (-not $env:USERPROFILE) { Fail "USERPROFILE is not set" }
 $curl = Join-Path $env:SystemRoot "System32\curl.exe"
 if (-not (Test-Path -LiteralPath $curl)) { Fail "needs $curl (Windows 10 1803 or newer)" }
 
+# SHA256SUMS comes from the same place as the archive, so it cannot catch a
+# download changed on the way: only HTTPS, also after a redirect.
+$proto = "=https"
 if ($env:HERDVIA_RELEASE_BASE) {
     $base = $env:HERDVIA_RELEASE_BASE.TrimEnd("/")
+    if ($base -cmatch '^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?(/|$)') {
+        # Plain http only to this machine, for tests with a local server.
+        $proto = "=http,https"
+    } elseif ($base -cnotmatch '^https://') {
+        Fail "HERDVIA_RELEASE_BASE must start with https:// (http:// only to 127.0.0.1, localhost, or [::1]): $($env:HERDVIA_RELEASE_BASE); nothing was installed"
+    }
 } elseif ($env:HERDVIA_VERSION) {
     $version = $env:HERDVIA_VERSION -replace "^v", ""
     if ($version -notmatch "^[0-9A-Za-z.-]+$") { Fail "invalid HERDVIA_VERSION: $($env:HERDVIA_VERSION)" }
@@ -67,9 +78,10 @@ try {
     Write-Host "Downloading $base/$archive"
     # Continue around programs that may write to stderr: with stderr redirected,
     # Windows PowerShell turns those lines into errors, which Stop would throw.
-    & { $ErrorActionPreference = "Continue"; & $curl -fsSL "$base/$archive" -o $zip }
+    # Quoted: Windows PowerShell may split an unquoted -argument at a dot.
+    & { $ErrorActionPreference = "Continue"; & $curl -fsSL --proto $proto --proto-redir "=https" "--tlsv1.2" "$base/$archive" -o $zip }
     if ($LASTEXITCODE) { Fail "download failed: $base/$archive; nothing was installed" }
-    & { $ErrorActionPreference = "Continue"; & $curl -fsSL "$base/SHA256SUMS" -o $sums }
+    & { $ErrorActionPreference = "Continue"; & $curl -fsSL --proto $proto --proto-redir "=https" "--tlsv1.2" "$base/SHA256SUMS" -o $sums }
     if ($LASTEXITCODE) { Fail "download failed: $base/SHA256SUMS; nothing was installed" }
 
     $want = $null

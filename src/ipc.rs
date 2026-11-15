@@ -1,4 +1,6 @@
 #[cfg(any(windows, test))]
+mod dir_security;
+#[cfg(any(windows, test))]
 mod pipe_name;
 #[cfg(any(windows, test))]
 mod pipe_state;

@@ -47,7 +47,9 @@ jobs:
             warns_within_the_timeout_when_status_or_pending_does_not_answer \
             an_old_agent_is_told_apart_from_a_stuck_one \
             fails_on_a_data_directory_this_user_cannot_open \
-            shows_a_core_found_through_a_relative_path_by_its_absolute_path
+            does_not_run_a_core_found_only_through_a_relative_or_empty_path_entry \
+            fails_on_a_missing_data_directory_below_a_directory_others_can_write \
+            fails_on_dot_dot_after_a_missing_directory_and_creates_nothing
           cargo test --locked --test peers -- --exact \
             wide_secret_key_permission_refuses_start \
             wide_peers_permission_refuses_start \
@@ -57,20 +59,26 @@ jobs:
             allow_and_revoke_update_file_without_agent \
             revoke_of_an_unknown_name_fails_and_changes_nothing \
             one_endpoint_id_cannot_take_a_second_name \
-            revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name
+            revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name \
+            a_data_directory_below_a_directory_others_can_write_is_refused
           cargo test --locked --test pending -- --exact \
             accept_refuses_a_full_pending_list
           cargo test --locked --test transport -- --exact \
             no_agent_means_immediate_255 \
             stale_socket_means_immediate_255 \
             permissions_when_agent_creates_dir \
-            permissions_when_dir_is_too_open
+            permissions_when_dir_is_too_open \
+            agent_and_via_refuse_a_data_directory_below_a_directory_others_can_write
           cargo test --locked --test pair -- --exact \
             listen_and_connect_fail_without_running_agent \
             connect_refuses_duplicate_peer_name_before_dialing \
             lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic \
             declining_or_eof_on_listen_leaves_peers_empty_and_exits_one \
-            connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_contract
+            approval_on_the_target_saves_nothing_on_the_caller_until_its_user_confirms \
+            connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_contract \
+            a_blank_line_at_the_lan_menu_cancels_and_other_input_is_an_error \
+            connect_keeps_an_agent_frame_split_around_the_confirmation_answer \
+            listen_keeps_an_agent_frame_split_around_the_allow_answer
 
   windows-cross:
     runs-on: ubuntu-latest
@@ -119,6 +127,16 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+
+      # The unit tests make data folders in the temporary folder, and herdvia refuses one whose
+      # parent folders another account may change. The runner's %TEMP% is not known to pass, so
+      # they use a new folder in the profile, as src/ipc/windows.rs's own tests do.
+      - name: Use a temporary folder in the profile
+        run: |
+          $temp = Join-Path $env:LOCALAPPDATA "herdvia-tests"
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TEMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Unit tests
         run: cargo test --locked --lib --bins
@@ -215,6 +233,19 @@ jobs:
           check cmp -s "$exe" target/release/herdvia
           check test "$(ls -A "$home/.local/bin")" = herdvia
 
+          echo "--- plain http to another host"
+          if env -i HOME="$work/home-http" PATH=/usr/bin:/bin:/usr/sbin:/sbin SHELL=/bin/zsh \
+            HERDVIA_RELEASE_BASE=http://example.com/good HERDVIA_DIR="$work/d" HERDVIA_NO_AGENT=1 \
+            sh scripts/install.sh > "$work/out5" 2>&1; then
+            cat "$work/out5"
+            echo "::error::install succeeded from a plain http release base"
+            exit 1
+          fi
+          cat "$work/out5"
+          check grep -q "HERDVIA_RELEASE_BASE must start with https://" "$work/out5"
+          check test -z "$(grep '^Downloading ' "$work/out5")"
+          check test ! -e "$work/home-http"
+
           echo "--- HOME with a space and a single quote"
           home="$work/it's home"
           exe=$home/.local/bin/herdvia
@@ -271,7 +302,9 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$')[0].Matches[0].Groups[1].Value
-          $work = Join-Path $env:RUNNER_TEMP "hv"
+          # In the profile, not RUNNER_TEMP: HERDVIA_DIR below is inside it, and herdvia refuses a
+          # data folder whose parent folders another account may change.
+          $work = Join-Path $env:LOCALAPPDATA "hv"
           $good = Join-Path $work "srv\good"
           $bad = Join-Path $work "srv\bad"
           $pkg = Join-Path $work "pkg"
@@ -317,9 +350,10 @@ jobs:
             if (-not $ok) { throw "check failed: $what" }
             Write-Host "ok: $what"
           }
-          function Invoke-Install($shell, $release) {
+          # $releaseBase: download from there instead of $base/$release.
+          function Invoke-Install($shell, $release, $releaseBase) {
             $ErrorActionPreference = "Continue"
-            $env:HERDVIA_RELEASE_BASE = "$base/$release"
+            $env:HERDVIA_RELEASE_BASE = if ($releaseBase) { $releaseBase } else { "$base/$release" }
             $log = Join-Path $work ("out-" + [IO.Path]::GetRandomFileName() + ".txt")
             & $shell -NoProfile -ExecutionPolicy Restricted -Command "Get-ExecutionPolicy; irm $base/$release/install.ps1 | iex" *> $log
             $code = $LASTEXITCODE
@@ -382,6 +416,14 @@ jobs:
             Check ($r.Text -match "checksum mismatch") "reports the checksum mismatch"
             Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "installed herdvia.exe is unchanged"
             Check (@(Get-ChildItem -LiteralPath $dir -Filter "herdvia.exe*.old").Count -eq 0) "nothing was renamed"
+            Check (-not (Test-Path -LiteralPath (Join-Path $dir "herdvia.new.exe"))) "no herdvia.new.exe is left"
+
+            # install.ps1 from here, but a release base on another host over plain http.
+            $r = Invoke-Install powershell good "http://example.com/good"
+            Check ($r.Code -ne 0) "a plain http release base on another host fails"
+            Check ($r.Text -match "HERDVIA_RELEASE_BASE must start with https://") "reports that the release base must use https"
+            Check ($r.Text -notmatch "(?m)^Downloading ") "nothing was downloaded"
+            Check ((Get-FileHash $exe -Algorithm SHA256).Hash -eq $built) "installed herdvia.exe is unchanged"
             Check (-not (Test-Path -LiteralPath (Join-Path $dir "herdvia.new.exe"))) "no herdvia.new.exe is left"
 
             # An upgrade cut short: herdvia.exe is broken and the working one is herdvia.exe.old.

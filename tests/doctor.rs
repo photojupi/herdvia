@@ -10,7 +10,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,6 +61,80 @@ fn creates_nothing_for_a_missing_data_directory() {
         listing(&n.home),
         home_before,
         "doctor 가 HOME 에 무언가를 만듦"
+    );
+}
+
+#[test]
+fn fails_on_a_missing_data_directory_below_a_directory_others_can_write() {
+    let n = Node::new("X");
+    let shared = n.root.join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    let mut c = n.cmd(&["doctor"]);
+    c.env("HERDVIA_DIR", shared.join("hl"));
+    let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    let l = lines(&o);
+    let dir = find(&l, "fail data directory: ");
+    assert!(
+        dir.contains(&format!(
+            "{} is writable by other users",
+            fs::canonicalize(&shared).unwrap().display()
+        )),
+        "{dir}"
+    );
+    // 원인은 폴더 줄에 있으므로 키, 피어, 에이전트 줄은 없다.
+    for skipped in ["secret.key:", "peers:", "agent:"] {
+        assert!(
+            !l.iter().any(|l| l[5..].starts_with(skipped)),
+            "{skipped} 줄이 있음:\n{}",
+            o.out()
+        );
+    }
+    assert!(
+        fs::read_dir(&shared).unwrap().next().is_none(),
+        "doctor 가 무언가를 만듦"
+    );
+}
+
+#[test]
+fn fails_on_dot_dot_after_a_missing_directory_and_creates_nothing() {
+    let n = Node::new("X");
+    let shared = n.root.join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    // 없는 missing 뒤의 .. 는 검사하지 못한 shared 로 돌아간다.
+    let dir = n.root.join("missing/../shared/new/data");
+    let mut c = n.cmd(&["doctor"]);
+    c.env("HERDVIA_DIR", &dir);
+    let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    let l = lines(&o);
+    assert_eq!(
+        find(&l, "fail data directory: "),
+        format!(
+            "fail data directory: {} (from HERDVIA_DIR; automatic start always uses the default directory); the path to the data directory {} has \"..\" after {}, which does not exist, so the directories that \"..\" leads back to cannot be checked; write the path without \"..\"",
+            dir.display(),
+            dir.display(),
+            fs::canonicalize(&n.root).unwrap().join("missing").display()
+        )
+    );
+    for skipped in ["secret.key:", "peers:", "agent:"] {
+        assert!(
+            !l.iter().any(|l| l[5..].starts_with(skipped)),
+            "{skipped} 줄이 있음:\n{}",
+            o.out()
+        );
+    }
+    // herdvia id 도 거부하고 아무것도 만들지 않는다.
+    let mut c = n.cmd(&["id"]);
+    c.env("HERDVIA_DIR", &dir);
+    let o = try_run(c, Duration::from_secs(30)).expect("id 가 30초 안에 끝나지 않음");
+    assert_eq!(o.code(), Some(255), "stdout:\n{}", o.out());
+    assert!(!n.root.join("missing").exists(), "missing 이 만들어짐");
+    assert!(
+        fs::read_dir(&shared).unwrap().next().is_none(),
+        "shared 아래에 무언가가 만들어짐"
     );
 }
 
@@ -368,31 +441,25 @@ fn fails_on_a_data_directory_this_user_cannot_open() {
 }
 
 #[test]
-fn shows_a_core_found_through_a_relative_path_by_its_absolute_path() {
+fn does_not_run_a_core_found_only_through_a_relative_or_empty_path_entry() {
     let n = Node::new("X");
-    let mut c = n.cmd(&["doctor"]);
-    c.env("PATH", "bin:/usr/bin:/bin").current_dir(&n.root);
-    let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
-    let l = lines(&o);
-    let core = find(&l, "warn herdr-core: ");
-    let shown = core["warn herdr-core: ".len()..].split(';').next().unwrap();
-    assert!(shown.starts_with('/'), "{core}");
-    assert_eq!(
-        fs::canonicalize(shown).unwrap(),
-        fs::canonicalize(n.bin.join("herdr-core")).unwrap()
-    );
-    if cfg!(target_os = "macos") {
-        // 안내된 명령을 다른 현재 폴더에서 그대로 실행하면 링크가 실제 파일을 가리킨다.
-        let (_, command) = core.split_once("Link it: ").expect(core);
-        let st = Command::new("sh")
-            .args(["-c", command])
-            .current_dir(&n.home)
-            .status()
-            .unwrap();
-        assert!(st.success());
-        assert_eq!(
-            fs::canonicalize(n.home.join(".local/bin/herdr-core")).unwrap(),
-            fs::canonicalize(n.bin.join("herdr-core")).unwrap()
+    // 상대 경로 항목(bin)과 빈 항목은 현재 폴더 기준이다. 그 폴더의 herdr-core 를 찾지도 실행하지도 않는다.
+    for (path, cwd) in [
+        ("bin:/usr/bin:/bin", &n.root),
+        ("./bin:/usr/bin:/bin", &n.root),
+        (":/usr/bin:/bin", &n.bin),
+    ] {
+        let mut c = n.cmd(&["doctor"]);
+        c.env("PATH", path).current_dir(cwd);
+        let o = try_run(c, Duration::from_secs(30)).expect("doctor 가 30초 안에 끝나지 않음");
+        let l = lines(&o);
+        assert!(
+            find(&l, "fail herdr-core: ").starts_with("fail herdr-core: not found ("),
+            "[{path}] {l:?}"
+        );
+        assert!(
+            !n.root.join("invoked").exists(),
+            "[{path}] 현재 폴더 기준의 herdr-core 가 실행됨"
         );
     }
 }

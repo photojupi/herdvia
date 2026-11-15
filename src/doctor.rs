@@ -776,6 +776,11 @@ fn socket(_dir: &Path) -> Option<Socket> {
 }
 
 fn dir_state(dir: &Path) -> DirState {
+    // Parent directories that another account could change are refused even before the
+    // data directory exists, so that herdvia id is not suggested there.
+    if let Err(err) = ipc::check_parents(dir) {
+        return DirState::Refused(err.to_string());
+    }
     // The agent refuses a symbolic link, and a junction on Windows (ipc::prepare_dir).
     match fs::symlink_metadata(dir) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => DirState::Missing,
@@ -929,21 +934,11 @@ fn find_core(home: &Path) -> (CoreFound, String, PathBuf) {
     };
     let local = home.join(".local/bin");
     let link = local.join("herdr-core");
-    // Relative entries are made absolute against the current directory, so that the path
-    // shown and the link target suggested below do not depend on where they are used.
-    // An empty entry means the current directory, as it does to the shell.
+    // Empty and relative entries are skipped. They name the current directory, which the agent
+    // does not run in, and doctor runs what it finds, so a herdr-core that someone else put
+    // in the directory doctor is run from would otherwise run.
     let shell: Vec<PathBuf> = env::var_os("PATH")
-        .map(|p| {
-            env::split_paths(&p)
-                .filter_map(|d| {
-                    if d.as_os_str().is_empty() {
-                        env::current_dir().ok()
-                    } else {
-                        std::path::absolute(d).ok()
-                    }
-                })
-                .collect()
-        })
+        .map(|p| env::split_paths(&p).filter(|d| d.is_absolute()).collect())
         .unwrap_or_default();
     if cfg!(target_os = "macos") {
         // The PATH that the LaunchAgent gives the agent; the connect line also tries ~/.local/bin.

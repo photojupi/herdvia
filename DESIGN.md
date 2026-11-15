@@ -33,6 +33,9 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
 `HERDVIA_DIR`은 절대 경로여야 한다. 빈 값이나 상대 경로는 명령을 실행한 폴더에 따라 가리키는 곳이 달라지므로
 `HERDVIA_DIR must be an absolute path, not "<값>"`으로 거부한다(255).
 Unix에서는 폴더 권한 0700, 소켓 `agent.sock` 권한 0600이다.
+Unix에서는 데이터 폴더까지 가는 경로도 다른 계정이 바꿀 수 없어야 한다. 데이터 폴더의 모든 상위 폴더는 이 사용자나 root 소유여야 하고,
+group이나 other에 쓰기 권한이 있으면 sticky 비트가 없는 한 거부한다(자세한 규칙과 이유는 M3의 "파일"). Windows도 상위 폴더를 검사한다(M5a).
+이 상위 경로 검사는 사용자가 `HERDVIA_DIR`(Linux는 `XDG_DATA_HOME` 포함)로 직접 고른 위치에만 건다. 내장 기본 데이터 폴더에는 걸지 않는다(이유는 M3의 "파일").
 
 ## 프레임 형식
 
@@ -118,6 +121,11 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - 이름은 `[A-Za-z0-9._-]{1,32}`다.
 - inbound: 그 피어가 이 PC에서 명령을 실행해도 된다. outbound: 이 PC가 그 피어로 걸어도 된다.
 - `allow`, `revoke`는 에이전트가 떠 있으면 즉시 반영되고, 떠 있지 않아도 파일에는 반영된다.
+  소켓이 없으면 바로 에이전트가 없다고 본다. 소켓이 연결을 거부하면 Unix에서는 데이터 폴더의 잠금(에이전트가 사는 동안 쥐는 `flock`)을 비차단으로 잡아 본다(`accept`의 reload도 같다).
+  잡히면 곧바로 풀고 에이전트가 없다고 보아 기다리지 않고 성공한다. 잡히지 않으면 에이전트가 살아 있으므로 1초 동안 다시 시도하고, 그래도 거부되면
+  `the peers file is updated, but the running agent did not take the reload request and still uses the previous peer list; run the same command again, or restart the agent`로 실패한다(종료 코드 255, 성공 줄은 쓰지 않는다).
+  macOS는 살아 있는 에이전트의 listen 대기열이 가득 찬 순간에도 죽은 에이전트가 남긴 소켓과 같은 `ECONNREFUSED`로 거부하므로(실측: 대기열 128개), 거부만 보고 포기하면 reload가 조용히 빠져 revoke한 피어가 계속 허용될 수 있기 때문이다.
+  잠금을 잠깐 잡는 그 순간에 시작하던 에이전트는 드물게 `agent is already running`으로 실패할 수 있다. Windows는 이 잠금을 보지 않고 예전처럼 1초 동안 거부가 이어지면 에이전트가 없다고 본다.
 - 성공하면 `allow`는 `<이름> <EndpointId> <in|out|both>`(accept와 같은 형식), `revoke`는 `revoked <이름> <EndpointId>` 한 줄을 표준 출력에 쓴다.
   에이전트 reload까지 성공한 뒤에 쓴다. 무엇이 바뀌었는지 눈으로 확인하게 하려는 것이다.
 - 없는 이름을 `revoke`하면 `no peer named <이름>`으로 실패하고 파일을 건드리지 않는다. 오타로 아무것도 지우지 않았는데 성공으로 보이면 안 되기 때문이다.
@@ -136,6 +144,8 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - `peers`: 피어 목록. 권한 0600. 한 줄에 `이름 EndpointId 권한`(권한은 `in`, `out`, `both`).
 - Unix의 데이터 폴더 준비(`prepare_dir`): 없으면 0700으로 만든 뒤 `O_NOFOLLOW | O_DIRECTORY`로 한 번 열고, 그 디스크립터 하나로 소유자 검사(fstat), `chmod 700`(fchmod), macOS ACL 검사를 한다.
   경로로 따로 보고 바꾸면 그 사이에 폴더가 링크로 바뀔 수 있기 때문이다. 디렉터리를 가리키는 심볼릭 링크는 열 때 `data path must be a real directory`로 거부한다.
+  이 디스크립터가 지키는 범위는 말단 데이터 폴더 하나의 검사와 chmod 사이다. 그 뒤 `secret.key`, `peers`, 임시 파일, `agent.sock`은 경로로 다시 열므로,
+  그 위의 경로가 바뀌는 것은 아래의 상위 경로 검사가 막는다.
   그 경로에 일반 파일이나 디렉터리를 가리키지 않는 링크(깨진 링크 포함)가 이미 있으면 그 전에 폴더를 만드는 단계(`DirBuilder`)가 OS 오류(`File exists`)로 끝난다.
   이 사용자 소유인데 이 사용자가 읽을 수 없는 폴더(모드 0000 등, 열기가 EACCES)는 열 수 없으므로 예전처럼 경로로 확인하고 0700으로 고친 뒤 다시 연다.
   이 chmod는 링크를 따라가지 않는다(`fchmodat`에 `AT_SYMLINK_NOFOLLOW`). 확인 뒤 그 경로가 링크로 바뀌어도 링크 대상의 모드를 바꾸지 않기 위해서다.
@@ -148,6 +158,51 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
   deny 항목만 있는 ACL은 받는다. `acl_get_fd_np`가 ENOENT, ENOTSUP, EOPNOTSUPP로 실패하면 ACL이 없는 것으로 본다.
   ACL을 지원하지 않는 파일 시스템에는 allow 항목도 있을 수 없으므로, 그런 볼륨을 오류(`Operation not supported`)로 막을 이유가 없다. 다른 errno는 오류다.
   Linux는 ACL을 검사하지 않는다.
+- Unix의 상위 경로 검사(`ipc::check_parents`): 데이터 폴더의 상위 폴더를 다른 계정이 바꿀 수 있으면, 위 검사가 끝난 뒤 경로를 링크나 다른 폴더로 바꿔
+  `secret.key`와 `peers`의 읽기·쓰기, `agent.sock`의 bind·connect를 다른 곳으로 돌릴 수 있다. 기본 경로에서는 성립하지 않지만 `HERDVIA_DIR`은 어디든 가리킬 수 있다.
+  그래서 이 검사는 `HERDVIA_DIR`(Linux는 `XDG_DATA_HOME` 포함)로 고른 위치에만 건다(아래의 "기본 데이터 폴더").
+  파일 저장 코드(경로 기반 API, tempfile, 소켓 bind/connect)를 디렉터리 핸들 기준으로 모두 바꾸는 대신, 다른 계정이 바꿀 수 없는 경로만 받는다.
+  소켓은 핸들 기준으로 bind·connect할 공통 수단이 없어 어차피 경로가 안전해야 하기 때문이다. 규칙은 다음과 같다.
+  - 루트부터 요소 단위로 내려가며 확인한다. 데이터 폴더의 모든 상위 디렉터리는 이 사용자(euid)나 root 소유여야 한다(`is owned by another user (uid <번호>)`).
+    다른 소유자는 지금 권한이 0755여도 언제든 chmod하고 항목을 바꿀 수 있다.
+  - group이나 other에 쓰기 권한이 있으면 거부한다(`is writable by other users (mode <모드>, no sticky bit)`, `chmod go-w` 안내). 그룹 구성원이 이 사용자뿐이어도 보수적으로 거부한다.
+  - sticky 비트가 있는 디렉터리(`/tmp`)는 받는다. 그 안의 항목은 항목 소유자, 디렉터리 소유자, root만 지우거나 이름을 바꿀 수 있기 때문이다.
+    대신 그 안에서 지나가는 항목(다음 경로 요소, 데이터 폴더 자신일 수도 있다)도 이 사용자나 root 소유여야 한다. `/tmp` 아래 남의 소유 폴더를 지나가면 그 소유자가 아래를 바꿀 수 있다.
+  - 중간 요소가 심볼릭 링크면, 링크가 놓인 디렉터리를 위 규칙으로 확인한 뒤 링크 대상 경로도 같은 규칙으로 따라가며 확인한다.
+    macOS의 `/tmp` → `/private/tmp`, `/var` → `/private/var`처럼 정상 경로에도 링크가 있어 일괄 거부할 수 없다. `..`는 커널처럼 링크를 푼 실제 폴더에서 올라간다.
+    순환을 막기 위해 링크는 32개까지 따라가고, 넘으면 오류다. 데이터 폴더 자신이 링크여도 대상을 같은 규칙으로 따라가며 확인한다.
+    경로가 `/`나 `/.`으로 끝나면 커널이 그 링크를 따라가고, `private_file`과 `connect`가 여는 `폴더/peers`, `폴더/agent.sock`에서는 그 링크가 중간 요소이기 때문이다.
+    끝 슬래시 없이 준 링크는 위의 `data path must be a real directory` 규칙대로 `prepare_dir`가 거부한다. 끝 슬래시가 있으면 `O_NOFOLLOW`로 열어도 커널이 링크를 따라가므로
+    그 규칙이 막지 못하지만, 대상의 상위 경로는 이 검사가 확인했다.
+  - 없는 요소를 만나면 그 아래는 아직 없으므로 존재하는 부분까지만 확인한다. 상대 경로는 현재 폴더를 앞에 붙여 확인한다.
+    다만 없는 요소 뒤에 `..`가 남아 있으면(링크 대상에서 온 것 포함) 그 `..`가 확인하지 못한 기존 폴더로 돌아갈 수 있고 `prepare_dir`가 그 경로로 폴더를 만들게 되므로,
+    InvalidInput(`the path to the data directory <데이터 폴더> has ".." after <없는 요소>, which does not exist, so the directories that ".." leads back to cannot be checked; write the path without ".."`)으로 거부하고 아무것도 만들지 않는다. 문자열 정규화로 `..`를 지우지는 않는다(링크 위의 `..` 의미가 바뀐다).
+  - macOS는 상위 디렉터리의 확장 ACL에 경로를 바꿀 수 있게 하는 allow 항목(`add_file`, `add_subdirectory`, `delete`, `delete_child`, `writesecurity`, `chown`)이 있으면 거부한다
+    (`has an access control list (ACL) entry that allows adding, deleting, or changing entries or permissions there`, `ls -led` 안내). ACL은 권한 비트와 따로 이런 변경을 허용하기 때문이다.
+    읽기·탐색 allow와 deny 항목은 받는다. 홈 폴더와 `~/Library`의 기본 ACL(`group:everyone deny delete`)은 그대로 통과한다. allow 항목은 누구에게 준 것이든 거부한다. 대상 계정을 따지는 계산보다 단순하고 보수적이다.
+    상위 폴더에 데이터 폴더와 같은 규칙(allow 항목이 하나라도 있으면 거부)을 쓰면 읽기 전용 ACL까지 거부하므로 규칙을 나눈다. 데이터 폴더, `secret.key`, `peers`의 규칙은 바꾸지 않는다.
+    ACL은 `acl_get_link_np`로 경로로 읽는다. 그 위 폴더를 먼저 확인했으므로 다른 계정이 그 이름을 바꿀 수 없고, 탐색 권한만 있는 폴더(0711)에서도 읽힌다. ACL이 없다는 errno 처리는 위와 같다.
+    Linux는 mode만 본다. POSIX ACL의 이름 붙은 사용자·그룹 항목은 mask를 넘지 못하고 mask는 group 비트로 보이므로, group 쓰기 거부가 그 쓰기도 막는다.
+  - 거부는 PermissionDenied이고, 문구는 `<경로 요소> <이유>, who could change the path to the data directory <데이터 폴더>; <할 일>`이며
+    할 일 끝에는 `use a data directory whose parent directories only this user or root can change`가 붙는다. 경로 요소는 링크를 푼 실제 경로로 쓴다(macOS의 `/var/…`는 `/private/var/…`로 나온다).
+  - 이 검사는 아무것도 만들거나 고치지 않는다. 거는 곳은 `prepare_dir`(폴더를 만들기 전과 만든 뒤, chmod 전), `check_dir`(doctor), `private_file`(`secret.key`·`peers` 열기, 에이전트의 reload 포함),
+    클라이언트 `connect`(아무것도 만들지 않는다), 에이전트 `listen`(`prepare_dir`를 거친다)이다. `prepare_dir`가 만든 뒤 다시 보는 것은, sticky 폴더에서 다른 계정이 없는 중간 폴더를 먼저 만들었을 수 있기 때문이다.
+    결과를 캐시하지 않는다. 오래 도는 에이전트의 나중 읽기도 그때 상태로 확인한다.
+  - 상위 경로 거부는 "에이전트 없음"이 아니다. 소켓이 없으면 NotFound, 죽은 소켓이면 ConnectionRefused인 기존 의미는 그대로이고(없는 폴더는 검사를 통과한 뒤 connect가 NotFound다),
+    거부는 PermissionDenied라 이 둘을 에이전트 없음으로 삼키는 `reload_if_running`과 doctor가 숨기지 않는다.
+  - 신뢰 주체(이 사용자와 root)가 경로를 바꾸는 것은 막지 않는다. 막는 것은 다른 일반 계정의 바꿔치기다. 검사 뒤 이 사용자나 root가 상위 폴더 권한을 넓히면 다음 진입점에서 거부된다.
+    OS 임시 폴더(macOS `/var/folders/…/T`, `/tmp`)는 정상 권한에서 통과한다.
+  - 기본 데이터 폴더: 내장 기본 폴더(macOS `$HOME/Library/Application Support/herdvia`, 그 밖의 Unix `$HOME/.local/share/herdvia`)에는 이 검사를 걸지 않는다.
+    `check_parents`는 맨 앞에서, 넘어온 폴더가 `data_dir`이 `HERDVIA_DIR` 없이 계산하는 그 경로(`home_dir()` 기준)와 같으면 검사 없이 통과시킨다.
+    `XDG_DATA_HOME`에서 온 경로는 기본으로 치지 않고 검사한다. 경로 요소 단위로 비교하므로 끝의 `/` 같은 차이는 같은 경로로 보지만,
+    `HERDVIA_DIR`이 같은 폴더를 가리켜도 링크를 거치거나 `..`를 넣는 등 표기가 다르면 예외로 치지 않고 검사한다.
+    `private_file`(파일의 부모 폴더를 넘긴다), `check_dir`, `connect`, `prepare_dir`가 모두 같은 판정을 탄다. `HOME`이 없어 기본 폴더를 구하지 못하면 예외 없이 검사한다.
+    이유: 점검에서 나온 문제의 조건은 다른 계정이 바꿀 수 있는 폴더 아래의 `HERDVIA_DIR`이고 기본 경로에서는 성립하지 않는다.
+    기본 경로의 상위 폴더(홈과 그 위)를 다른 계정이 바꿀 수 있는 PC라면 그 계정은 이미 로그인 항목이나 셸 설정을 바꿔 이 사용자로 실행할 수 있으므로, 기본 경로를 거부해서 얻는 보호가 없다.
+    반면 상위 폴더가 그룹 쓰기 가능한 Linux(사용자 전용 그룹과 umask 002), 관리 도구가 프로필에 ACL을 건 Mac에서는 기본 경로가 거부될 수 있고,
+    자동 시작은 기본 폴더만 쓰므로 우회할 방법이 없다. 업그레이드한 에이전트가 시작을 거부하면 그 PC로 가는 통로가 끊긴다.
+    데이터 폴더, `secret.key`, `peers` 자체의 검사(소유자, 0700과 0600, macOS ACL)는 기본 폴더에서도 그대로다.
+  - 이 절의 규칙은 Unix의 것이다. Windows의 상위 폴더 검사는 M5a 설계에 있다.
 
 ### 에이전트
 
@@ -314,7 +369,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   상승된 에이전트가 띄운 herdr-core는 높은 무결성 수준으로 도는데, 같은 사용자의 보통 무결성 프로세스가 파이프로 그것을 부릴 수 있기 때문이다.
   `TokenElevationTypeDefault`(UAC 꺼짐, 기본 제공 Administrator, 일반 사용자)와 `Limited`는 허용한다. UAC가 꺼졌거나 기본 제공 Administrator면
   토큰이 늘 상승돼 있고 대신 쓸 보통 토큰이 없어서, 막으면 에이전트를 아예 띄울 수 없다. 다른 명령은 막지 않는다(`agent install`은 M5b).
-- 데이터 폴더는 `chmod 700`에 해당하는 검사와 설정을 한다(`prepare_dir`, 키를 읽는 모든 명령). 폴더를 만든 뒤 재분석 지점(정션, 심볼릭 링크 등)이면
+- 데이터 폴더는 `chmod 700`에 해당하는 검사와 설정을 한다(`prepare_dir`, 키를 읽는 모든 명령). 상위 폴더 검사(아래)를 먼저 하고, 폴더를 만든 뒤 재분석 지점(정션, 심볼릭 링크 등)이면
   `data path must be a real directory, not a junction, symbolic link, or other reparse point`로, 소유자가 현재 사용자, Administrators(S-1-5-32-544),
   LocalSystem(S-1-5-18)이 아니면 `data directory must be owned by this user, Administrators, or SYSTEM, not <SID>; use a directory that this user created`로 거부한다.
   소유자는 언제든 DACL을 되돌릴 수 있으므로 소유자부터 본다. Administrators를 받는 것은 상승된 사용자가 만든 객체의 소유자가 Administrators이기 때문이다.
@@ -341,18 +396,82 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   - 폴더는 한 핸들로 검사하고, WRITE_DAC가 필요할 때만 경로로 다시 연다(ReOpenFile로는 WRITE_DAC를 받지 못한다). 다시 연 항목의 파일 ID(볼륨 일련번호와 파일 인덱스)가
     처음 연 것과 다르면 그 핸들은 쓰지 않아, 그 사이의 바꿔치기를 막는다. 폴더와 doctor의 쓰기 가능 판정은 이때 `<경로> was replaced while herdvia checked it`으로 거부한다.
     `secret.key`와 `peers`의 수리는 처음부터 WRITE_DAC로 열어 검사한 그 핸들로 걸므로 다시 열지 않는다.
-  프로필의 기본 권한에 기대지 않는 것은 `HERDVIA_DIR`이 프로필 밖을 가리켜도 같은 보호를 받게 하고, 위 실측처럼 프로필의 기본 권한에도 다른 주체가 들어 있을 수 있기 때문이다.
+  프로필의 기본 권한에 기대지 않는 것은 `HERDVIA_DIR`이 프로필 밖을 가리켜도(상위 폴더가 아래의 검사를 통과하는 한) 같은 보호를 받게 하고, 위 실측처럼 프로필의 기본 권한에도 다른 주체가 들어 있을 수 있기 때문이다.
 - `secret.key`와 `peers`는 재분석 지점이나 일반 파일이 아닌 것을 `<경로> must be a regular file, not a directory, link, or other reparse point`로,
   소유자가 위 셋이 아니면 `<경로> must be owned by this user, Administrators, or SYSTEM, not <SID>`로 거부한다.
   위의 수리 뒤에도 DACL이 열려 있으면 `<경로> allows access to accounts other than this user, SYSTEM, and Administrators, and herdvia cannot restrict it; in an administrator terminal run icacls "<경로>" /grant "*<사용자 SID>:F" and run herdvia again`으로 거부한다.
   이 사용자에게 그 파일의 모든 권한을 주면 다시 실행할 때 herdvia가 파일 자체의 DACL로 제한한다. 이 명령도 PowerShell과 cmd에 그대로 붙여 넣을 수 있다.
   에이전트, CLI, 실행 중의 `peers` 다시 읽기, doctor가 같은 문구를 쓴다. 파일이 없을 때의 동작(키 생성, 빈 목록)은 그대로다.
+- 상위 폴더 검사: 위 검사는 데이터 폴더와 두 파일만 본다. 상위 폴더를 다른 계정이 바꿀 수 있으면 검사가 끝난 뒤 데이터 폴더 경로를 정션이나 다른 폴더로 바꿔
+  `secret.key`, `peers`, `agent.lock`을 읽고 쓰는 위치를 돌릴 수 있었다. 그래서 `HERDVIA_DIR`로 고른 위치에서는 신뢰할 수 있는 상위 경로만 받는다.
+  - 기본 데이터 폴더(`%APPDATA%\herdvia`)에는 이 검사를 걸지 않는다. `check_ancestors`는 맨 앞에서, 넘어온 폴더가 `data_dir`이 `HERDVIA_DIR` 없이 계산하는 그 경로
+    (`APPDATA` 기준)와 같으면 검사 없이 통과시킨다. 경로 요소 단위로 비교하므로 끝의 역슬래시 같은 차이는 같은 경로로 보지만,
+    `HERDVIA_DIR`이 같은 폴더를 가리켜도 대소문자, `\\?\` 접두사, 정션을 거친 경로 등 표기가 다르면 예외로 치지 않고 검사한다.
+    `open_file`(파일의 부모 폴더를 넘긴다), `prepare_dir`, `inspect_dir`, `agent.lock` 잠금이 모두 같은 판정을 탄다. `APPDATA`가 없어 기본 폴더를 구하지 못하면 예외 없이 검사한다.
+    이유는 Unix(M3의 "파일")와 같다. 점검에서 나온 문제의 조건은 다른 계정이 바꿀 수 있는 폴더 아래의 `HERDVIA_DIR`이고 기본 경로에서는 성립하지 않는다.
+    프로필의 상위 폴더를 다른 계정이 바꿀 수 있는 PC라면 그 계정은 이미 로그인 항목이나 시작 프로그램을 바꿔 이 사용자로 실행할 수 있으므로, 기본 경로를 거부해서 얻는 보호가 없다.
+    반면 프로필이나 `AppData`를 정션으로 다른 드라이브에 옮긴 PC에서는 기본 경로가 거부될 수 있고, 자동 시작은 기본 폴더만 쓰므로 우회할 방법이 없다.
+    업그레이드한 에이전트가 시작을 거부하면 그 PC로 가는 통로가 끊긴다. 데이터 폴더, `secret.key`, `peers` 자체의 검사(소유자, DACL, 레이블)는 기본 폴더에서도 그대로다.
+  드라이브 루트부터 데이터 폴더의 부모까지 각 폴더를 한 핸들로 열어 읽기만 하고, 아무것도 만들거나 고치지 않는다.
+  파일 저장 방식(경로와 임시 파일)과 파이프 이름은 바꾸지 않는다. 검사한 폴더를 다른 일반 계정이 더는 바꿀 수 없다는 것이 그 뒤 경로를 그대로 쓰는 근거다.
+  - 재분석 지점이면 `<폴더> is a junction, symbolic link, or other reparse point above the data directory; use a data directory whose parent folders are all real directories`로 거부한다.
+  - 소유자는 이 사용자, SYSTEM, Administrators, TrustedInstaller(S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464)여야 한다.
+    `C:\`와 Windows 폴더는 TrustedInstaller가 소유할 수 있어서 넣었다. 남이 먼저 만들어 둔 상위 폴더는 여기서 걸린다.
+  - DACL이 NULL이면 거부한다. 그 폴더 자신에 적용되는 허용 항목(INHERIT_ONLY 항목은 뺀다) 가운데 위 넷이 아닌 계정에게 경로를 바꿀 수 있는 권한,
+    즉 DELETE(그 폴더의 이름 바꾸기), FILE_DELETE_CHILD(안의 항목 이름 바꾸기), FILE_WRITE_DATA(폴더에서는 FILE_ADD_FILE)와 FILE_WRITE_ATTRIBUTES(재분석 지점 설정),
+    WRITE_DAC, WRITE_OWNER(이 권한들을 스스로 얻기), 이들을 포함하는 GENERIC_ALL과 GENERIC_WRITE를 주는 것이 있으면 거부한다.
+    FILE_WRITE_DATA나 FILE_WRITE_ATTRIBUTES가 있는 핸들로는 빈 폴더에 재분석 지점(정션)을 설정할 수 있다(FSCTL_SET_REPARSE_POINT).
+    검사가 그 폴더를 실제 폴더로 확인한 직후 다른 계정이 정션으로 바꾸면 그 아래 경로가 다른 곳을 가리키게 되므로, 파일을 추가하는 권한도 경로를 바꾸는 권한으로 본다.
+    읽기·탐색 권한과 하위 폴더를 추가하기만 하는 권한(FILE_ADD_SUBDIRECTORY, 곧 FILE_APPEND_DATA)은 받는다.
+    `C:\`의 Authenticated Users 하위 폴더 추가 전용 항목과 상속 전용 Modify, CREATOR OWNER의 상속 전용 항목, 프로필 위의 Users·Everyone 읽기 항목 같은 기본 구성을 거부하지 않기 위해서다.
+    FILE_ADD_SUBDIRECTORY까지 거부하면 `C:\` 때문에 드라이브 아래의 거의 모든 경로가 거부된다.
+    deny 항목은 문제 삼지 않고, 검사하지 않는 허용 형식(object, callback, compound)은 열린 것으로 본다.
+  - 거부 문구는 `<폴더> lets <SID> write to it (enough to turn it into a junction), or delete, rename, or change the permissions of it or of what is inside it, so that account could swap the data directory inside it for another; remove that access, or use a data directory whose parent folders only this user, SYSTEM, Administrators, and TrustedInstaller can change`이다.
+    소유자와 NULL DACL, 검사하지 않는 허용 형식도 앞부분만 다르고 같은 형식이다. 오류 종류는 PermissionDenied다.
+  - 이 판정은 데이터 폴더와 두 파일의 안전 규칙(다른 계정의 허용 항목을 하나도 받지 않는다)과 따로 둔다. 그 규칙을 상위 폴더에 쓰면 프로필 위의 읽기 항목 때문에 프로필 아래의 경로부터 거부되고,
+    반대로 그 규칙을 느슨하게 하면 키와 `peers`의 보호가 약해지기 때문이다. 판정은 Win32 호출이 없는 함수(`src/ipc/dir_security.rs`)로 두어 모든 플랫폼에서 단위 테스트한다.
+  - 검사하는 곳: `prepare_dir`(폴더를 만들거나 DACL을 고치기 전. 없는 상위 폴더는 있는 데까지만 보고, `create_dir_all`이 만든 뒤 다시 본다), `inspect_dir`과 `ipc::check_parents`(doctor),
+    `private_file`과 `inspect_file`(실행 중의 `peers` 다시 읽기 포함), 에이전트의 `agent.lock` 잠금. 에이전트가 오래 돌므로 진입점마다 다시 본다.
+    파이프 접속(`connect`)에는 넣지 않는다. 파이프는 파일 시스템 경로가 아니고, 접속한 파이프의 소유자 SID를 이미 확인한다.
+  - 경로는 Win32가 해석하는 대로(`std::path::absolute`) 보고, 드라이브 문자로 시작하는 경로(`C:\`, `\\?\C:\`)만 검사한다.
+- 무결성 레이블: DACL은 이 사용자를 허용하므로, 같은 사용자의 Low 무결성 프로세스도 그 허용 항목으로 `secret.key`를 읽을 수 있었다.
+  레이블이 없는 객체는 Medium + NO_WRITE_UP으로 취급되는데, 이것은 쓰기만 막고 읽기는 막지 않는다.
+  그래서 `prepare_dir`가 데이터 폴더에 `S:(ML;OICI;NWNR;;;ME)`(Medium, NO_WRITE_UP과 NO_READ_UP, 하위 파일과 폴더로 상속)를, `secret.key`와 `peers`에 `S:(ML;;NWNR;;;ME)`를 건다.
+  NO_WRITE_UP은 레이블이 없을 때의 보호이므로 빼지 않는다.
+  - 범위: Low 무결성 프로세스가 보호된 파일을 새로 열어 읽는 것을 막는 최선 노력 강화다. 엄격한 불변 조건이 아니다.
+    레이블을 걸 수 없는 폴더와 파일(WRITE_OWNER가 없는 경우. 예: SYSTEM이 소유하고 이 사용자에게 Modify만 준 폴더)은 레이블 없이 지금처럼 쓰고,
+    레이블을 걸지 못했다고 명령이나 에이전트 시작을 실패시키지 않는다. 지금 지원하는 구성을 깨지 않는 것이 우선이기 때문이다. 그런 폴더에는 이 보호가 적용되지 않는다.
+    레이블을 건 뒤에도 이미 열려 있던 핸들이나 그 전에 읽힌 키(과거의 노출)는 되돌리지 못한다. 파이프와 프로세스의 경계는 이 레이블과 별개다.
+  - 레이블 상태는 DACL 상태와 따로 읽고 판단한다. DACL이 이미 herdvia의 상태인 기존 설치에서도 레이블이 없으면 건다.
+    객체 자신에 적용되는 첫 레이블 항목이 이미 Medium이고 NO_WRITE_UP과 NO_READ_UP이 있으면(폴더는 하위 파일과 폴더로 상속도 되면) 쓰지 않는다.
+    Medium보다 높은 레이블은 Medium으로 낮추지 않고 그대로 두며, Low 이하의 레이블은 Medium으로 올린다.
+  - 조회는 `READ_CONTROL`과 `LABEL_SECURITY_INFORMATION`으로, 설정은 `WRITE_OWNER`와 `LABEL_SECURITY_INFORMATION`으로 한다.
+    SACL 전체(`SACL_SECURITY_INFORMATION`)는 다루지 않는다. 특권이 필요하고 감사 항목을 덮어쓰기 때문이다.
+    설정이 필요할 때만 `WRITE_OWNER`로 다시 열고, DACL 수리처럼 파일 ID가 같은지 확인한 뒤 건다. DACL을 고칠 때와 따로 연다. 둘을 함께 요구하면 DACL만 고칠 수 있는 폴더에서 DACL 수리까지 못 하게 되기 때문이다.
+  - 이미 있는 `secret.key`와 `peers`는 파일마다 레이블을 읽어, 부족하면 파일 자체에 레이블을 건다. 폴더의 상속 레이블이 이미 있던 파일에 늘 전파된다고 볼 수 없기 때문이다.
+    폴더에서 상속된 레이블이 그 파일에 있으면 충분한 것으로 본다. 파일 DACL 수리(DACL이 열렸을 때만 일한다)와 상관없이 매번 확인한다.
+  - herdvia가 새로 만드는 파일(새 키, 임시 파일로 다시 쓰는 `peers`)은 만들어질 때부터 폴더의 상속 레이블을 받는다.
+    폴더에 레이블을 걸 수 없으면 새 파일은 다음 실행의 `prepare_dir`가 레이블을 걸 때까지 레이블이 없다.
+  - doctor의 판정과 출력에는 레이블을 넣지 않는다.
 - 남은 한계: 파일이나 폴더에 이 사용자를 겨냥한 명시적 WRITE_DAC deny가 있으면 `/grant` 안내만으로는 풀리지 않는다.
   이 사용자가 바꿀 수 없는 폴더가 deny 항목을 넘겨주면 herdvia가 새로 만드는 키와 `peers`는 그 deny를 받는다.
+  - UNC 경로(`\\server\share\...`, `\\?\UNC\...`)와 그 밖의 장치 경로는 상위 폴더 검사를 하지 않고 예전처럼 동작한다. 이런 `HERDVIA_DIR`에서는 상위 폴더를 통한 바꿔치기를 막지 못한다.
+    `subst`로 만든 드라이브는 그 드라이브의 루트부터만 보므로, 실제 폴더의 위쪽은 검사하지 않는다.
+  - 상위 폴더 검사는 이 사용자, SYSTEM, Administrators, TrustedInstaller가 검사 뒤에 경로나 권한을 바꾸는 것까지 막지 않는다.
+  - 상위 폴더가 재분석 지점이면 소유자나 권한과 상관없이 거부하므로, `HERDVIA_DIR`로 지정한 경로의 상위에 정션이나 볼륨 마운트 지점이 있으면 거부된다
+    (`C:\Users`나 프로필, `AppData`를 정션으로 다른 드라이브에 옮긴 PC에서 그 아래를 지정한 경우 등). 이전 버전에서 그 `HERDVIA_DIR`을 쓰던 경우 업그레이드 뒤 에이전트와 CLI가 시작하지 못한다.
+    이때는 `HERDVIA_DIR`을 정션을 거치지 않는 실제 경로로 지정한다. 그 실제 경로의 상위 폴더도 같은 검사를 통과해야 하며, 통과하지 못하면 doctor가 걸린 폴더와 계정을 알려 준다.
+    기본 경로(`%APPDATA%\herdvia`)는 이 검사를 하지 않으므로 그런 PC에서도 그대로 쓴다. 정션의 소유자와 대상 경로의 상위까지 확인해 받는 방식은 정하지 않았다.
 - `agent install`/`uninstall`은 M5a의 Windows에서 "지원하지 않음" 오류를 낸다.
 - 기존 통합 테스트(`tests/`)는 Unix 전용으로 둔다. Windows 쪽 단위 테스트는 줄 판정 같은 순수 로직과, 실제 NTFS와 파이프 위에서 확인하는 테스트로 이루어진다.
-  후자는 DACL 검사와 수리(`icacls`로 상태를 만든다), 정션과 링크 거부, `agent.lock`, `READ_CONTROL`만으로 파이프 소유자 읽기와 사용 중인 파이프 기다리기를 본다.
+  후자는 DACL 검사와 수리(`icacls`로 상태를 만든다), 정션과 링크 거부, 상위 폴더 검사(다른 계정의 Modify와 쓰기 권한 등, 읽기·하위 폴더 추가 전용 항목, 상위 정션, 기본 폴더 예외),
+  무결성 레이블(새 폴더와 새 파일, DACL만 맞는 기존 설치, 레이블을 걸 수 없는 폴더, Low로 띄운 프로세스의 읽기 거부), `agent.lock`, `READ_CONTROL`만으로 파이프 소유자 읽기와 사용 중인 파이프 기다리기를 본다.
   CI의 windows 잡이 windows-latest에서 MSVC 툴체인으로 단위 테스트(`cargo test --locked --lib --bins`)를 돌린다.
+  데이터 폴더를 쓰는 테스트는 실행 환경의 상위 폴더 권한에 따라 결과가 달라진다. 그래서 `src/ipc/windows.rs`의 테스트는 `%TEMP%`가 아니라 `%LOCALAPPDATA%\herdvia-tests` 아래에 폴더를 만들고,
+  그 상위가 검사를 통과하지 않으면 그 이유를 알리며 실패한다. `%LOCALAPPDATA%`는 기본 데이터 폴더(`%APPDATA%`)와 상위가 같아, 프로필을 옮기지 않은 기기에서는 통과한다.
+  `%TEMP%`는 다른 계정(샌드박스 계정 등)에 Modify를 주는 기기가 있어서 쓰지 않는다. 다른 모듈의 테스트(`peers`, `doctor`, `pair` 등)는 여전히 `%TEMP%` 아래에 데이터 폴더를 만들므로,
+  그런 기기에서는 `TMP`와 `TEMP`를 검사를 통과하는 폴더로 지정하고 돌린다. CI의 windows 잡은 러너의 `%TEMP%` 권한을 미리 알 수 없으므로
+  단위 테스트 전에 `%LOCALAPPDATA%\herdvia-tests`를 만들어 `TMP`와 `TEMP`로 지정한다.
   릴리스는 여전히 Linux에서 `x86_64-pc-windows-gnu`로 교차 빌드한다(gnu 디버그 빌드는 링크가 실패한다). 그래서 링크·ABI 차이는 이 잡으로 잡지 못한다.
 
 ### M5a 실기 결과 (Windows 11 10.0.26300, hc 0.1.21)
@@ -459,7 +578,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 | 명령 | 역할 |
 |---|---|
 | `herdvia listen [<이름>]` | 연결될 대상 PC(받는 쪽)에서 5분 동안 페어링 요청을 기다리고, 6자리 확인 번호를 대조해 `--inbound` 승인 여부를 묻는다 |
-| `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC(거는 쪽)에서 LAN 자동 발견 또는 일회용 초대 문자열로 대상 PC와 페어링하고, `--outbound` 등록 뒤 `hc machine add`까지 수행한다 |
+| `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC(거는 쪽)에서 LAN 자동 발견 또는 일회용 초대 문자열로 대상 PC와 페어링하고, 6자리 확인 번호가 같은지 이쪽에서도 확인받은 뒤 `--outbound` 등록과 `hc machine add`까지 수행한다 |
 
 기존 `id`, `allow`, `pending`, `accept`는 비대화형·수동 등록용으로 그대로 둔다. `listen`과 `connect`는 처음 설치한 사용자가 긴 EndpointId 복사, 방향 플래그(`--inbound`/`--outbound`) 판단, 최대 30초 재시도 대기, `hc machine add --via ...` 따옴표 처리를 직접 하지 않게 하려는 것이다.
 
@@ -467,24 +586,38 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 
 1. 받는 쪽 B에서 `herdvia listen [<이름>]`을 실행하면 시작할 때 `herdr-core` 설치 여부를 `doctor` 5번과 같은 기준으로 확인해, 없거나 경로·버전이 어긋나면 표준 오류에 `warning: ...`을 먼저 쓴다(실행을 막지는 않는다).
 2. `herdvia listen [<이름>]`은 에이전트가 떠 있어야 하며, 이미 다른 `listen`이 돌고 있으면 거부한다(255).
-   에이전트는 5분짜리 일회용 비밀 두 개(`invite_secret` 16바이트, `listen_id` 16바이트)를 메모리에만 만들고, CLI는 원격 연결용 초대 문자열 `hvi1-<base32>`를 화면에 출력하는 동시에 포그라운드 UDP 소켓으로 같은 LAN에 신호를 보낸다.
+   에이전트는 5분짜리 일회용 비밀 두 개(`invite_secret` 16바이트, `listen_id` 16바이트)를 메모리에만 만들고, CLI는 원격 연결용 초대 문자열 `hvi1-<base32>`와 이 PC의 지문(`This PC's fingerprint: ...`, `herdvia id` 둘째 줄과 같은 값)을 화면에 출력하는 동시에 포그라운드 UDP 소켓으로 같은 LAN에 신호를 보낸다.
+   지문은 거는 쪽이 LAN 후보 가운데 이 PC를 고를 때 대조할 기준이다.
 3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 outbound로 등록돼 있거나 다른 키가 쓰고 있으면 다이얼 전에 거부한다(255). 단, 명시적 `<초대>`를 넘겼고 초대의 `EndpointId`가 이미 같은 `<이름>`에 등록된 키와 같으면 재페어링·복구를 허용한다.
-   - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대면 바로 연결하고, 여러 대면 번호 선택을 묻고, 0대면 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(빈 줄이나 EOF로 입력이 끝나면 취소로 보아 1로 끝낸다).
+   - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대 이상이면 대수와 관계없이 호스트명과 지문을 번호 메뉴로 보여 주고, 대상 PC의 `listen` 화면에 나온 지문과 같은 항목을 고르라고 안내한다(`0`은 초대 붙여 넣기). 비콘은 인증되지 않아 같은 LAN의 누구나 자기 키로 후보를 만들 수 있으므로, 1대여도 자동으로 고르지 않는다.
+     0대면 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(메뉴나 초대 입력이 빈 줄이나 EOF로 끝나면 취소로 보아 1로 끝낸다).
    - `<초대>`를 주면 LAN 탐색 없이 초대에 들어 있는 `EndpointId`로 바로 건다(외부망이면 공개 릴레이·주소 조회 경유).
 4. 두 에이전트는 전용 ALPN `herdvia/pair/1` 위에서 TLS 1.3 exporter에 묶인 commit-reveal로 6자리 확인 번호(`NNN-NNN`, `000-000`~`999-999`)를 계산해 양쪽 화면에 동시에 보여 준다.
-5. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한, 전체 `listen` 5분 만료 및 동시 실패 중단도 함께 감시):
+5. 거는 쪽 A의 CLI는 확인 번호 아래에 `Same code on both PCs? [y/N]: `를 묻는다. 번호가 다르면 다른 PC에 연결된 것일 수 있으니 `n`을 답하라고 함께 안내한다.
+   - `y`(`yes`)면 에이전트에 로컬 통신의 STDIN 프레임 `approve`를 보내고 `Waiting for approval on the other PC...`를 보여 준다. 그 밖(`n`, 빈 줄, EOF)이면 `reject`를 보내고 1로 끝낸다. 프레임 형식은 `listen`의 승인 입력과 같다.
+   - A의 에이전트는 이 확인과 B의 승인 응답을 둘 다 받았을 때만 저장한다. 도착 순서는 상관없다. B의 승인이 먼저 와도 확인이 올 때까지 아무것도 저장하지 않는다.
+   - 확인이 확인 번호를 보낸 뒤 60초 안에 오지 않거나, `reject`가 오거나, 로컬 통신이 끊기면(`Ctrl-C`) 페어링 연결을 닫고 아무것도 저장하지 않는다. 확인 프레임을 보내지 않는 구버전 CLI가 새 에이전트에 붙어도 이 시간 초과로 저장 없이 끝난다.
+   - 프롬프트를 기다리는 동안에도 에이전트가 먼저 보내는 프레임(B의 거부, 오류)을 처리한다.
+   - 새 CLI가 구버전 에이전트(업그레이드 뒤 다시 시작하지 않은 에이전트)에 붙으면 확인을 보내기 전에 `APPROVED`가 온다. 구버전 에이전트는 이때 이미 B를 저장했으므로, CLI는 `hc machine add`를 실행하지 않고 255로 끝내며 `herdvia revoke <이름>` 뒤 에이전트를 다시 시작하고(`herdvia agent install`) 다시 페어링하라고 안내한다.
+     확인을 먼저 보내면 구버전 에이전트는 그 프레임을 예상하지 못해 저장 없이 오류로 끝나고, CLI는 에이전트를 다시 시작하라고 안내한다.
+6. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한, 전체 `listen` 5분 만료 및 동시 실패 중단도 함께 감시):
    - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 A의 `EndpointId` 앞부분 16진수 접두사(`-<4~24자>`)를 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
-   - B가 승인 응답을 보내면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(재접속 대기 중이던 기존 outbound 워커도 즉시 깨워 재시도 지연을 초기화하며, LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
+     B의 승인과 A의 확인은 서로를 기다리지 않는다. 그래서 B가 승인하고 A가 거절하면(순서와 관계없이. A가 먼저 거절해 연결을 닫은 뒤에 B가 `y`를 눌러도 B는 저장한다) B에는 A가 inbound로 남지만, A가 B를 outbound로 저장하지 않았으므로 연결은 생기지 않는다. 필요하면 B에서 `herdvia revoke`로 지운다.
+   - B가 승인 응답을 보내고 A의 사용자도 확인했으면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(재접속 대기 중이던 기존 outbound 워커도 즉시 깨워 재시도 지연을 초기화하며, LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
    - A의 CLI는 최대 5초 동안 `status`가 연결됨을 보일 때까지 짧게 기다린 뒤, 현재 실행 파일 경로를 OS 규칙(Unix는 `sh` 단일 인용, Windows는 `CommandLineToArgvW` 인용)에 맞게 감싼 `--via` 값으로 `hc machine add --via <...> --name <이름>`을 직접 실행한다(셸을 거치지 않는다).
-6. 종료 코드:
+7. 종료 코드:
    - `0`: 양쪽 피어 등록(거는 쪽은 `hc machine add`까지) 성공.
-   - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 프롬프트 입력 취소(빈 줄/EOF), 대기 시간 초과(연결 대기 5분 또는 승인 입력 60초), 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
-   - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 메뉴 선택이나 초대 문자열, 프로토콜·인증 실패(잘못된 증명 또는 Challenge 이후 중단 5회 누적으로 `listen`이 중단된 경우 포함).
+   - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 거는 쪽 확인 거부(`n`/빈 줄/EOF), 프롬프트 입력 취소(빈 줄/EOF), 대기 시간 초과(연결 대기 5분 또는 받는 쪽 승인 입력 60초), 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
+   - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 메뉴 선택이나 초대 문자열, 프로토콜·인증 실패(잘못된 증명 또는 Challenge 이후 중단 5회 누적으로 `listen`이 중단된 경우 포함),
+     거는 쪽 확인 입력 60초 초과(에이전트가 오류로 끝내므로 확인 프롬프트가 없는 구버전 CLI도 이유를 보여 준다), 확인 없이 승인한 구버전 에이전트.
 
 ### 프로토콜과 보안 경계
 
-- **ALPN 격리 (`herdvia/pair/1`)**: 원격 명령을 실행하는 `herdvia/1`과 완전히 분리한다. 에이전트의 `Policy::after_handshake`는 받는 쪽에서는 현재 활성 `listen` 세션이 열려 있을 때(동시 진행 연결 최대 4개), 거는 쪽에서는 활성 `connect`가 지정한 대상 `EndpointId`일 때만 `herdvia/pair/1` 핸드셰이크를 통과시키고, 평소에는 즉시 거부하며 `pending` 목록에도 남기지 않는다. 연결당 양방향 스트림 1개만 처리하고 단계별 시간 제한(단계당 15초, 승인 입력 60초, 전체 `listen` 5분)을 둔다. 로컬 IPC가 끊기면(`Ctrl-C` 등) 활성 `listen`·`connect` 상태와 열린 페어링 연결을 즉시 정리한다.
-- **포그라운드 전용 LAN 발견**: 상주 `herdvia agent`는 LAN 발견용 UDP 포트를 열지 않는다. `herdvia listen`과 `herdvia connect` CLI 프로세스가 실행되는 짧은 동안에만 UDP 포트 `48721`(IPv4 멀티캐스트 `239.255.77.86`, 브로드캐스트 `255.255.255.255`, 루프백 `127.0.0.1`)로 `HDVD1`(탐색 질의)과 `HDVB1`(비콘: 버전, 에이전트 QUIC 포트, `EndpointId`, `listen_id`, 정화된 호스트명)을 주고받는다. 게스트 Wi-Fi 클라이언트 격리나 방화벽으로 UDP가 막혀 있으면 `hvi1-...` 초대 문자열로 똑같이 연결된다.
+- **ALPN 격리 (`herdvia/pair/1`)**: 원격 명령을 실행하는 `herdvia/1`과 완전히 분리한다. 에이전트의 `Policy::after_handshake`는 받는 쪽에서는 현재 활성 `listen` 세션이 열려 있을 때(동시 진행 연결 최대 4개), 거는 쪽에서는 활성 `connect`가 지정한 대상 `EndpointId`일 때만 `herdvia/pair/1` 핸드셰이크를 통과시키고, 평소에는 즉시 거부하며 `pending` 목록에도 남기지 않는다. 연결당 양방향 스트림 1개만 처리하고 단계별 시간 제한(단계당 15초, 받는 쪽 승인 입력과 거는 쪽 확인 입력 각 60초, 전체 `listen` 5분)을 둔다. 로컬 IPC가 끊기면(`Ctrl-C` 등) 활성 `listen`·`connect` 상태와 열린 페어링 연결을 즉시 정리한다.
+- **포그라운드 전용 LAN 발견**: 상주 `herdvia agent`는 LAN 발견용 UDP 포트를 열지 않는다. `herdvia listen`과 `herdvia connect` CLI 프로세스가 실행되는 짧은 동안에만 UDP 포트 `48721`(IPv4 멀티캐스트 `239.255.77.86`, 브로드캐스트 `255.255.255.255`, 루프백 `127.0.0.1`)로 `HDVD1`(탐색 질의)과 `HDVB1`(비콘: 버전, 에이전트 QUIC 포트, `EndpointId`, `listen_id`, 정화된 호스트명)을 주고받는다. `listen`은 `HDVD1` 질의에 비콘을 유니캐스트로 답하는데, 질의의 출처가 사설(RFC 1918), 링크 로컬(`169.254.0.0/16`), 루프백 주소일 때만 답하고 그 밖의 출처는 조용히 무시한다. 소켓이 `0.0.0.0`에 바인드되므로 이 포트에 닿는 원격 주소에 LAN 경로의 인증 토큰인 `listen_id`를 내주지 않기 위해서다(주기적인 멀티캐스트·브로드캐스트 비콘은 그대로 보낸다). 게스트 Wi-Fi 클라이언트 격리나 방화벽으로 UDP가 막혀 있으면 `hvi1-...` 초대 문자열로 똑같이 연결된다.
+- **인증되지 않는 비콘과 거는 쪽 확인**: 비콘에는 서명이 없어, 같은 LAN의 누구나 자기 키와 아무 `listen_id`로 비콘을 보낼 수 있다. 그 키로 걸면 `auth_proof`는 상대가 고른 `listen_id`에 대해 맞고, 상대는 Challenge 뒤 곧바로 `Approved`를 보낼 수 있다. 상대가 보낸 `Approved`만으로 저장하면 사람의 확인 없이 그 키가 `--outbound`로 저장되고 Herdr에 머신으로 등록된다.
+  그래서 거는 쪽은 두 가지로 막는다. 후보를 자동으로 고르지 않고 `listen` 화면의 지문과 대조해 고르게 하며, 거는 쪽 사용자가 두 화면의 확인 번호가 같다고 답해야만 저장한다. 공격자의 키로 걸었다면 대상 PC의 `listen` 화면에는 확인 번호가 아예 나오지 않거나, 공격자가 비콘에서 얻은 `listen_id`로 대상 PC에 따로 걸어 프롬프트를 띄우더라도 commit-reveal 때문에 그 번호가 거는 쪽 화면의 번호와 다르다(같을 확률은 시도당 100만분의 1). 그래서 사람이 두 화면을 대조하면 알아챌 수 있다.
+  네트워크 프로토콜(`herdvia/pair/1`의 메시지)은 바꾸지 않았으므로 구버전과 그대로 통신한다. 바뀐 것은 거는 쪽의 로컬 동작뿐이다.
 - **일회용 초대 문자열 (`hvi1-...`)**: `target_id(32바이트) || invite_secret(16바이트)` 48바이트를 소문자 무패딩 RFC 4648 Base32(77자)로 인코딩해 `hvi1-` 뒤에 붙인 82자 토큰이다(앞뒤 공백과 대소문자 무시). 별도 랑데부 서버를 두지 않고 공개키와 128비트 일회용 비밀을 함께 옮긴다.
 - **TLS 채널 바인딩과 commit-reveal SAS**:
   - 양쪽 에이전트는 QUIC 연결의 TLS 1.3 exporter(`export_keying_material`, 라벨 `"herdvia-pair-v1"`, 빈 컨텍스트, 32바이트)를 뽑는다. 중간자(MITM)가 양쪽과 각각 다른 TLS 세션을 맺으면 두 exporter 값이 달라진다.
@@ -505,6 +638,10 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 다시 실행하면 업그레이드다. `agent install`을 다시 실행해 새 실행 파일로 에이전트를 다시 시작한다. 데이터 폴더는 건드리지 않는다.
 - 환경 변수: `HERDVIA_VERSION`(특정 릴리스), `HERDVIA_NO_AGENT=1`, `HERDVIA_NO_MODIFY_PATH=1`, `HERDVIA_RELEASE_BASE`(다른 곳에서 받기, 시험용).
   스크립트에는 버전이 박혀 있지 않아서 버전 경로에서 받은 스크립트도 `HERDVIA_VERSION`이 없으면 최신 릴리스를 받는다.
+- 내려받기는 HTTPS로만 한다. `SHA256SUMS`도 zip과 같은 곳에서 받으므로, 평문으로 받으면 중간에서 둘을 함께 바꿀 수 있어 체크섬 검사가 막지 못한다.
+  두 스크립트 모두 curl에 `--proto =https --proto-redir =https --tlsv1.2`를 주어 리다이렉트로 http로 내려가는 것도 막는다(Windows는 `System32\curl.exe`).
+  `HERDVIA_RELEASE_BASE`는 `https://`로 시작해야 한다. 예외는 CI가 로컬 서버로 시험하는 루프백 호스트(`127.0.0.1`, `localhost`, `[::1]`, 숫자 포트만)의 `http://`이고, 이때만 첫 요청에 http를 허용한다(리다이렉트는 여전히 https만).
+  호스트 앞에 사용자 부분이 붙은 주소(`http://localhost:1@example.com`)는 루프백이 아니므로 거부한다. 거부는 아무것도 받기 전에 하고 아무것도 설치하지 않는다.
 - 받은 실행 파일을 확인하려고 `herdvia --version`을 둔다. 표준 출력에 `herdvia <Cargo 패키지 버전>` 한 줄을 쓰고 0으로 끝난다. 데이터 폴더나 키를 만들지 않는다.
 - herdr-core는 설치하지 않는다. herdr-core는 Herdr의 것이고 Herdr의 설치 스크립트가 있다. 스크립트는 herdr-core가 없거나
   에이전트가 찾지 못하는 위치에 있으면 Herdr의 설치 명령(macOS에서 다른 곳에 있으면 `~/.local/bin`에 링크하는 명령)을 안내만 하고, 설치는 성공으로 끝낸다.
@@ -514,6 +651,13 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   이 명령은 파일 내용과 일치하는 서명된 출처 증명이 있고, 그 증명을 이 저장소의 `.github/workflows/release.yml`이 만들었는지 본다.
   `--repo`만 주면 이 저장소의 다른 워크플로가 만든 증명도 통과하므로 서명한 워크플로를 `--signer-workflow`로 고정한다. 증명은 이 저장소의 release.yml이 만든 파일임을 보일 뿐이라,
   계정이 탈취돼 새 태그로 빌드된 릴리스도 유효한 증명을 받는다. `SHA256SUMS`는 같은 릴리스에서 받으므로 전송 손상만 잡는다. v0.1.2까지의 릴리스에는 증명이 없다.
+- 서명 권한(`id-token: write`, `attestations: write`)은 zip을 묶고 증명을 붙이는 package 잡에만 준다. `THIRD-PARTY-LICENSES.html`은 `contents: read`만 가진 licenses 잡이
+  cargo-about을 `cargo install`로 빌드해 만들고 artifact로 넘긴다. cargo-about과 그 의존성 트리를 컴파일하고 실행하는 잡에 서명 권한이 있으면, 그 가운데 악성 크레이트 하나가
+  임의의 파일에 이 워크플로 이름의 증명을 받을 수 있기 때문이다. package는 licenses가 성공해야 돌고 release는 package가 성공해야 돌므로 라이선스 파일 없이 릴리스가 나가지 않는다.
+  잡을 나누는 것만으로는 부족하다. 같은 실행의 잡은 모두 그 실행의 artifact를 지우고 같은 이름으로 다시 올릴 수 있으므로, licenses 잡의 악성 코드가 빌드 잡이 올린 실행 파일을 바꿔치기하면
+  package가 그것을 묶어 증명을 붙인다. 그래서 빌드 잡은 실행 파일의 sha256을 잡 output으로 내보내고, package는 내려받은 실행 파일을 그 값과 대조한 뒤에야 묶는다.
+  잡 output은 다른 잡이 바꿀 수 없다. package와 release 사이도 같다. package가 `SHA256SUMS`의 sha256을 output으로 내보내고, release는 내려받은 `SHA256SUMS`를 그 값과,
+  올릴 파일을 `SHA256SUMS`와 대조한다. 대조에는 `sha256sum --strict -c`를 쓴다. `--strict`가 없으면 output이 비어 형식이 틀린 줄은 경고만 내고 통과한다.
 - 워크플로의 액션은 모두 커밋 SHA로 고정하고 버전은 주석으로 단다. 태그가 옮겨져도 다른 코드가 빌드에 들어오지 않게 하려는 것이다.
   Dependabot은 github-actions만 매주 확인해 고정 SHA를 올리는 PR을 연다(cargo 의존성 PR은 열지 않는다).
 - 의존성 권고는 audit.yml이 매주, 수동 실행, main에서 `Cargo.lock`이 바뀔 때 `cargo audit --deny warnings`로 확인한다(unmaintained·yanked도 실패).
@@ -537,6 +681,9 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 점검 항목(이 순서):
   1. 이 실행 파일의 버전과 경로. 임시 폴더나 `target` 아래면 warn(`agent install`이 이 경로를 기록한다. 판정은 `agent install`의 경고와 같다).
   2. 데이터 폴더. `HERDVIA_DIR`에서 왔으면 그렇다고 쓴다(자동 시작은 기본 폴더만 쓴다). 없으면 warn(`herdvia id`가 만든다).
+     그 전에 상위 경로를 에이전트와 같은 검사(`ipc::check_parents`. Windows는 `check_ancestors`를 부른다)로 읽기만 하며 확인한다. 거부되면 폴더가 아직 없어도 warn이 아니라 그 문구로 fail이다.
+     에이전트처럼 `HERDVIA_DIR`로 고른 위치만 검사하고, 기본 데이터 폴더는 검사 없이 통과한다.
+     그 자리에서는 `herdvia id`도 거부되므로 만들라고 안내하면 틀린 안내가 된다.
      `HERDVIA_DIR`이 절대 경로가 아니면 `fail data directory: HERDVIA_DIR must be an absolute path, not "<값>"; set it to a full path, or unset it`이다.
      디렉터리가 아니거나(폴더를 `symlink_metadata`로 보므로 심볼릭 링크도, Windows는 정션도) 다른 사용자 소유이거나 읽을 수 없으면 fail. 이 사용자 소유여도 목록을 읽거나 안을 탐색할 수 없으면 fail이다(`read_dir`와 `폴더/.` 조회로 판정하고, Unix는 `chmod 700`을 안내한다). Unix는 `agent.sock` 경로가 소켓 주소 한도를 넘으면 fail.
      에이전트가 거부하는 폴더도 fail이고 그 오류 문구를 그대로 쓴다(Unix는 `ipc::check_dir`, Windows는 `ipc::inspect_dir`). macOS는 allow 항목이 있는 ACL(`chmod -N` 안내),
@@ -561,7 +708,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
      Windows는 `check that it is a regular file, not a link, that this user can read`이고, 권한 거부 OS 오류(예: Access is denied)에만 붙이며 herdvia 자신의 종류·소유자·DACL 거부에는 붙이지 않는다.
   5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
      macOS는 LaunchAgent가 주는 PATH(`~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)의 실행 가능한 파일, 그 밖의 Unix는 현재 PATH와 `~/.local/bin`이다.
-     macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. PATH의 상대 경로 항목은 현재 폴더 기준 절대 경로로 바꿔 찾으므로, 표시하는 경로와 링크 대상은 절대 경로다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).
+     macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. 현재 PATH의 빈 항목과 상대 경로 항목은 건너뛰므로, 표시하는 경로와 링크 대상은 절대 경로다. 그런 항목은 현재 폴더를 가리키는데, 에이전트는 그 폴더에서 실행되지 않고 doctor는 찾은 파일을 실행하므로, 남이 파일을 둘 수 있는 폴더에서 doctor를 실행하면 그 폴더의 `herdr-core`가 실행되기 때문이다. `listen`이 시작할 때 하는 같은 점검도 이 탐색을 쓰고, `connect`가 `hc machine add`를 위해 `hc`를 찾을 때도 같은 이유로 그런 항목을 건너뛴다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).
      찾으면 `--version` 첫 줄의 마지막 단어를 버전으로 읽는다. 검증 버전(상수 `VERIFIED_CORE_VERSION`, `0.1.21`)과 다르면 warn(connect 줄이 바뀌었으면 원격이 거부한다. 로그의 `rejected command`를 보라). 실행이 실패해도 warn.
   6. 자동 시작. macOS는 plist의 `ProgramArguments` 첫 값, Windows는 Run 값을 읽기만 한다(`launchctl`은 부르지 않는다).
      등록이 없거나 다른 실행 파일을 가리키면 warn(`agent install`을 다시 실행). Windows는 Run 값을 `install`이 쓸 명령과 ASCII 대소문자를 무시하고 비교한다. Linux는 지원하지 않는다는 warn. Windows에서 관리자 권한으로 돌고 있으면 `agent install`이 거부된다는 warn을 한 줄 더 쓴다.

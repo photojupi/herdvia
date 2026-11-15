@@ -71,7 +71,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 ![herdvia 동작 구조도](assets/how-it-works.ko.svg)
 
 1. **상주 에이전트 (`herdvia agent`):** 양쪽 PC의 사용자 세션에서 백그라운드로 실행되며, 기기 고유 키(`EndpointId`)로 허용된 피어와 암호화된 QUIC 연결을 유지합니다.
-2. **양방향 명시적 허용 (`listen` / `connect`, 또는 `allow` / `accept`):** 처음 보는 기기는 절대 자동으로 신뢰하지 않습니다. 대화형 페어링(`herdvia listen` + `herdvia connect`)은 양쪽 화면에 같은 6자리 확인 번호를 띄우고 사람의 승인을 거친 뒤, 거는 쪽(PC A)에는 `--outbound`를, 받는 쪽(PC B)에는 `--inbound`를 저장합니다.
+2. **양방향 명시적 허용 (`listen` / `connect`, 또는 `allow` / `accept`):** 처음 보는 기기는 절대 자동으로 신뢰하지 않습니다. 대화형 페어링(`herdvia listen` + `herdvia connect`)은 양쪽 화면에 같은 6자리 확인 번호를 띄웁니다. 받는 쪽(PC B)은 B의 사용자가 승인해야 `--inbound`를 저장하고, 거는 쪽(PC A)은 A의 사용자도 번호가 같다고 확인해야 `--outbound`를 저장합니다.
 3. **명령줄 정확 일치 검사:** 받는 쪽(PC B) 에이전트는 `hc`가 보내는 정확한 `herdr-core connect` 명령줄만 실행하며(**`hc 0.1.21`** 기준 검증 완료), 그 외 모든 명령은 거부하고 로그에 기록합니다.
 
 ---
@@ -156,11 +156,12 @@ sequenceDiagram
     participant B as PC B (원격 PC)
 
     Note over A,B: 양쪽 모두 herdvia + herdr-core 설치 및 에이전트 실행 중
-    B->>B: herdvia listen (최대 5분 대기 · LAN 신호 전송 + hvi1-... 초대 출력)
-    A->>B: herdvia connect B (같은 LAN에서 자동 발견, 또는 외부망에서 hvi1-... 초대로 접속)
-    Note over A,B: 양쪽 화면에 똑같은 6자리 확인 번호 표시 (예: 482-917)
+    B->>B: herdvia listen (최대 5분 대기 · B의 지문 출력 · LAN 신호 전송 + hvi1-... 초대 출력)
+    A->>B: herdvia connect B (같은 LAN에서 찾은 PC 중 지문으로 B 선택, 또는 외부망에서 hvi1-... 초대로 접속)
+    Note over A,B: 양쪽 화면에 똑같은 6자리 확인 번호 표시 (예: 482-917), A와 B의 답은 순서 무관
+    A->>A: 번호가 같은지 확인 후 Same code on both PCs? [y/N]: 에 y 입력
     B->>B: 번호가 같은지 확인 후 Allow? [y/N]: 에 y 입력
-    B-->>A: B는 A(--inbound), A는 B(--outbound) 저장 후 즉시 연결
+    B-->>A: B는 A(--inbound) 저장, A는 양쪽 y 후 B(--outbound) 저장 후 즉시 연결
     A->>A: hc machine add --via '... via B' --name B 자동 실행
 ```
 
@@ -170,7 +171,7 @@ sequenceDiagram
 herdvia listen
 ```
 
-- `listen`은 5분 동안 유지되는 일회용 페어링 창을 열고, 같은 공유기(LAN/Wi-Fi)에 탐색 신호를 보내는 동시에 다른 네트워크에서 쓸 수 있는 일회용 `hvi1-...` 초대 문자열도 함께 출력합니다.
+- `listen`은 5분 동안 유지되는 일회용 페어링 창을 열고, 이 PC의 지문(`This PC's fingerprint: xxxx-xxxx-xxxx-xxxx`)을 출력하며, 같은 공유기(LAN/Wi-Fi)에 탐색 신호를 보내는 동시에 다른 네트워크에서 쓸 수 있는 일회용 `hvi1-...` 초대 문자열도 함께 출력합니다.
 - 기본적으로 PC B는 PC A의 정화된 호스트명을 피어 이름으로 등록합니다(다른 키가 이미 쓰는 이름이면 `-28af`처럼 A의 `EndpointId` 앞부분 16진수 접두사 추가). A에 붙일 이름을 직접 지정하려면 `herdvia listen <이름>`을 실행하세요.
 
 ### 2단계. Herdr를 쓰는 PC(A)에서 연결하기
@@ -179,7 +180,7 @@ herdvia listen
   ```sh
   herdvia connect B
   ```
-  약 2초 동안 로컬 네트워크를 자동 탐색해 연결합니다(`herdvia listen` 중인 PC가 여러 대면 번호 선택을 묻고, 게스트 Wi-Fi 격리 등으로 탐색 신호가 막혀 있으면 B 화면의 `hvi1-...` 초대를 붙여 넣으라고 안내합니다).
+  약 2초 동안 로컬 네트워크를 탐색한 뒤, 찾은 대기 중인 PC를 한 대뿐이어도 지문과 함께 번호 목록(`0) Paste an invite token instead` 포함)으로 보여 줍니다. B의 `listen` 화면에 나온 지문과 같은 항목을 고르세요. LAN 탐색에는 인증이 없으므로 `connect`는 스스로 PC를 고르지 않습니다([보안 모델](#security-model) 참고). 하나도 찾지 못하면(예: 게스트 Wi-Fi 격리로 탐색 신호가 막힌 경우) B 화면의 `hvi1-...` 초대를 붙여 넣으라고 안내합니다.
 
 - **서로 다른 장소(예: 집 ↔ 사무실·카페):**
   ```sh
@@ -188,15 +189,17 @@ herdvia listen
 
 `B`(`home-pc`, `office` 등)는 `herdvia`와 Herdr 양쪽에서 사용할 머신 이름입니다(`A-Z a-z 0-9 . _ -` 조합 1~32자).
 
-### 3단계. 6자리 확인 번호 대조 후 PC B에서 승인하기
+### 3단계. 6자리 확인 번호 대조 후 양쪽 PC에서 승인하기
 
 양쪽 터미널에 6자리 확인 번호(예: `482-917`)가 표시됩니다:
 
-1. **양쪽 화면의 6자리 번호가 정확히 일치하는지** 눈으로 확인합니다.
-2. **PC B**의 `Allow? [y/N]:` 프롬프트에 `y`를 입력합니다.
+1. **양쪽 화면의 6자리 번호가 정확히 일치하는지** 눈으로 확인합니다. 번호가 다르면 `n`을 입력하세요. 다른 PC에 연결되었을 수 있습니다.
+2. **PC A**의 `Same code on both PCs? [y/N]:` 프롬프트와 **PC B**의 `Allow? [y/N]:` 프롬프트에 각각 `y`를 입력합니다(순서는 상관없습니다).
 
-승인하는 즉시:
-- **PC B**는 PC A를 `--inbound`로, **PC A**는 PC B를 `--outbound`로 각각 저장합니다.
+PC A에서 `n`을 입력하거나 빈 줄을 입력하거나 입력을 닫으면(EOF) 페어링이 취소되고 종료 코드 `1`로 끝나며, A의 답이 60초 안에 도착하지 않으면 `connect`는 종료 코드 `255`로 실패합니다. B가 승인한 뒤 A에서 취소하면 B에는 A가 `--inbound` 피어로 남지만, A가 아무것도 저장하지 않았으므로 연결은 생기지 않습니다. 원하면 B에서 `herdvia revoke <이름>`으로 지우세요.
+
+양쪽 모두 `y`를 입력하면:
+- **PC B**는 PC A를 `--inbound`로(B가 승인하는 즉시), **PC A**는 PC B를 `--outbound`로 각각 저장합니다.
 - 재시도 대기 없이 곧바로 암호화 터널이 맺어집니다.
 - **PC A**에서 `hc machine add`까지 자동 실행되어 Herdr 사이드바에 `B`가 바로 등록됩니다. *(`PATH`에 `hc`가 없거나 실행에 실패하더라도 페어링 자체는 유지되며, 직접 복사해 실행할 수 있는 `hc machine add --via ... --name B` 명령이 안내됩니다.)*
 
@@ -279,7 +282,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_VERSION` | 최신 버전 대신 지정한 릴리스 설치 (예: `0.1.0` 또는 `v0.1.0`) |
 | `HERDVIA_NO_AGENT=1` | `herdvia agent install` 실행 생략 |
 | `HERDVIA_NO_MODIFY_PATH=1` | `~/.zprofile` 또는 Windows 사용자 `PATH` 수정 생략 |
-| `HERDVIA_RELEASE_BASE` | GitHub Releases 대신 `<url>/<파일명>`에서 다운로드 (`HERDVIA_VERSION`보다 우선) |
+| `HERDVIA_RELEASE_BASE` | GitHub Releases 대신 `<url>/<파일명>`에서 다운로드 (`HERDVIA_VERSION`보다 우선). `https://`로 시작해야 하며, `http://`는 `127.0.0.1`, `localhost`, `[::1]`(로컬 시험용)에만 허용합니다. 리다이렉트를 따라가더라도 HTTPS로만 다운로드합니다. |
 
 특정 버전을 지정해 설치하려면(참고: 버전 태그 URL에서 `install.sh` / `install.ps1`을 내려받더라도 `HERDVIA_VERSION`을 명시적으로 설정해야 합니다):
 
@@ -399,8 +402,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | 명령어 | 설명 |
 |---|---|
-| `herdvia listen [<이름>]` | 연결될 대상 PC에서 최대 5분 동안 대화형 페어링 요청을 기다리며, 로컬 네트워크에 탐색 신호를 보내고 외부망용 일회용 `hvi1-...` 초대를 출력한 뒤, 6자리 확인 번호를 보여 주고 `[y/N]` 승인 시 `--inbound`로 등록합니다(`<이름>` 생략 시 상대의 정화된 호스트명 사용). 거부하거나 시간 초과되면 종료 코드 `1`로 끝납니다. 에이전트 실행 필요. |
-| `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC에서 LAN 자동 탐색 또는 `<초대>`(`hvi1-...`)로 대기 중인 대상 PC와 페어링하여, 6자리 확인 번호를 표시하고 상대가 승인하면 `--outbound` 등록 후 `hc machine add --via ... --name <이름>`을 자동 실행합니다. 거부·시간 초과·`hc` 등록 실패 시(수동 명령 출력) 종료 코드 `1`로 끝납니다. 에이전트 실행 필요. |
+| `herdvia listen [<이름>]` | 연결될 대상 PC에서 최대 5분 동안 대화형 페어링 요청을 기다리며, 이 PC의 지문을 출력하고, 로컬 네트워크에 탐색 신호를 보내고 외부망용 일회용 `hvi1-...` 초대를 출력한 뒤, 6자리 확인 번호를 보여 주고 `[y/N]` 승인 시 `--inbound`로 등록합니다(`<이름>` 생략 시 상대의 정화된 호스트명 사용). 거부하거나 시간 초과되면 종료 코드 `1`로 끝납니다. 에이전트 실행 필요. |
+| `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC에서 대기 중인 대상 PC와 페어링합니다. 대상은 LAN에서 찾은 PC의 번호 목록에서 지문으로 고르거나 `<초대>`(`hvi1-...`)로 지정합니다. 6자리 확인 번호를 표시하고 `Same code on both PCs? [y/N]:`를 물으며, 사용자가 `y`를 입력하고 대상 PC도 승인해야 `--outbound` 등록 후 `hc machine add --via ... --name <이름>`을 자동 실행합니다. 취소·거부·대상 PC의 시간 초과·`hc` 등록 실패 시(수동 명령 출력) 종료 코드 `1`로, 사용자의 답이 60초 안에 도착하지 않으면 `255`로 끝납니다. 에이전트 실행 필요. |
 | `herdvia id` | 이 PC의 `EndpointId`(첫째 줄)와 16자 지문(둘째 줄)을 출력합니다. `secret.key`가 없으면 새로 생성합니다. |
 | `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 갱신하고, 저장한 항목(`<이름> <EndpointId> <in\|out\|both>`)을 출력합니다. 이미 다른 이름으로 등록된 `EndpointId`는 거부합니다. 실행 중인 에이전트에는 즉시 반영됩니다(또는 다음 에이전트 시작 시 반영). |
 | `herdvia revoke <이름>` | 피어를 삭제하고 `revoked <이름> <EndpointId>`를 출력하며, 해당 피어와의 연결을 즉시 닫고 그 연결이 실행한 `herdr-core connect` 프로세스를 종료합니다(이것으로 되돌려지지 않는 항목은 [보안 모델](#security-model) 참고). 해당 이름의 피어가 없으면 실패합니다. 같은 `EndpointId`가 다른 이름으로 아직 남아 있으면(이전 버전이 작성한 `peers` 파일) 경고를 출력합니다. |
@@ -457,7 +460,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 `herdvia doctor`는 다음 항목을 순서대로 점검합니다:
 
 1. **이 실행 파일:** 버전과 경로 (`agent install`이 이 경로를 그대로 기록하므로 임시 폴더나 Cargo `target` 폴더에서 실행 중이면 경고).
-2. **데이터 폴더:** 경로(`HERDVIA_DIR`로 지정되었는지 여부 포함 — `HERDVIA_DIR`은 절대 경로여야 함), 존재 여부, 실제 디렉터리인지 여부(심볼릭 링크 거부, Windows에서는 정션도 거부), 그리고 현재 사용자가 열 수 있는지 여부(macOS/Unix에서는 소유자도 확인하며, 열 수 없으면 `fail`을 출력하고 macOS/Unix에서는 `chmod 700`을 안내).
+2. **데이터 폴더:** 경로(`HERDVIA_DIR`로 지정되었는지 여부 포함 — `HERDVIA_DIR`은 절대 경로여야 함), 존재 여부, 실제 디렉터리인지 여부(심볼릭 링크 거부, Windows에서는 정션도 거부), 그리고 현재 사용자가 열 수 있는지 여부(macOS/Unix에서는 소유자도 확인하며, 열 수 없으면 `fail`을 출력하고 macOS/Unix에서는 `chmod 700`을 안내). `HERDVIA_DIR`(Linux에서는 `XDG_DATA_HOME`도)로 정한 폴더는 다른 계정이 상위 폴더 중 하나를 바꿀 수 있으면 폴더가 아직 없어도 `fail`을 출력합니다([보안 모델](#security-model) 참고).
    - **macOS / Unix:** macOS에서 폴더에 접근을 허용하는 ACL(접근 제어 목록) 항목이 있으면 `fail`을 출력하며 `chmod -N`을 안내하고, macOS/Unix에서 에이전트 소켓 경로가 Unix 소켓 길이 한도 안에 들어오는지도 함께 확인합니다.
    - **Windows:** 다른 종류의 재분석 지점(reparse point)이거나, 소유자가 현재 사용자·Administrators·SYSTEM이 아니거나, 다른 계정에 접근 권한이 허용되어 있는데 현재 사용자가 권한을 바꿀 수 없으면 `fail`을 출력합니다(마지막 경우 관리자 터미널에서 실행할 `icacls … /grant` 명령을 안내). 이 세 계정 외의 계정에 접근 권한이 허용되어 있더라도 현재 사용자가 권한을 바꿀 수 있으면, herdvia가 다음 실행 때 권한을 제한하므로 `warn`을 출력합니다.
 3. **`secret.key`:** 존재 여부 및 에이전트와 동일한 검사를 통과하는지 여부 — macOS/Unix: 현재 사용자 소유이고 권한이 `0600` 이하이며, macOS에서는 접근을 허용하는 ACL 항목이 없을 것. Windows: 링크가 아닌 일반 파일이고 소유자가 현재 사용자·Administrators·SYSTEM 중 하나이며 다른 계정에 접근 권한이 허용되어 있지 않을 것. Windows에서 다른 계정에 접근 권한이 허용된 파일은 현재 사용자가 권한을 바꿀 수 있으면 `warn`(herdvia가 다음 실행 때 제한), 바꿀 수 없으면 `icacls … /grant` 명령을 안내하는 `fail`이 됩니다. 출력에는 지문만 표시됩니다.
@@ -558,8 +561,12 @@ ok   pending: no rejected connection attempts
   - **Windows:** DACL로 현재 사용자 SID에만 접근을 허용한 이름 있는 파이프(Named Pipe)를 사용하며 원격 네트워크 파이프 클라이언트를 차단합니다. 에이전트는 데이터 폴더의 `agent.lock`을 잠가 두므로 같은 폴더로 두 번째 에이전트를 실행하면 시작을 거부하며, 다른 계정이 이미 파이프 이름을 선점하고 있으면 해당 계정의 SID를 알리고(소유자를 읽을 수 없으면 그 사실을 알리고) 시작을 거부합니다.
 - **데이터 폴더, `secret.key`, `peers`:**
   - **macOS / Unix:** 데이터 폴더는 권한 `0700`으로 설정하고 `secret.key`는 권한 `0600`으로 생성합니다. `secret.key`나 `peers`가 다른 사용자 소유이거나 권한이 더 넓으면 오류를 내고 멈추며, macOS에서는 폴더나 두 파일 중 하나에 접근을 허용하는 ACL(접근 제어 목록) 항목이 있어도 멈춥니다(오류 문구에 ACL을 제거하는 `chmod -N` 명령이 안내되며, ACL을 지원하지 않는 파일 시스템은 ACL이 없는 것으로 간주합니다).
-  - **Windows (권한 설정):** 데이터 폴더가 정션 같은 재분석 지점이거나 소유자가 현재 사용자·Administrators·SYSTEM이 아니면 거부합니다. 폴더에 아직 해당 설정이 없으면 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 설정해 herdvia가 그 안에 만드는 파일이 상속받도록 합니다(하위 파일로 상속되는 거부(deny) 항목이 있는 폴더는 이미 설정된 것으로 인정하지 않습니다). 다른 계정에 접근 권한이 허용된 `secret.key`·`peers`는 현재 사용자가 권한을 바꿀 수 있을 때마다 파일 자체에 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 직접 설정하므로, 상위 폴더가 물려주는 권한에 의존하지 않습니다.
+  - **Windows (권한 설정):** 데이터 폴더가 정션 같은 재분석 지점이거나 소유자가 현재 사용자·Administrators·SYSTEM이 아니면 거부합니다. 폴더에 아직 해당 설정이 없으면 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 설정해 herdvia가 그 안에 만드는 파일이 상속받도록 합니다(하위 파일로 상속되는 거부(deny) 항목이 있는 폴더는 이미 설정된 것으로 인정하지 않습니다). 다른 계정에 접근 권한이 허용된 `secret.key`·`peers`는 현재 사용자가 권한을 바꿀 수 있을 때마다 파일 자체에 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 직접 설정하므로, 상위 폴더가 물려주는 권한에 의존하지 않습니다. 또한 최선 노력 강화로서 데이터 폴더와 `secret.key`, `peers`에 Medium 무결성 레이블(no-write-up, no-read-up)을 걸어, 같은 사용자의 Low 무결성 프로세스가 이 파일들을 새로 열어 읽지 못하게 합니다. 현재 사용자가 레이블을 걸 권한이 없는 폴더에서는 적용되지 않으며, 그래도 herdvia는 동작합니다.
   - **Windows (거부 조건과 예외):** 링크이거나, 소유자가 다르거나, 여전히 다른 계정에 접근 권한이 허용된 `secret.key`·`peers`는 거부합니다(오류 문구에 관리자 터미널에서 실행할 `icacls … /grant` 명령이 안내되며, 이를 실행해 현재 사용자에게 파일의 모든 권한을 부여한 뒤 herdvia를 다시 실행하면 권한이 제한됩니다). 폴더가 다른 계정에 접근 권한을 허용하는데 현재 사용자가 권한을 바꿀 수 없을 때도 폴더를 거부하고 `icacls … /grant` 명령을 안내합니다. 두 `icacls` 명령은 모두 PowerShell과 cmd에 그대로 붙여 넣어 실행할 수 있습니다. 이 세 계정에만 접근을 허용하지만 현재 사용자가 권한을 바꿀 수 없는 폴더는 그대로 사용하며, 보호되지 않은 폴더라면 상위 폴더로부터 계속 권한 항목을 상속받습니다.
+  - **`HERDVIA_DIR` 데이터 폴더의 상위 폴더:** 데이터 폴더가 `HERDVIA_DIR`(Linux에서는 `XDG_DATA_HOME`도)에서 온 경우, 그 상위 폴더들은 다른 계정이 바꿀 수 없어야 합니다. 다른 계정이 상위 폴더를 다른 폴더로 바꿔치기해 키와 피어 목록의 위치를 돌리지 못하게 하기 위해서입니다. 내장 기본 데이터 폴더에는 이 검사를 하지 않습니다(기본 폴더는 사용자 프로필 안에 있고, 자동 시작은 기본 폴더만 사용합니다).
+    - **macOS / Unix:** 각 상위 폴더는 현재 사용자나 root 소유여야 하고 group/other 쓰기 권한이 없어야 합니다. `/tmp`처럼 sticky 비트가 있는 폴더 안의, 현재 사용자(또는 root) 소유 폴더는 허용합니다. macOS에서는 항목 추가·삭제나 권한 변경을 허용하는 ACL allow 항목이 있는 상위 폴더도 거부합니다.
+    - **Windows (드라이브 문자로 시작하는 경로):** 각 상위 폴더는 정션이나 심볼릭 링크 같은 재분석 지점이 아니어야 하고, 소유자가 현재 사용자·SYSTEM·Administrators·TrustedInstaller 중 하나여야 하며, 다른 계정에게 그 폴더나 그 안의 항목을 삭제·이름 변경·권한 변경할 권한을 주지 않아야 합니다(읽기 전용 권한은 괜찮습니다). UNC 경로는 검사하지 않습니다.
+    - 상위 폴더가 거부되면 모든 명령과 에이전트가 해당 폴더와 이유를 담은 오류로 끝나고(종료 코드 `255`), `herdvia doctor`는 데이터 폴더가 아직 없어도 `data directory` 줄을 `fail`로 보고합니다.
 - **`secret.key`는 이 PC의 신원입니다:** 이 파일을 손에 넣은 사람은 이 PC를 신뢰하는 피어에게 이 PC로 위장할 수 있습니다. 유출되었을 가능성이 있거나, 백업에서 복원했거나, 다른 PC로 복사했다면 키를 교체하세요:
   1. 모든 피어에서 이 PC의 항목을 `herdvia revoke <이름>`으로 삭제합니다.
   2. 에이전트를 중지합니다(`herdvia agent uninstall`, 포그라운드 실행 중이면 `Ctrl-C`).
@@ -567,7 +574,8 @@ ok   pending: no rejected connection attempts
   4. `herdvia id`를 실행해 새 ID를 생성합니다.
   5. `herdvia agent install`을 실행합니다(또는 `herdvia agent`를 다시 시작합니다).
   6. 모든 피어와 다시 페어링합니다.
-- **대화형 페어링 (`listen` / `connect`):** 페어링은 원격 명령을 전혀 실행하지 않고 `pending`에도 기록되지 않는 별도 ALPN(`herdvia/pair/1`)으로 동작하며, `herdvia listen`이 대기 중일 때만 핸드셰이크를 받아들입니다. 각 `listen` 세션은 5분 뒤 만료되는 128비트 일회용 토큰을 만들며, 잘못된 증명이 5회 누적되면 세션을 중단하고, 한 번에 한 요청만 승인 프롬프트를 띄우며 사용자가 승인하거나 거절하는 즉시 종료됩니다. 양쪽은 QUIC TLS 1.3 exporter(`herdvia-pair-v1`)와 commit-reveal 난수 교환으로 6자리 확인 번호(`NNN-NNN`, 약 20비트)를 계산하며, 대상 PC 사용자가 두 화면의 번호가 일치함을 확인하고 `y`를 입력하기 전에는 `peers`를 전혀 바꾸지 않습니다. 승인 시에도 대상 PC에는 `--inbound`만, 조작하는 PC에는 `--outbound`만 부여합니다(자동으로 `--both`를 주지 않음).
+- **대화형 페어링 (`listen` / `connect`):** 페어링은 원격 명령을 전혀 실행하지 않고 `pending`에도 기록되지 않는 별도 ALPN(`herdvia/pair/1`)으로 동작하며, `herdvia listen`이 대기 중일 때만 핸드셰이크를 받아들입니다. 각 `listen` 세션은 5분 뒤 만료되는 128비트 일회용 토큰을 만들며, 잘못된 증명이 5회 누적되면 세션을 중단하고, 한 번에 한 요청만 승인 프롬프트를 띄우며 사용자가 승인하거나 거절하는 즉시 종료됩니다. 양쪽은 QUIC TLS 1.3 exporter(`herdvia-pair-v1`)와 commit-reveal 난수 교환으로 6자리 확인 번호(`NNN-NNN`, 약 20비트)를 계산하며, 대상 PC 사용자가 두 화면의 번호가 일치함을 확인하고 `y`를 입력하기 전에는 `peers`를 전혀 바꾸지 않습니다. 조작하는 PC도 그 PC의 사용자가 `Same code on both PCs? [y/N]:`에 `y`를 입력하고 대상 PC가 승인하기 전에는 `peers`에 아무것도 쓰지 않으며 `hc machine add`도 실행하지 않습니다. LAN 탐색 비콘에는 서명이 없어 같은 LAN의 누구나 자기 키로 비콘을 보내고 곧바로 승인 메시지를 보낼 수 있기 때문이며, 그래서 `connect`는 찾은 PC를 스스로 고르지 않습니다. 이 확인 단계로 네트워크 프로토콜이 바뀌지는 않으므로 이전 버전과도 그대로 페어링됩니다. 승인 시에도 대상 PC에는 `--inbound`만, 조작하는 PC에는 `--outbound`만 부여합니다(자동으로 `--both`를 주지 않음).
+- **`0.1.4` 이하의 대화형 페어링:** `herdvia connect`는 LAN에서 찾은 PC가 한 대면 자동으로 골랐고, 이 PC의 사용자 확인 없이 상대의 승인 메시지만으로 저장했습니다. 그래서 같은 LAN의 다른 기기가 대상 PC 행세를 할 수 있었습니다. Herdr를 실행하는 PC(`connect`를 실행하는 쪽)의 `herdvia`를 업그레이드하면 해결됩니다. 그 전까지는 대상 PC 화면에 출력된 초대 문자열로 페어링하세요(`herdvia connect <이름> hvi1-...`).
 - **지문과 `pending` / `accept`:** 지문은 사람이 눈으로 대조하기 위해 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)만 표시한 것이며, `herdvia`는 항상 전체 `EndpointId`를 저장하고 검증합니다. `pending`은 `iroh` 인증 핸드셰이크를 마친 피어만 메모리에 최대 16개·10분간 보관하며, `accept`는 접두사가 겹쳐 모호하거나 목록이 가득 찬 경우(이 PC의 `EndpointId`를 아는 누구나 채울 수 있음)를 모두 거부합니다. 지문은 절대 `pending` 목록에서 베끼지 말고 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
 
 **보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주시고, 민감하지 않은 버그는 일반 이슈를 열어 주세요.
@@ -582,7 +590,7 @@ ok   pending: no rejected connection attempts
 - **공개 중계 서버 ([n0](https://n0.computer)):** 각 에이전트는 홈 중계 서버(relay)와 연결을 유지하며 초기 연결 수립 및 직접 연결 불가 시의 암호화 트래픽 중계에 사용합니다.
 - **DNS 주소 조회 (`dns.iroh.link`):** 피어가 `EndpointId`만으로 서로를 찾을 수 있도록 각 에이전트는 자신의 **`EndpointId`와 홈 중계 서버 URL**이 담긴 서명된 레코드를 공개 조회 서비스에 게시합니다.
 - **공유기 포트 매핑:** 직접 연결 성공률을 높이기 위해 공유기가 지원하는 경우 UPnP, PCP, NAT-PMP로 포트 매핑을 요청합니다.
-- **포그라운드 LAN 페어링 탐색:** `herdvia listen` 또는 초대 없는 `herdvia connect`가 포그라운드에서 실행되는 동안에만 UDP 포트 `48721`(IPv4 멀티캐스트 `239.255.77.86` 및 브로드캐스트)로 대상의 `EndpointId`, 에이전트 QUIC 포트, 일회용 LAN 토큰, 정화된 호스트명이 담긴 짧은 탐색 패킷을 주고받습니다. 백그라운드 `herdvia agent`는 이 UDP 포트를 열지 않습니다.
+- **포그라운드 LAN 페어링 탐색:** `herdvia listen` 또는 초대 없는 `herdvia connect`가 포그라운드에서 실행되는 동안에만 UDP 포트 `48721`(IPv4 멀티캐스트 `239.255.77.86` 및 브로드캐스트)로 대상의 `EndpointId`, 에이전트 QUIC 포트, 일회용 LAN 토큰, 정화된 호스트명이 담긴 짧은 탐색 패킷을 주고받습니다. 이 패킷에는 서명이 없어 LAN의 어느 기기든 아무 키나 내세울 수 있습니다(그래서 `connect`는 지문으로 고르게 합니다). `herdvia listen`은 탐색 질의에 직접(유니캐스트) 답할 때, 질의가 사설(RFC 1918), 링크 로컬(`169.254.0.0/16`), 루프백 주소에서 온 경우에만 답하고 그 밖의 주소에서 온 질의는 무시합니다. 포트에 닿는 원격 호스트가 일회용 LAN 토큰을 받지 못하게 하기 위해서이며, 주기적인 멀티캐스트·브로드캐스트 비콘에는 영향이 없습니다. 백그라운드 `herdvia agent`는 이 UDP 포트를 열지 않습니다.
 - **IP 주소와 `EndpointId`:** 주소 조회 서비스에는 홈 중계 서버 URL만 전달되지만, 이 PC의 `EndpointId`를 아는 사람은 중계 서버를 거쳐 이 PC에 접속할 수 있으며, `herdvia`가 연결을 거부하기 전에 `iroh`가 이 PC의 직접 연결용 주소 후보(LAN 주소 및 포트 매핑된 공인 주소 포함)를 상대에게 보낼 수 있습니다. 따라서 이 PC의 현재 IP 주소가 노출될 수 있습니다. `EndpointId`는 비밀 정보가 아니지만 공개된 곳에 올리지 마세요.
 - **종단 간 암호화 및 메타데이터:** 모든 세션 트래픽은 QUIC/TLS로 종단 간 암호화되어 중계 서버가 내용을 읽을 수 없습니다. 다만 n0 안내에 따르면 중계 서버는 IP 주소, 접속 시각, 전송 데이터양 같은 연결 메타데이터는 볼 수 있습니다.
 - **서비스 수준 안내:** n0의 공개 중계 서버는 **개발 및 취미 용도(development and hobby use only)**로 제공되며 가동률 보장(SLA)이 없고 속도 제한이 있습니다. 자세한 내용은 iroh 문서의 [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) 및 [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup)을 참고하세요.
@@ -614,7 +622,7 @@ ok   pending: no rejected connection attempts
 | **데이터 폴더 (macOS)** | `~/Library/Application Support/herdvia` |
 | **데이터 폴더 (Windows)** | `%APPDATA%\herdvia` |
 | **데이터 폴더 (Linux)** | `$XDG_DATA_HOME/herdvia` (기본값 `~/.local/share/herdvia`) |
-| **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (절대 경로여야 하며, `hc`가 띄우는 `via` 프로세스를 포함해 모든 명령에 동일한 값이 전달되어야 하고, `agent install`과는 함께 쓸 수 없음) |
+| **경로 재정의 환경 변수** | `HERDVIA_DIR=<경로>`로 데이터 폴더 변경 가능 (다른 계정이 상위 폴더를 바꿀 수 없는 절대 경로여야 하며([보안 모델](#security-model) 참고), `hc`가 띄우는 `via` 프로세스를 포함해 모든 명령에 동일한 값이 전달되어야 하고, `agent install`과는 함께 쓸 수 없음) |
 | **`secret.key`** | 이 PC의 32바이트 Ed25519 비밀키 (데이터 폴더 내) |
 | **`peers`** | 피어 허용 목록 (줄마다 `<이름> <EndpointId> <in\|out\|both>`, `listen`·`connect` 또는 `allow`·`accept`·`revoke`로 관리) |
 | **`agent.sock`** | macOS/Unix 로컬 Unix 도메인 소켓 (Windows는 대신 사용자 SID별 이름 있는 파이프 사용) |

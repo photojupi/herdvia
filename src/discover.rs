@@ -134,6 +134,17 @@ fn bind_ephemeral_socket() -> io::Result<UdpSocket> {
     UdpSocket::from_std(sock.into())
 }
 
+/// The beacon carries `listen_id`, the LAN pairing credential, so a query is
+/// answered by unicast only when it comes from a private, link-local, or
+/// loopback address. The socket listens on 0.0.0.0, so anything else that can
+/// reach the port is ignored.
+fn answers_query_from(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
 pub async fn advertise_on(
     socket: UdpSocket,
     targets: Vec<SocketAddr>,
@@ -164,6 +175,7 @@ pub async fn advertise_on(
             recvd = socket.recv_from(&mut recv_buf) => {
                 if let Ok((n, peer_addr)) = recvd
                     && is_query(&recv_buf[..n])
+                    && answers_query_from(peer_addr.ip())
                 {
                     let _ = socket.send_to(&beacon, peer_addr).await;
                 }
@@ -292,6 +304,36 @@ mod tests {
         assert!(is_query(&q));
         assert!(!is_query(&q[..20]));
         assert!(!is_query(&pkt));
+    }
+
+    #[test]
+    fn only_local_sources_get_a_unicast_beacon() {
+        for ip in [
+            "10.0.0.5",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.20",
+            "169.254.3.4",
+            "127.0.0.1",
+            "127.8.9.10",
+            "::1",
+        ] {
+            assert!(answers_query_from(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.64.0.1",
+            "192.0.2.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "239.255.77.86",
+            "2001:db8::1",
+            "fe80::1",
+            "::ffff:192.168.1.20",
+        ] {
+            assert!(!answers_query_from(ip.parse().unwrap()), "{ip}");
+        }
     }
 
     #[tokio::test]

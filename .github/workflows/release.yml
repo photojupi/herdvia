@@ -34,6 +34,8 @@ jobs:
   build-macos:
     needs: check-version
     runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,6 +54,11 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin --locked
 
+      # The package job checks the binary it downloads against this job output (see there).
+      - name: Hash
+        id: hash
+        run: echo "sha256=$(shasum -a 256 target/aarch64-apple-darwin/release/herdvia | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-macos-arm64
@@ -61,6 +68,8 @@ jobs:
   build-windows:
     needs: check-version
     runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
     env:
       CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
     steps:
@@ -85,20 +94,26 @@ jobs:
       - name: Strip
         run: x86_64-w64-mingw32-strip target/x86_64-pc-windows-gnu/release/herdvia.exe
 
+      # The package job checks the binary it downloads against this job output (see there).
+      - name: Hash
+        id: hash
+        run: echo "sha256=$(sha256sum target/x86_64-pc-windows-gnu/release/herdvia.exe | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-windows-x64
           path: target/x86_64-pc-windows-gnu/release/herdvia.exe
           if-no-files-found: error
 
-  package:
-    needs: [build-macos, build-windows]
+  # Builds and runs cargo-about and its dependency tree here, not in the package job: a
+  # malicious crate among them gets no id-token or attestations permission to sign with.
+  # It can still delete and re-upload other artifacts of this run, so the package and release
+  # jobs check what they download against hashes passed as job outputs.
+  licenses:
+    needs: check-version
     runs-on: ubuntu-latest
-    # id-token and attestations: for the build provenance step below.
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,6 +139,32 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: third-party-licenses
+          path: THIRD-PARTY-LICENSES.html
+          if-no-files-found: error
+
+  package:
+    needs: [build-macos, build-windows, licenses]
+    runs-on: ubuntu-latest
+    outputs:
+      sums-sha256: ${{ steps.zip.outputs.sums-sha256 }}
+    # id-token and attestations: for the build provenance step below.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-licenses
+          path: licenses
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bin-macos-arm64
@@ -134,19 +175,32 @@ jobs:
           name: bin-windows-x64
           path: bin/windows-x64
 
+      # Any job of this run can replace an artifact (delete it and upload another under the
+      # same name), including the licenses job running cargo-about. Job outputs cannot be
+      # changed by other jobs, so the binaries must match the hashes the build jobs computed.
+      - name: Check binaries against build job hashes
+        env:
+          MACOS_SHA256: ${{ needs.build-macos.outputs.sha256 }}
+          WINDOWS_SHA256: ${{ needs.build-windows.outputs.sha256 }}
+        run: |
+          printf '%s  %s\n' "$MACOS_SHA256" bin/macos-arm64/herdvia \
+            "$WINDOWS_SHA256" bin/windows-x64/herdvia.exe | sha256sum --strict -c
+
       - name: Create zips and SHA256SUMS
+        id: zip
         run: |
           mkdir dist
           # Artifact upload drops the executable bit.
           chmod +x bin/macos-arm64/herdvia
           zip -j dist/herdvia-macos-arm64.zip bin/macos-arm64/herdvia \
-            README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html
+            README.md LICENSE-MIT LICENSE-APACHE licenses/THIRD-PARTY-LICENSES.html
           zip -j dist/herdvia-windows-x64.zip bin/windows-x64/herdvia.exe \
-            README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html
+            README.md LICENSE-MIT LICENSE-APACHE licenses/THIRD-PARTY-LICENSES.html
           cp scripts/install.sh scripts/install.ps1 dist/
           cd dist
           sha256sum herdvia-macos-arm64.zip herdvia-windows-x64.zip install.sh install.ps1 > SHA256SUMS
           cat SHA256SUMS
+          echo "sums-sha256=$(sha256sum SHA256SUMS | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       # Signed provenance for every file the release job publishes, checked with
       # `gh attestation verify <file> --repo photojupi/herdvia
@@ -177,6 +231,16 @@ jobs:
         with:
           name: dist
           path: dist
+
+      # The same artifact replacement as in the package job: SHA256SUMS must match the
+      # package job output, and every published file must match SHA256SUMS.
+      - name: Check dist against package job hash
+        env:
+          SUMS_SHA256: ${{ needs.package.outputs.sums-sha256 }}
+        working-directory: dist
+        run: |
+          printf '%s  SHA256SUMS\n' "$SUMS_SHA256" | sha256sum --strict -c
+          sha256sum --strict -c SHA256SUMS
 
       - name: Create GitHub release
         env:

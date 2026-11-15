@@ -762,18 +762,47 @@ pub async fn serve_connect<S>(stream: S, network: Arc<Network>) -> io::Result<()
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    serve_connect_with_timeout(stream, network, APPROVAL_TIMEOUT).await
+}
+
+async fn serve_connect_with_timeout<S>(
+    stream: S,
+    network: Arc<Network>,
+    confirm_timeout: Duration,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let result = serve_connect_inner(&mut reader, &mut writer, &network).await;
+    let result = serve_connect_inner(&mut reader, &mut writer, &network, confirm_timeout).await;
     if let Err(ref err) = result {
         write_ipc_error(&mut writer, err).await;
     }
     result
 }
 
+/// The target's answer to a pairing request: `Ok(None)` when it approved, `Ok(Some(reason))`
+/// when it rejected.
+fn target_decision(
+    msg: Result<io::Result<PairMsg>, tokio::time::error::Elapsed>,
+) -> io::Result<Option<String>> {
+    match msg {
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "timed out waiting for approval on the target PC",
+        )),
+        Ok(Err(err)) => Err(err),
+        Ok(Ok(PairMsg::Approved)) => Ok(None),
+        Ok(Ok(PairMsg::Rejected { reason })) => Ok(Some(reason)),
+        Ok(Ok(_)) => Err(frame::invalid("unexpected pairing decision from target PC")),
+    }
+}
+
 async fn serve_connect_inner<R, W>(
     reader: &mut R,
     writer: &mut W,
     network: &Arc<Network>,
+    confirm_timeout: Duration,
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -886,7 +915,7 @@ where
                 let line = format!("REJECTED {}\n", log::sanitize(&reason));
                 frame::write(writer, STDOUT, line.as_bytes()).await?;
                 frame::write(writer, EXIT, &1_i32.to_be_bytes()).await?;
-                return Ok(());
+                return Ok(None);
             }
             _ => return Err(frame::invalid("unexpected pairing message from target PC")),
         };
@@ -905,58 +934,105 @@ where
             "SAS {target_name} {} {sas}\n",
             peers::fingerprint(target_id)
         );
-        frame::write(writer, STDOUT, sas_line.as_bytes()).await?;
+        Ok(Some((conn, send, recv, sas_line)))
+    };
 
-        let decision = tokio::time::timeout(CLIENT_APPROVAL_WAIT, read_msg(&mut recv))
-            .await
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timed out waiting for approval on the target PC",
-                )
-            })??;
+    let dialed = tokio::select! {
+        res = dial => res?,
+        ipc_in = frame::read(reader) => {
+            return match ipc_in {
+                Ok(None) | Err(_) => Ok(()),
+                Ok(Some(_)) => Err(frame::invalid("unexpected frame during connect")),
+            };
+        }
+    };
+    let Some((conn, _send, mut recv, sas_line)) = dialed else {
+        return Ok(());
+    };
+    frame::write(writer, STDOUT, sas_line.as_bytes()).await?;
 
-        match decision {
-            PairMsg::Approved => {
-                conn.close(0u32.into(), b"pair complete");
-                if let Some(sock_addr) = direct_addr {
-                    network.set_addr_hint(target_id, sock_addr);
+    // The LAN beacon that named this target is not authenticated, so the target's Approved alone
+    // proves nothing: anyone on the LAN can send one. Nothing is saved until the person here has
+    // also confirmed that both PCs show the same code. The two may arrive in either order.
+    let decision = tokio::time::timeout(CLIENT_APPROVAL_WAIT, read_msg(&mut recv));
+    tokio::pin!(decision);
+    let mut target_approved = false;
+    let rejected = 'wait: {
+        let confirmation = {
+            let read = frame::read(&mut *reader);
+            tokio::pin!(read);
+            let expiry = tokio::time::sleep(confirm_timeout);
+            tokio::pin!(expiry);
+            loop {
+                tokio::select! {
+                    msg = &mut decision, if !target_approved => match target_decision(msg)? {
+                        None => target_approved = true,
+                        Some(reason) => break 'wait Some(reason),
+                    },
+                    _ = &mut expiry => {
+                        conn.close(0u32.into(), b"not confirmed");
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "timed out waiting for the verification code to be confirmed on this PC",
+                        ));
+                    }
+                    f = &mut read => break f,
                 }
-                let saved = peers::grant_outbound(network.dir(), local_peer_name, target_id)?;
-                network.reload()?;
-                log::line(
-                    Kind::Other,
-                    &format!(
-                        "pair connected: {} (fingerprint {})",
-                        saved.name,
-                        peers::fingerprint(target_id)
-                    ),
-                );
-                let out = format!("APPROVED {target_id} {}\n", saved.permission.as_str());
-                frame::write(writer, STDOUT, out.as_bytes()).await?;
-                frame::write(writer, EXIT, &0_i32.to_be_bytes()).await?;
-                Ok(())
             }
-            PairMsg::Rejected { reason } => {
-                conn.close(0u32.into(), b"rejected");
-                let line = format!("REJECTED {}\n", log::sanitize(&reason));
-                frame::write(writer, STDOUT, line.as_bytes()).await?;
-                frame::write(writer, EXIT, &1_i32.to_be_bytes()).await?;
-                Ok(())
+        };
+        match confirmation {
+            Ok(Some(f))
+                if f.tag == STDIN
+                    && std::str::from_utf8(&f.payload).ok().map(str::trim) == Some("approve") => {}
+            Ok(Some(f)) if f.tag != STDIN => {
+                return Err(frame::invalid("unexpected frame during connect"));
             }
-            _ => Err(frame::invalid("unexpected pairing decision from target PC")),
+            Ok(Some(_)) | Ok(None) | Err(_) => {
+                conn.close(0u32.into(), b"cancelled");
+                return Ok(());
+            }
+        }
+        if target_approved {
+            break 'wait None;
+        }
+        tokio::select! {
+            msg = &mut decision => target_decision(msg)?,
+            ipc_in = frame::read(reader) => {
+                conn.close(0u32.into(), b"cancelled");
+                return match ipc_in {
+                    Ok(None) | Err(_) => Ok(()),
+                    Ok(Some(_)) => Err(frame::invalid("unexpected frame during connect")),
+                };
+            }
         }
     };
 
-    tokio::select! {
-        res = dial => res,
-        ipc_in = frame::read(reader) => {
-            match ipc_in {
-                Ok(None) | Err(_) => Ok(()),
-                Ok(Some(_)) => Err(frame::invalid("unexpected frame during connect")),
-            }
-        }
+    if let Some(reason) = rejected {
+        conn.close(0u32.into(), b"rejected");
+        let line = format!("REJECTED {}\n", log::sanitize(&reason));
+        frame::write(writer, STDOUT, line.as_bytes()).await?;
+        frame::write(writer, EXIT, &1_i32.to_be_bytes()).await?;
+        return Ok(());
     }
+
+    conn.close(0u32.into(), b"pair complete");
+    if let Some(sock_addr) = direct_addr {
+        network.set_addr_hint(target_id, sock_addr);
+    }
+    let saved = peers::grant_outbound(network.dir(), local_peer_name, target_id)?;
+    network.reload()?;
+    log::line(
+        Kind::Other,
+        &format!(
+            "pair connected: {} (fingerprint {})",
+            saved.name,
+            peers::fingerprint(target_id)
+        ),
+    );
+    let out = format!("APPROVED {target_id} {}\n", saved.permission.as_str());
+    frame::write(writer, STDOUT, out.as_bytes()).await?;
+    frame::write(writer, EXIT, &0_i32.to_be_bytes()).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -988,6 +1064,176 @@ mod tests {
             }
         })
         .abort_handle()
+    }
+
+    /// A target that sends Approved right after the Reveal, with no person approving on its side:
+    /// what anyone on the LAN can do after sending a beacon with its own key.
+    async fn spawn_eager_approver() -> (Endpoint, EndpointId, u16) {
+        let ep = Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
+            .alpns(vec![PAIR_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let port = ep
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
+        let id = ep.id();
+        let accept_ep = ep.clone();
+        tokio::spawn(async move {
+            let conn = accept_ep.accept().await.unwrap().await.unwrap();
+            let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+            let _hello = crate::pair::codec::read_msg(&mut recv).await.unwrap();
+            write_msg(
+                &mut send,
+                &PairMsg::Challenge {
+                    nonce_b: [3u8; 32],
+                    target_name: "attacker".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let _reveal = crate::pair::codec::read_msg(&mut recv).await.unwrap();
+            write_msg(&mut send, &PairMsg::Approved).await.unwrap();
+            let _ = send.finish();
+            conn.closed().await;
+        });
+        (ep, id, port)
+    }
+
+    /// Starts a connect session to the eager approver and returns once the SAS line arrived.
+    async fn connect_to_eager_approver(
+        net_a: &Arc<Network>,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Endpoint,
+        EndpointId,
+    ) {
+        let (target_ep, target_id, port) = spawn_eager_approver().await;
+        let (mut cli_a, srv_a) = tokio::io::duplex(4096);
+        let connect_task = tokio::spawn(serve_connect(srv_a, net_a.clone()));
+        let req = format!(
+            "home {target_id} lan {} 127.0.0.1:{port}",
+            HEXLOWER.encode(&[5u8; 16])
+        );
+        frame::write(&mut cli_a, STDIN, req.as_bytes())
+            .await
+            .unwrap();
+        let sas = frame::read(&mut cli_a).await.unwrap().unwrap();
+        assert_eq!(sas.tag, STDOUT);
+        assert!(String::from_utf8(sas.payload).unwrap().starts_with("SAS "));
+        (cli_a, connect_task, target_ep, target_id)
+    }
+
+    #[tokio::test]
+    async fn eager_target_approval_saves_nothing_until_the_caller_confirms_the_code() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let (mut cli_a, connect_task, target_ep, target_id) =
+            connect_to_eager_approver(&net_a).await;
+
+        // The target's Approved has arrived by now; without the caller's confirmation nothing
+        // may be saved or reported as approved.
+        let early = tokio::time::timeout(Duration::from_millis(700), frame::read(&mut cli_a)).await;
+        assert!(
+            early.is_err(),
+            "agent answered before confirmation: {early:?}"
+        );
+        assert!(peers::load(dir_a.path()).unwrap().is_empty());
+
+        frame::write(&mut cli_a, STDIN, b"approve").await.unwrap();
+        let done = frame::read(&mut cli_a).await.unwrap().unwrap();
+        assert_eq!(done.tag, STDOUT);
+        assert_eq!(
+            String::from_utf8(done.payload).unwrap(),
+            format!("APPROVED {target_id} out\n")
+        );
+        let exit = frame::read(&mut cli_a).await.unwrap().unwrap();
+        assert_eq!(exit.tag, EXIT);
+        assert_eq!(i32::from_be_bytes(exit.payload.try_into().unwrap()), 0);
+        connect_task.await.unwrap().unwrap();
+        assert_eq!(
+            peers::load(dir_a.path()).unwrap(),
+            vec![peers::Peer {
+                name: "home".into(),
+                id: target_id,
+                permission: Permission::Out
+            }]
+        );
+
+        target_ep.close().await;
+        net_a.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn eager_target_approval_saves_nothing_when_the_caller_declines_or_disconnects() {
+        for declined in [true, false] {
+            let dir_a = tempfile::tempdir().unwrap();
+            let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+            let (mut cli_a, connect_task, target_ep, _) = connect_to_eager_approver(&net_a).await;
+
+            // Let the target's Approved arrive before the caller answers.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if declined {
+                let _ = frame::write(&mut cli_a, STDIN, b"reject").await;
+            } else {
+                drop(cli_a);
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(5), connect_task)
+                .await
+                .expect("connect session should end");
+            assert!(
+                peers::load(dir_a.path()).unwrap().is_empty(),
+                "declined={declined}"
+            );
+
+            target_ep.close().await;
+            net_a.endpoint.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_target_approval_saves_nothing_when_the_caller_never_answers() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let (target_ep, target_id, port) = spawn_eager_approver().await;
+        let (mut cli_a, srv_a) = tokio::io::duplex(4096);
+        // A CLI that never sends a confirmation, as one older than the agent does.
+        let connect_task = tokio::spawn(serve_connect_with_timeout(
+            srv_a,
+            net_a.clone(),
+            Duration::from_millis(600),
+        ));
+        let req = format!(
+            "home {target_id} lan {} 127.0.0.1:{port}",
+            HEXLOWER.encode(&[5u8; 16])
+        );
+        frame::write(&mut cli_a, STDIN, req.as_bytes())
+            .await
+            .unwrap();
+        let sas = frame::read(&mut cli_a).await.unwrap().unwrap();
+        assert!(String::from_utf8(sas.payload).unwrap().starts_with("SAS "));
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), frame::read(&mut cli_a))
+            .await
+            .expect("connect session should time out")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.tag, ERROR);
+        assert!(
+            String::from_utf8(outcome.payload)
+                .unwrap()
+                .contains("timed out waiting for the verification code to be confirmed"),
+        );
+        assert!(connect_task.await.unwrap().is_err());
+        assert!(peers::load(dir_a.path()).unwrap().is_empty());
+
+        target_ep.close().await;
+        net_a.endpoint.close().await;
     }
 
     #[tokio::test]
@@ -1031,6 +1277,7 @@ mod tests {
         let sas_b = prompt_line.split_whitespace().nth(4).unwrap().to_owned();
         assert_eq!(sas_a, sas_b);
 
+        frame::write(&mut cli_a, STDIN, b"approve").await.unwrap();
         frame::write(&mut cli_b, STDIN, b"approve").await.unwrap();
 
         let b_done = frame::read(&mut cli_b).await.unwrap().unwrap();

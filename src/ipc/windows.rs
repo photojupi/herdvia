@@ -1,4 +1,12 @@
-use super::{pipe_name::pipe_name, pipe_state};
+use super::{
+    dir_security::{
+        ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_CALLBACK_ACE_TYPE,
+        ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE, ADMINISTRATORS, Ace,
+        LOCAL_SYSTEM, Label, Refusal, ancestor_refusal, needs_label,
+    },
+    pipe_name::pipe_name,
+    pipe_state,
+};
 use std::{
     env,
     ffi::c_void,
@@ -10,7 +18,7 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt},
         io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
     ptr::{null, null_mut},
     time::Duration,
 };
@@ -35,17 +43,18 @@ use windows_sys::Win32::{
             SetSecurityInfo,
         },
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl,
-        GetSecurityDescriptorDacl, GetTokenInformation, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE,
+        GetSecurityDescriptorDacl, GetSecurityDescriptorSacl, GetTokenInformation,
+        INHERIT_ONLY_ACE, LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
-        SECURITY_ATTRIBUTES, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TOKEN_USER, TokenElevationType,
-        TokenElevationTypeFull, TokenUser,
+        SECURITY_ATTRIBUTES, SYSTEM_MANDATORY_LABEL_ACE, TOKEN_ELEVATION_TYPE, TOKEN_QUERY,
+        TOKEN_USER, TokenElevationType, TokenElevationTypeFull, TokenUser,
     },
     Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
         LOCK_FILE_FLAGS, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-        READ_CONTROL, SECURITY_ANONYMOUS, WRITE_DAC,
+        READ_CONTROL, SECURITY_ANONYMOUS, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         IO::{IO_STATUS_BLOCK, OVERLAPPED},
@@ -96,6 +105,7 @@ pub fn listen(dir: &Path) -> io::Result<Listener> {
 
 /// Holds agent.lock in the data directory for as long as the agent runs.
 fn lock_agent(dir: &Path) -> io::Result<File> {
+    check_ancestors(dir, &current_sid()?)?;
     // No FILE_SHARE_DELETE: the name cannot be removed while the lock is held.
     let lock = OpenOptions::new()
         .read(true)
@@ -255,10 +265,15 @@ pub fn home_dir() -> io::Result<PathBuf> {
     env_path("USERPROFILE")
 }
 
+/// The data directory that `data_dir` gives without HERDVIA_DIR.
+fn default_dir() -> io::Result<PathBuf> {
+    Ok(env_path("APPDATA")?.join("herdvia"))
+}
+
 pub fn data_dir() -> io::Result<PathBuf> {
     match env::var_os("HERDVIA_DIR") {
         Some(dir) => super::override_dir(dir),
-        None => Ok(env_path("APPDATA")?.join("herdvia")),
+        None => default_dir(),
     }
 }
 
@@ -312,9 +327,6 @@ fn elevation_type() -> io::Result<TOKEN_ELEVATION_TYPE> {
     Ok(kind)
 }
 
-const ADMINISTRATORS: &str = "S-1-5-32-544";
-const LOCAL_SYSTEM: &str = "S-1-5-18";
-
 /// Whether an account can be trusted with the data: an owner can always change the DACL
 /// back, and an elevated user's new objects belong to Administrators. The same three are
 /// the only accounts that a DACL may let in.
@@ -329,12 +341,20 @@ const PRIVATE_FILES: [&str; 2] = ["secret.key", "peers"];
 /// What `inspect_dir` and `inspect_file` say about a DACL that `prepare_dir` will restrict.
 const RESTRICTED_AT_NEXT_RUN: &str = "it allows access to accounts other than this user, SYSTEM, and Administrators; herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)";
 
-/// The counterpart of chmod 700: checks the owner first, then sets a protected DACL unless
-/// the directory has the one that `protect_dir` sets already. Then gives the key and peers a
-/// protected DACL of their own if their DACL lets others in.
+/// The counterpart of chmod 700: checks the folders above it (`check_ancestors`) and the
+/// owner first, then sets a protected DACL unless the directory has the one that `protect_dir`
+/// sets already. Then gives the key and peers a protected DACL of their own if their DACL lets
+/// others in. Apart from that, gives the directory and the two files the integrity label that
+/// `label` sets, where it can.
 pub fn prepare_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
     let sid = current_sid()?;
+    // Before anything is created or changed, as far as the folders exist.
+    let complete = check_ancestors(dir, &sid)?;
+    fs::create_dir_all(dir)?;
+    if !complete {
+        // The folders that create_dir_all made above the data directory.
+        check_ancestors(dir, &sid)?;
+    }
     let handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
     check_entry(&handle, dir, true, &sid)?;
     let dacl = read_dacl(&handle, &sid)?;
@@ -349,8 +369,12 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
             Err(err) => return Err(err),
         }
     }
+    // Apart from the DACL, and best effort: what cannot be labeled is used as it is.
+    label(&handle, dir, true);
     for name in PRIVATE_FILES {
-        restrict_file(&dir.join(name), &sid);
+        let path = dir.join(name);
+        restrict_file(&path, &sid);
+        label_file(&path, &sid);
     }
     Ok(())
 }
@@ -359,6 +383,7 @@ pub fn prepare_dir(dir: &Path) -> io::Result<()> {
 /// other accounts in but `prepare_dir` will restrict it.
 pub(crate) fn inspect_dir(dir: &Path) -> io::Result<Option<String>> {
     let sid = current_sid()?;
+    check_ancestors(dir, &sid)?;
     let handle = open_entry(dir, READ_CONTROL | FILE_READ_ATTRIBUTES)?;
     check_entry(&handle, dir, true, &sid)?;
     if read_dacl(&handle, &sid)?.private {
@@ -398,7 +423,12 @@ pub(crate) fn inspect_file(path: &Path) -> io::Result<(File, Option<String>)> {
     }
 }
 
+/// Opens the key or peers after `check_ancestors` accepts the folders above the data
+/// directory that holds it.
 fn open_file(path: &Path, sid: &str) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        check_ancestors(dir, sid)?;
+    }
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -460,6 +490,134 @@ fn restrict_file(path: &Path, sid: &str) {
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
         );
     }
+}
+
+// The mandatory label entry type, from winnt.h.
+const SYSTEM_MANDATORY_LABEL_ACE_TYPE: u8 = 17;
+
+/// The integrity label that `prepare_dir` gives the data directory and passes on to the files
+/// created in it: Medium with NO_WRITE_UP and NO_READ_UP, so that a Low integrity process of
+/// this user can neither write nor newly open and read them.
+const DIR_LABEL: &str = "S:(ML;OICI;NWNR;;;ME)";
+/// The same label for the key and peers themselves, which may not have been given the
+/// directory's: it is not always passed on to entries that exist already.
+const FILE_LABEL: &str = "S:(ML;;NWNR;;;ME)";
+
+/// Gives the key or peers `FILE_LABEL` when `needs_label` says so, once it passes the kind and
+/// owner checks that `restrict_file` makes. Best effort, as `label`.
+fn label_file(path: &Path, sid: &str) {
+    let Ok(file) = open_entry(path, READ_CONTROL | FILE_READ_ATTRIBUTES) else {
+        return;
+    };
+    if check_entry(&file, path, false, sid).is_ok() {
+        label(&file, path, false);
+    }
+}
+
+/// Sets `DIR_LABEL` or `FILE_LABEL` as the label of `entry`, which is open at `path` with
+/// READ_CONTROL and FILE_READ_ATTRIBUTES, when `needs_label` says so: WRITE_OWNER is only
+/// asked for then, on an entry that `reopen` confirms. Best effort: an entry whose label
+/// cannot be read or set (no WRITE_OWNER, as in a directory that SYSTEM owns and this user
+/// may only modify) keeps its label, and nothing fails because of it.
+fn label(entry: &File, path: &Path, directory: bool) {
+    if !read_labels(entry).is_ok_and(|labels| needs_label(&labels, directory)) {
+        return;
+    }
+    if let Ok(writable) = reopen(entry, path, READ_CONTROL | WRITE_OWNER) {
+        let _ = set_label(&writable, if directory { DIR_LABEL } else { FILE_LABEL });
+    }
+}
+
+/// The mandatory label entries of a file or directory, in order, through a handle with
+/// READ_CONTROL access. Only the label is asked for, not the rest of the SACL, which takes a
+/// privilege to read.
+fn read_labels(file: &File) -> io::Result<Vec<Label>> {
+    let mut acl = null_mut();
+    let mut descriptor = null_mut();
+    // SAFETY: file owns a live handle; acl and descriptor are writable outputs, and the
+    // unused optional outputs are null.
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut acl,
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    // acl points into descriptor, which lives until this function returns.
+    let _allocation = LocalAllocation(descriptor);
+    let mut labels = Vec::new();
+    // No SACL: no label.
+    if acl.is_null() {
+        return Ok(labels);
+    }
+    // SAFETY: acl is a valid ACL inside descriptor.
+    for index in 0..u32::from(unsafe { (*acl).AceCount }) {
+        let mut ace = null_mut();
+        // SAFETY: acl is valid and index is below its entry count; ace is writable.
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: every entry starts with an ACE_HEADER.
+        let header = unsafe { *ace.cast::<ACE_HEADER>() };
+        if header.AceType != SYSTEM_MANDATORY_LABEL_ACE_TYPE {
+            continue;
+        }
+        let ace = ace.cast::<SYSTEM_MANDATORY_LABEL_ACE>();
+        // SAFETY: an entry of this type is a SYSTEM_MANDATORY_LABEL_ACE: the policy follows
+        // the header, and the SID starts at SidStart and lies within the entry.
+        let (policy, sid) = unsafe { ((*ace).Mask, &raw mut (*ace).SidStart) };
+        labels.push(Label {
+            flags: header.AceFlags,
+            policy,
+            sid: sid_string(sid.cast())?,
+        });
+    }
+    Ok(labels)
+}
+
+/// Sets the label in `sddl`, an S: string of one mandatory label entry, through a handle
+/// opened with WRITE_OWNER. Only the label changes: not the owner, the DACL, or the audit
+/// entries of the SACL. A directory passes an inheritable label on to what is inside.
+fn set_label(file: &File, sddl: &str) -> io::Result<()> {
+    let descriptor = security_descriptor(sddl)?;
+    let mut present = 0;
+    let mut sacl = null_mut();
+    let mut defaulted = 0;
+    // SAFETY: descriptor is a live security descriptor; the outputs are writable. sacl
+    // points into descriptor, which outlives its use below.
+    if unsafe { GetSecurityDescriptorSacl(descriptor.0, &mut present, &mut sacl, &mut defaulted) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if present == 0 || sacl.is_null() {
+        return Err(io::Error::other("SACL is missing"));
+    }
+    // SAFETY: file owns a handle opened with WRITE_OWNER; sacl is a valid ACL, and the
+    // owner, group, and DACL are left unchanged (null).
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null(),
+            sacl,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    Ok(())
 }
 
 /// Opens a file or directory itself, not the target of a link or junction.
@@ -537,12 +695,153 @@ fn check_entry(file: &File, path: &Path, directory: bool, sid: &str) -> io::Resu
     Ok(())
 }
 
-// Access control entry types, from winnt.h.
-const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
-const ACCESS_DENIED_ACE_TYPE: u8 = 1;
-const ACCESS_DENIED_OBJECT_ACE_TYPE: u8 = 6;
-const ACCESS_DENIED_CALLBACK_ACE_TYPE: u8 = 10;
-const ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE: u8 = 12;
+/// Refuses a folder above the data directory `dir`, from the drive root down to its parent,
+/// that would let another account swap the data directory for another after it is checked: a
+/// reparse point, or a folder that `ancestor_refusal` refuses. Read-only. Only a path that
+/// starts with a drive letter (C:\ or \\?\C:\) is checked; UNC and other paths are not.
+/// Returns whether all of those folders exist: the check stops at the first missing one.
+///
+/// The built-in data directory (`default_dir`) is accepted without this check: an account
+/// that could change the folders above the profile could already run programs as this user,
+/// and refusing it there (a profile moved through a junction, for one) would leave the agent
+/// no way to start.
+fn check_ancestors(dir: &Path, sid: &str) -> io::Result<bool> {
+    check_ancestors_unless(dir, sid, default_dir().ok().as_deref())
+}
+
+/// For doctor, read-only: `check_ancestors`, the check that the agent makes of the folders
+/// above the data directory.
+pub(crate) fn check_parents(dir: &Path) -> io::Result<()> {
+    check_ancestors(dir, &current_sid()?).map(|_| ())
+}
+
+/// `check_ancestors`, except for `dir` spelled as `default`, the built-in data directory.
+fn check_ancestors_unless(dir: &Path, sid: &str, default: Option<&Path>) -> io::Result<bool> {
+    if default == Some(dir) {
+        return Ok(true);
+    }
+    // As Win32 resolves the path for the calls that use it.
+    let dir = std::path::absolute(dir)?;
+    match dir.components().next() {
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) => {}
+        _ => return Ok(true),
+    }
+    let mut folders: Vec<&Path> = dir.ancestors().skip(1).collect();
+    folders.reverse();
+    for folder in folders {
+        let cannot_check = |err: io::Error| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "cannot check {}, a folder above the data directory ({err}); use a data directory whose parent folders this user can read",
+                    folder.display()
+                ),
+            )
+        };
+        let handle = match open_entry(folder, READ_CONTROL | FILE_READ_ATTRIBUTES) {
+            Ok(handle) => handle,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => return Err(cannot_check(err)),
+        };
+        if handle.metadata().map_err(cannot_check)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} is a junction, symbolic link, or other reparse point above the data directory; use a data directory whose parent folders are all real directories",
+                    folder.display()
+                ),
+            ));
+        }
+        let (owner, dacl) = read_owner_and_dacl(&handle).map_err(cannot_check)?;
+        if let Some(refusal) = ancestor_refusal(&owner, dacl.as_deref(), sid) {
+            return Err(unsafe_ancestor(folder, refusal));
+        }
+    }
+    Ok(true)
+}
+
+/// What a refused folder above the data directory lets another account do, and the way out.
+fn unsafe_ancestor(folder: &Path, refusal: Refusal) -> io::Error {
+    let folder = folder.display();
+    let reason = match refusal {
+        Refusal::Owner(owner) => format!(
+            "{folder} is owned by {owner}, not this user, SYSTEM, Administrators, or TrustedInstaller, so that account"
+        ),
+        Refusal::NullDacl => format!("{folder} has a NULL DACL, so any account"),
+        Refusal::Grants(account) => format!(
+            "{folder} lets {account} write to it (enough to turn it into a junction), or delete, rename, or change the permissions of it or of what is inside it, so that account"
+        ),
+        Refusal::Unexamined(kind) => format!(
+            "{folder} has an allow entry of a type that herdvia does not examine ({kind}), so another account"
+        ),
+    };
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{reason} could swap the data directory inside it for another; remove that access, or use a data directory whose parent folders only this user, SYSTEM, Administrators, and TrustedInstaller can change"
+        ),
+    )
+}
+
+/// The owner and DACL entries (None for a NULL DACL) of a file or directory, through a handle
+/// with READ_CONTROL access.
+fn read_owner_and_dacl(file: &File) -> io::Result<(String, Option<Vec<Ace>>)> {
+    let mut owner = null_mut();
+    let mut acl = null_mut();
+    let mut descriptor = null_mut();
+    // SAFETY: file owns a live handle; owner, acl, and descriptor are writable outputs, and
+    // the unused optional outputs are null.
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut acl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    // owner and acl point into descriptor, which lives until this function returns.
+    let _allocation = LocalAllocation(descriptor);
+    let owner = sid_string(owner)?;
+    if acl.is_null() {
+        return Ok((owner, None));
+    }
+    let mut aces = Vec::new();
+    // SAFETY: acl is a valid ACL inside descriptor.
+    for index in 0..u32::from(unsafe { (*acl).AceCount }) {
+        let mut ace = null_mut();
+        // SAFETY: acl is valid and index is below its entry count; ace is writable.
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: every entry starts with an ACE_HEADER.
+        let header = unsafe { *ace.cast::<ACE_HEADER>() };
+        let allowed = if header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+            let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+            // SAFETY: an entry of this type is an ACCESS_ALLOWED_ACE: the mask follows the
+            // header, and the SID starts at SidStart and lies within the entry.
+            let (mask, trustee) = unsafe { ((*ace).Mask, &raw mut (*ace).SidStart) };
+            Some((mask, sid_string(trustee.cast())?))
+        } else {
+            None
+        };
+        aces.push(Ace {
+            kind: header.AceType,
+            flags: header.AceFlags,
+            allowed,
+        });
+    }
+    Ok((owner, Some(aces)))
+}
 
 struct Dacl {
     /// Present, and every entry that allows access names an account that
@@ -881,6 +1180,16 @@ mod tests {
 
     /// The DACL of a file or directory in SDDL.
     fn dacl(path: &Path) -> String {
+        sddl(path, DACL_SECURITY_INFORMATION)
+    }
+
+    /// The integrity label of a file or directory in SDDL, empty when it has none.
+    fn label_text(path: &Path) -> String {
+        sddl(path, LABEL_SECURITY_INFORMATION)
+    }
+
+    /// Part of the security descriptor of a file or directory in SDDL.
+    fn sddl(path: &Path, information: u32) -> String {
         let handle = open_entry(path, READ_CONTROL).unwrap();
         let mut descriptor = null_mut();
         // SAFETY: handle is live with READ_CONTROL; descriptor is a writable output.
@@ -888,7 +1197,7 @@ mod tests {
             GetSecurityInfo(
                 handle.as_raw_handle(),
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
+                information,
                 null_mut(),
                 null_mut(),
                 null_mut(),
@@ -905,7 +1214,7 @@ mod tests {
                 ConvertSecurityDescriptorToStringSecurityDescriptorW(
                     descriptor,
                     SDDL_REVISION_1,
-                    DACL_SECURITY_INFORMATION,
+                    information,
                     &mut text,
                     null_mut(),
                 )
@@ -1053,6 +1362,20 @@ mod tests {
         .unwrap();
     }
 
+    /// A temporary folder for a test, in %LOCALAPPDATA%\herdvia-tests rather than %TEMP%.
+    /// Every data directory needs parent folders that no other account may change, and %TEMP%
+    /// may let other accounts change it (a sandbox's accounts, for one); %LOCALAPPDATA% has
+    /// the same parents as the default data directory in %APPDATA%. A folder that a test left
+    /// undeletable stays in herdvia-tests.
+    fn test_temp() -> tempfile::TempDir {
+        let base = env_path("LOCALAPPDATA").unwrap().join("herdvia-tests");
+        fs::create_dir_all(&base).unwrap();
+        if let Err(err) = check_ancestors(&base.join("herdvia"), &current_sid().unwrap()) {
+            panic!("the Windows tests need a folder whose parent folders pass the check: {err}");
+        }
+        tempfile::tempdir_in(&base).unwrap()
+    }
+
     fn icacls(path: &Path, args: &[&str]) {
         let status = std::process::Command::new("icacls")
             .arg(path)
@@ -1094,7 +1417,7 @@ mod tests {
 
     #[test]
     fn protects_the_directory_and_its_new_files_inherit_that() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         // An installation from before: the directory, the key, and peers inherit a grant
@@ -1159,7 +1482,7 @@ mod tests {
 
     #[test]
     fn restricts_a_file_with_entries_of_its_own() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         let key = crate::peers::load_key(&dir).unwrap();
         crate::peers::allow(
@@ -1202,7 +1525,7 @@ mod tests {
 
     #[test]
     fn leaves_a_protected_directory_alone() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         prepare_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1248,7 +1571,7 @@ mod tests {
 
     #[test]
     fn rewrites_a_protected_directory_that_passes_nothing_on() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1278,7 +1601,7 @@ mod tests {
 
     #[test]
     fn uses_a_private_directory_it_cannot_change_as_it_is() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1316,7 +1639,7 @@ mod tests {
 
     #[test]
     fn restricts_a_key_in_a_directory_that_passes_a_deny_entry_on() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1355,7 +1678,7 @@ mod tests {
 
     #[test]
     fn rewrites_a_directory_that_passes_a_deny_entry_on() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1387,7 +1710,7 @@ mod tests {
 
     #[test]
     fn restricts_a_file_with_a_null_dacl() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         let key = crate::peers::load_key(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1427,7 +1750,7 @@ mod tests {
 
     #[test]
     fn refuses_an_open_directory_it_cannot_restrict() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         let sid = current_sid().unwrap();
@@ -1460,7 +1783,7 @@ mod tests {
 
     #[test]
     fn a_key_that_cannot_be_changed_is_refused_with_the_fix() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
         icacls(&dir, &["/grant", "*S-1-5-32-545:(OI)(CI)R"]);
@@ -1496,7 +1819,7 @@ mod tests {
     #[test]
     fn the_icacls_commands_paste_into_powershell_and_cmd() {
         use std::os::windows::process::CommandExt;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let sid = current_sid().unwrap();
         let dir = temp.path().join("herdvia");
         fs::create_dir(&dir).unwrap();
@@ -1550,7 +1873,7 @@ mod tests {
 
     #[test]
     fn refuses_a_junction_and_entries_of_the_wrong_kind() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let target = temp.path().join("target");
         let link = temp.path().join("link");
         fs::create_dir(&target).unwrap();
@@ -1588,7 +1911,7 @@ mod tests {
 
     #[test]
     fn refuses_a_file_symbolic_link() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let target = temp.path().join("target");
         fs::write(&target, b"x").unwrap();
         let link = temp.path().join("secret.key");
@@ -1606,7 +1929,7 @@ mod tests {
 
     #[test]
     fn agent_lock_follows_the_directory_not_its_spelling() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = test_temp();
         let dir = temp.path().join("herdvia");
         prepare_dir(&dir).unwrap();
         let lock = lock_agent(&dir).unwrap();
@@ -1634,5 +1957,417 @@ mod tests {
             reject_elevated().is_err(),
             elevation_type().unwrap() == TokenElevationTypeFull
         );
+    }
+
+    #[test]
+    fn the_folder_rules_use_the_values_in_winnt_h() {
+        use super::super::dir_security as rules;
+        use windows_sys::Win32::{
+            Foundation::{GENERIC_ALL, GENERIC_WRITE},
+            Storage::FileSystem::{
+                DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
+                FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, WRITE_OWNER,
+            },
+        };
+        assert_eq!(
+            rules::PATH_CHANGING,
+            DELETE
+                | FILE_DELETE_CHILD
+                | FILE_WRITE_DATA
+                | FILE_WRITE_ATTRIBUTES
+                | WRITE_DAC
+                | WRITE_OWNER
+                | GENERIC_ALL
+                | GENERIC_WRITE
+        );
+        // Adding files is writing a folder's data; adding folders is appending to it, which
+        // the rules let other accounts do.
+        assert_eq!(FILE_ADD_FILE, FILE_WRITE_DATA);
+        assert_eq!(FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA);
+        assert_eq!(rules::PATH_CHANGING & FILE_ADD_SUBDIRECTORY, 0);
+        assert_eq!(u32::from(rules::INHERIT_ONLY_ACE), INHERIT_ONLY_ACE);
+    }
+
+    fn junction(link: &Path, target: &Path) {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J {}", link.display());
+    }
+
+    /// Every entry point that reads or writes the key, peers, or agent.lock in `dir`.
+    fn entry_points(dir: &Path) -> Vec<io::Error> {
+        vec![
+            prepare_dir(dir).unwrap_err(),
+            inspect_dir(dir).unwrap_err(),
+            private_file(&dir.join("secret.key")).unwrap_err(),
+            inspect_file(&dir.join("secret.key")).unwrap_err(),
+            // Refused before the missing file would be reported as not found.
+            inspect_file(&dir.join("peers")).unwrap_err(),
+            lock_agent(dir).unwrap_err(),
+            crate::peers::load_key(dir).unwrap_err(),
+            crate::peers::load(dir).unwrap_err(),
+        ]
+    }
+
+    #[test]
+    fn refuses_a_parent_folder_that_another_account_may_change() {
+        let temp = test_temp();
+        let parent = temp.path().join("parent");
+        let dir = parent.join("herdvia");
+        let key = crate::peers::load_key(&dir).unwrap();
+        let users = "S-1-5-32-545";
+        // Modify, and each of the rights in it or Full control that let Users rename or
+        // re-permission the folder or what is inside it, or set a reparse point on it while it
+        // is empty: writing its data (adding files), writing its attributes, or generic write.
+        for right in [
+            "M", "(D)", "(DC)", "(WDAC)", "(WO)", "(GA)", "(WD)", "(WA)", "(GW)",
+        ] {
+            icacls(&parent, &["/grant:r", &format!("*{users}:{right}")]);
+            let new = parent.join("new");
+            let mut errors = entry_points(&dir);
+            errors.push(prepare_dir(&new).unwrap_err());
+            for err in errors {
+                assert_eq!(
+                    err.kind(),
+                    io::ErrorKind::PermissionDenied,
+                    "{right}: {err}"
+                );
+                assert!(
+                    err.to_string()
+                        .starts_with(&format!("{} lets {users} ", parent.display())),
+                    "{right}: {err}"
+                );
+            }
+            // Refused before anything is created.
+            assert!(!new.exists(), "{right}");
+        }
+        // Without the grant, the same data directory is used again.
+        icacls(&parent, &["/remove:g", &format!("*{users}")]);
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        lock_agent(&dir).unwrap();
+    }
+
+    #[test]
+    fn accepts_parent_folders_that_others_may_only_read_or_add_folders_to() {
+        let temp = test_temp();
+        let parent = temp.path().join("parent");
+        fs::create_dir(&parent).unwrap();
+        // As on C:\ and above a profile: reading for Users and Everyone, adding folders for
+        // Authenticated Users, and entries that pass on to new entries only (CREATOR OWNER).
+        for grant in [
+            "*S-1-5-32-545:(OI)(CI)RX",
+            "*S-1-1-0:RX",
+            "*S-1-5-11:(AD)",
+            "*S-1-5-11:(OI)(CI)(IO)M",
+            "*S-1-3-0:(OI)(CI)(IO)F",
+        ] {
+            icacls(&parent, &["/grant", grant]);
+        }
+        let dir = parent.join("herdvia");
+        let key = crate::peers::load_key(&dir).unwrap();
+        assert_eq!(inspect_dir(&dir).unwrap(), None);
+        assert_eq!(inspect_file(&dir.join("secret.key")).unwrap().1, None);
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        lock_agent(&dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_junction_above_the_data_directory() {
+        let temp = test_temp();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        junction(&link, &real);
+        let dir = link.join("herdvia");
+        for err in entry_points(&dir) {
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+            assert!(
+                err.to_string().starts_with(&format!(
+                    "{} is a junction, symbolic link, or other reparse point above the data directory",
+                    link.display()
+                )),
+                "{err}"
+            );
+        }
+        assert!(!real.join("herdvia").exists());
+        // An existing data directory reached through it is refused the same way.
+        crate::peers::load_key(&real.join("herdvia")).unwrap();
+        for err in entry_points(&dir) {
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_default_and_test_folders() {
+        let sid = current_sid().unwrap();
+        // %APPDATA%\herdvia is not checked at all, so nothing is read there.
+        let appdata = env_path("APPDATA").unwrap();
+        assert!(check_ancestors(&appdata.join("herdvia"), &sid).unwrap());
+        let temp = test_temp();
+        assert!(check_ancestors(&temp.path().join("herdvia"), &sid).unwrap());
+        // Folders that do not exist yet are checked once prepare_dir makes them.
+        let dir = temp.path().join("a").join("b").join("herdvia");
+        assert!(!check_ancestors(&dir, &sid).unwrap());
+        prepare_dir(&dir).unwrap();
+        assert!(check_ancestors(&dir, &sid).unwrap());
+        // The same folders, spelled as a verbatim path.
+        let verbatim = PathBuf::from(format!(r"\\?\{}", dir.display()));
+        assert!(check_ancestors(&verbatim, &sid).unwrap());
+        prepare_dir(&verbatim).unwrap();
+    }
+
+    #[test]
+    fn accepts_the_default_data_directory_without_checking_its_folders() {
+        let sid = current_sid().unwrap();
+        let temp = test_temp();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        junction(&link, &real);
+        let default = link.join("herdvia");
+        assert!(check_ancestors_unless(&default, &sid, Some(&default)).unwrap());
+        // As private_file passes it, the parent of the key.
+        let key = default.join("secret.key");
+        assert!(check_ancestors_unless(key.parent().unwrap(), &sid, Some(&default)).unwrap());
+        // Another folder there, the same one spelled another way, and the folder without a
+        // default (APPDATA is not set) are checked.
+        let verbatim = PathBuf::from(format!(r"\\?\{}", default.display()));
+        for dir in [&link.join("other"), &verbatim] {
+            let err = check_ancestors_unless(dir, &sid, Some(&default)).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        }
+        let err = check_ancestors_unless(&default, &sid, None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert!(!real.join("herdvia").exists());
+    }
+
+    #[test]
+    fn checks_only_paths_that_start_with_a_drive_letter() {
+        let sid = current_sid().unwrap();
+        // Nothing is opened, so the server need not exist.
+        for path in [
+            r"\\herdvia-test.invalid\share\herdvia",
+            r"\\?\UNC\herdvia-test.invalid\share\herdvia",
+            r"\\.\C:\herdvia",
+        ] {
+            assert!(check_ancestors(Path::new(path), &sid).unwrap(), "{path}");
+        }
+        // A drive letter is checked from its root.
+        let temp = test_temp();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = temp.path().join("link");
+        junction(&link, &real);
+        let verbatim = PathBuf::from(format!(r"\\?\{}", link.join("herdvia").display()));
+        assert_eq!(
+            check_ancestors(&verbatim, &sid).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    /// Whether `prepare_dir` leaves the label of `path` as it is.
+    fn labeled(path: &Path) -> bool {
+        let entry = open_entry(path, READ_CONTROL).unwrap();
+        !needs_label(&read_labels(&entry).unwrap(), path.is_dir())
+    }
+
+    fn set_test_label(path: &Path, sddl: &str) {
+        set_label(&open_entry(path, READ_CONTROL | WRITE_OWNER).unwrap(), sddl).unwrap();
+    }
+
+    fn test_peer(key: &iroh::SecretKey) -> crate::peers::Peer {
+        crate::peers::Peer {
+            name: "work".into(),
+            id: key.public(),
+            permission: crate::peers::Permission::Both,
+        }
+    }
+
+    #[test]
+    fn labels_the_directory_and_what_is_created_in_it() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        prepare_dir(&dir).unwrap();
+        let text = label_text(&dir);
+        assert!(text.contains("(ML;OICI;NWNR;;;ME)"), "{text}");
+        assert!(labeled(&dir));
+        // The key and peers are written through temporary files, which take the label from
+        // the directory as they are created, as does any new file.
+        let key = crate::peers::load_key(&dir).unwrap();
+        crate::peers::allow(&dir, test_peer(&key)).unwrap();
+        let new = dir.join("new");
+        fs::write(&new, b"x").unwrap();
+        for path in [dir.join("secret.key"), dir.join("peers"), new] {
+            let text = label_text(&path);
+            assert!(text.contains("NWNR;;;ME)"), "{}: {text}", path.display());
+            assert!(labeled(&path), "{}: {text}", path.display());
+        }
+        // doctor says nothing about labels.
+        assert_eq!(inspect_dir(&dir).unwrap(), None);
+        assert_eq!(inspect_file(&dir.join("secret.key")).unwrap().1, None);
+    }
+
+    #[test]
+    fn labels_an_installation_whose_dacl_is_set_already() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // As an older herdvia left it: the DACL that protect_dir sets, and no label.
+        set_test_dacl(
+            &dir,
+            &format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+        );
+        let key = iroh::SecretKey::generate();
+        let (secret, peers) = (dir.join("secret.key"), dir.join("peers"));
+        fs::write(&secret, key.to_bytes()).unwrap();
+        fs::write(&peers, b"").unwrap();
+        assert!(
+            read_dacl(&open_entry(&dir, READ_CONTROL).unwrap(), &sid)
+                .unwrap()
+                .target
+        );
+        for path in [&dir, &secret, &peers] {
+            assert!(!labeled(path), "{}: {}", path.display(), label_text(path));
+        }
+        let before = [dacl(&dir), dacl(&secret), dacl(&peers)];
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        assert!(
+            label_text(&dir).contains("(ML;OICI;NWNR;;;ME)"),
+            "{}",
+            label_text(&dir)
+        );
+        for path in [&secret, &peers] {
+            assert!(labeled(path), "{}: {}", path.display(), label_text(path));
+        }
+        // Only the labels changed.
+        assert_eq!([dacl(&dir), dacl(&secret), dacl(&peers)], before);
+    }
+
+    #[test]
+    fn labels_the_key_in_a_directory_it_cannot_label() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // As protect_dir sets it, but this user may not change the directory's label: OWNER
+        // RIGHTS (OW) takes the owner's implicit rights away.
+        set_test_dacl(
+            &dir,
+            &format!(
+                "D:P(D;;WO;;;{sid})(D;;WO;;;OW)(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+            ),
+        );
+        assert!(denied(
+            &open_entry(&dir, READ_CONTROL | WRITE_OWNER).unwrap_err()
+        ));
+        prepare_dir(&dir).unwrap();
+        assert!(!labeled(&dir), "{}", label_text(&dir));
+        let secret = dir.join("secret.key");
+        let key = crate::peers::load_key(&dir).unwrap();
+        // The directory passes no label on, so the new key has none until the next run.
+        assert!(!labeled(&secret), "{}", label_text(&secret));
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        let text = label_text(&secret);
+        assert!(text.contains("(ML;;NWNR;;;ME)"), "{text}");
+        assert!(!labeled(&dir), "{}", label_text(&dir));
+    }
+
+    #[test]
+    fn uses_a_directory_it_may_only_modify_without_a_label() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        fs::create_dir(&dir).unwrap();
+        let sid = current_sid().unwrap();
+        // As when SYSTEM owns it and this user may only modify it (0x1301bf): no WRITE_OWNER,
+        // on the directory or on what is created in it.
+        set_test_dacl(
+            &dir,
+            &format!("D:P(D;;WD;;;{sid})(D;;WD;;;OW)(A;OICI;0x1301bf;;;{sid})(A;OICI;FA;;;SY)"),
+        );
+        prepare_dir(&dir).unwrap();
+        let key = crate::peers::load_key(&dir).unwrap();
+        assert_eq!(
+            crate::peers::load_key(&dir).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+        crate::peers::allow(&dir, test_peer(&key)).unwrap();
+        assert_eq!(crate::peers::load(&dir).unwrap().len(), 1);
+        for path in [dir.clone(), dir.join("secret.key"), dir.join("peers")] {
+            assert!(!labeled(&path), "{}: {}", path.display(), label_text(&path));
+        }
+    }
+
+    #[test]
+    fn leaves_a_label_that_is_enough_alone_and_raises_a_low_one() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        crate::peers::load_key(&dir).unwrap();
+        let secret = dir.join("secret.key");
+        // Enough already, with NO_EXECUTE_UP besides, which a rewrite would drop.
+        set_test_label(&dir, "S:(ML;OICI;NWNRNX;;;ME)");
+        set_test_label(&secret, "S:(ML;;NWNRNX;;;ME)");
+        let before = [label_text(&dir), label_text(&secret)];
+        assert!(before.iter().all(|text| text.contains("NX;")), "{before:?}");
+        prepare_dir(&dir).unwrap();
+        assert_eq!([label_text(&dir), label_text(&secret)], before);
+        // Low lets a Low integrity process read and write it: raised to Medium.
+        set_test_label(&secret, "S:(ML;;NW;;;LW)");
+        assert!(!labeled(&secret), "{}", label_text(&secret));
+        prepare_dir(&dir).unwrap();
+        let text = label_text(&secret);
+        assert!(text.contains("(ML;;NWNR;;;ME)"), "{text}");
+    }
+
+    #[test]
+    fn a_low_integrity_process_cannot_read_the_key_or_peers() {
+        use std::os::windows::process::CommandExt;
+        let temp = test_temp();
+        // A process started from a program labeled Low runs at Low integrity.
+        let low_cmd = temp.path().join("cmd.exe");
+        fs::copy(
+            env_path("SystemRoot").unwrap().join(r"System32\cmd.exe"),
+            &low_cmd,
+        )
+        .unwrap();
+        icacls(&low_cmd, &["/setintegritylevel", "low"]);
+        let read = |path: &Path| {
+            std::process::Command::new(&low_cmd)
+                .args(["/d", "/c"])
+                .raw_arg(format!("type \"{}\"", path.display()))
+                .output()
+                .unwrap()
+        };
+        // It reads a file of this user's without a label.
+        let plain = temp.path().join("plain");
+        fs::write(&plain, b"plain").unwrap();
+        let output = read(&plain);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"plain");
+        let dir = temp.path().join("herdvia");
+        let key = crate::peers::load_key(&dir).unwrap();
+        crate::peers::allow(&dir, test_peer(&key)).unwrap();
+        for path in [dir.join("secret.key"), dir.join("peers")] {
+            let output = read(&path);
+            assert!(!output.status.success(), "{}: {output:?}", path.display());
+            assert!(output.stdout.is_empty(), "{}: {output:?}", path.display());
+        }
     }
 }

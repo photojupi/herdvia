@@ -3,10 +3,14 @@
 mod common;
 
 use common::{Node, session_line, wait_connected};
+use herdvia::frame::{CONTROL, ERROR, EXIT, STDIN, STDOUT};
 use std::{
     fs,
-    io::{BufReader, Write},
-    os::unix::fs::PermissionsExt,
+    io::{BufReader, Read, Write},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
     process::{Child, ChildStdin, ChildStdout, Stdio},
     sync::{Mutex, mpsc},
     thread,
@@ -170,6 +174,18 @@ fn extract_invite(text: &str) -> String {
     panic!("no hvi1- invite token found in:\n{text}");
 }
 
+/// The menu number (with a newline) of the LAN entry showing `fingerprint`.
+fn lan_choice(menu: &str, fingerprint: &str) -> String {
+    for line in menu.lines() {
+        if line.contains(&format!("(fingerprint {fingerprint})"))
+            && let Some((number, _)) = line.trim().split_once(')')
+        {
+            return format!("{number}\n");
+        }
+    }
+    panic!("no LAN entry with fingerprint {fingerprint} in:\n{menu}");
+}
+
 fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -223,7 +239,7 @@ fn lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic() {
     let mut a = Node::new("lan-a");
     let mut b = Node::new("lan-b");
     let (a_id, _) = a.id();
-    let (b_id, _) = b.id();
+    let (b_id, b_fp) = b.id();
     let hc_record = install_fake_hc(&a);
 
     b.start_agent();
@@ -235,16 +251,32 @@ fn lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic() {
     let started = Instant::now();
     let mut connect_proc = Interactive::spawn(&a, &["connect", "home"]);
 
-    let a_out_so_far = connect_proc.wait_for_substr(
-        "Waiting for approval on the other PC...",
-        Duration::from_secs(10),
+    // Even a single LAN candidate is offered as a menu, to be matched against the fingerprint
+    // that listen shows.
+    let menu = connect_proc.wait_for_substr("or 0]:", Duration::from_secs(10));
+    assert!(
+        menu.contains("Choose the PC whose fingerprint matches"),
+        "menu: {menu}"
     );
+    assert!(menu.contains("0) Paste an invite token instead"), "{menu}");
+    connect_proc.send_line(&lan_choice(&menu, &b_fp));
+
+    let a_out_so_far = connect_proc.wait_for_substr("[y/N]:", Duration::from_secs(10));
     let b_out_so_far = listen_proc.wait_for_substr("Allow? [y/N]:", Duration::from_secs(10));
+    assert!(
+        b_out_so_far.contains(&format!("This PC's fingerprint: {b_fp}")),
+        "listen output: {b_out_so_far}"
+    );
 
     let sas_a = extract_sas(&a_out_so_far);
     let sas_b = extract_sas(&b_out_so_far);
     assert_eq!(sas_a, sas_b);
 
+    connect_proc.send_line("y\n");
+    connect_proc.wait_for_substr(
+        "Waiting for approval on the other PC...",
+        Duration::from_secs(10),
+    );
     listen_proc.send_line("y\n");
 
     let (b_code, _b_out, b_err) = listen_proc.finish(Duration::from_secs(10));
@@ -291,6 +323,10 @@ fn declining_or_eof_on_listen_leaves_peers_empty_and_exits_one() {
     listen_proc.wait_for_substr("hvi1-", Duration::from_secs(10));
 
     let mut connect_proc = Interactive::spawn(&a, &["connect", "home"]);
+    let menu = connect_proc.wait_for_substr("or 0]:", Duration::from_secs(10));
+    connect_proc.send_line(&lan_choice(&menu, &b.id().1));
+    connect_proc.wait_for_substr("[y/N]:", Duration::from_secs(10));
+    connect_proc.send_line("y\n");
     connect_proc.wait_for_substr(
         "Waiting for approval on the other PC...",
         Duration::from_secs(10),
@@ -313,6 +349,75 @@ fn declining_or_eof_on_listen_leaves_peers_empty_and_exits_one() {
 }
 
 #[test]
+fn a_blank_line_at_the_lan_menu_cancels_and_other_input_is_an_error() {
+    let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut a = Node::new("menu-a");
+    let mut b = Node::new("menu-b");
+    b.start_agent();
+    a.start_agent();
+
+    let mut listen_proc = Interactive::spawn(&b, &["listen"]);
+    listen_proc.wait_for_substr("hvi1-", Duration::from_secs(10));
+
+    // Enter alone cancels, as EOF does; a number out of range or other text is an error.
+    for (input, code, expected) in [
+        ("\n", 1, "herdvia: pairing cancelled\n"),
+        ("99\n", 255, "herdvia: invalid selection\n"),
+        ("x\n", 255, "herdvia: invalid selection\n"),
+    ] {
+        let mut connect_proc = Interactive::spawn(&a, &["connect", "home"]);
+        connect_proc.wait_for_substr("or 0]:", Duration::from_secs(10));
+        connect_proc.send_line(input);
+        let (got, _, err) = connect_proc.finish(Duration::from_secs(10));
+        assert_eq!((got, err.as_str()), (code, expected), "{input:?}");
+    }
+    assert!(a.peers_text().trim().is_empty());
+
+    let _ = listen_proc.child.kill();
+    let _ = listen_proc.child.wait();
+}
+
+#[test]
+fn approval_on_the_target_saves_nothing_on_the_caller_until_its_user_confirms() {
+    let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut a = Node::new("conf-a");
+    let mut b = Node::new("conf-b");
+    let (_, b_fp) = b.id();
+    let hc_record = install_fake_hc(&a);
+    b.start_agent();
+    a.start_agent();
+
+    let mut listen_proc = Interactive::spawn(&b, &["listen"]);
+    listen_proc.wait_for_substr("hvi1-", Duration::from_secs(10));
+
+    let mut connect_proc = Interactive::spawn(&a, &["connect", "home"]);
+    let menu = connect_proc.wait_for_substr("or 0]:", Duration::from_secs(10));
+    connect_proc.send_line(&lan_choice(&menu, &b_fp));
+    let a_out = connect_proc.wait_for_substr("[y/N]:", Duration::from_secs(10));
+    let b_out = listen_proc.wait_for_substr("Allow? [y/N]:", Duration::from_secs(10));
+    assert_eq!(extract_sas(&a_out), extract_sas(&b_out));
+
+    // The target approves first; its Approved reaches the caller's agent before the caller's
+    // user answers.
+    listen_proc.send_line("y\n");
+    let (b_code, _, b_err) = listen_proc.finish(Duration::from_secs(10));
+    assert_eq!(b_code, 0, "listen stderr: {b_err}");
+    thread::sleep(Duration::from_millis(500));
+    assert!(a.peers_text().trim().is_empty());
+    assert!(!hc_record.exists());
+
+    connect_proc.send_line("n\n");
+    let (a_code, _, a_err) = connect_proc.finish(Duration::from_secs(10));
+    assert_eq!(a_code, 1, "connect stderr: {a_err}");
+    assert!(a_err.contains("pairing cancelled"), "{a_err}");
+    assert!(a.peers_text().trim().is_empty());
+    assert!(
+        !hc_record.exists(),
+        "hc machine add ran without confirmation"
+    );
+}
+
+#[test]
 fn invite_token_pairs_two_agents_over_relay() {
     let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut a = Node::new("inv-a");
@@ -329,13 +434,15 @@ fn invite_token_pairs_two_agents_over_relay() {
     let invite = extract_invite(&listen_banner);
 
     let mut connect_proc = Interactive::spawn(&a, &["connect", "remote-box", &invite]);
-    let a_out = connect_proc.wait_for_substr(
-        "Waiting for approval on the other PC...",
-        Duration::from_secs(30),
-    );
+    let a_out = connect_proc.wait_for_substr("[y/N]:", Duration::from_secs(30));
     let b_out = listen_proc.wait_for_substr("Allow? [y/N]:", Duration::from_secs(30));
     assert_eq!(extract_sas(&a_out), extract_sas(&b_out));
 
+    connect_proc.send_line("y\n");
+    connect_proc.wait_for_substr(
+        "Waiting for approval on the other PC...",
+        Duration::from_secs(10),
+    );
     listen_proc.send_line("yes\n");
 
     let (b_code, _, b_err) = listen_proc.finish(Duration::from_secs(15));
@@ -397,4 +504,165 @@ fn connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_
             && !design.contains("비대화형 표준 입력이면 255"),
         "DESIGN.md still contains outdated preflight or stdin EOF exit-code description"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 확인 입력과 겹쳐 쪼개져 도착한 에이전트 프레임
+// ---------------------------------------------------------------------------
+
+/// 에이전트가 쓰는 대로의 프레임 바이트: 머리(태그, 길이) 다음에 내용.
+fn frame_bytes(tag: u8, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![tag];
+    bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// 프레임 하나. 연결이 닫혔으면 None.
+fn read_frame(stream: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
+    let mut header = [0u8; 5];
+    stream.read_exact(&mut header).ok()?;
+    let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+    let mut payload = vec![0; len];
+    stream.read_exact(&mut payload).unwrap();
+    Some((header[0], payload))
+}
+
+/// `node` 의 에이전트 대신 소켓에서 `status` 에 답하고, 첫 `connect`/`listen` 세션을 `session` 에 넘긴다.
+fn fake_agent(
+    node: &Node,
+    session: impl FnOnce(UnixStream) + Send + 'static,
+) -> thread::JoinHandle<()> {
+    let listener = UnixListener::bind(node.sock()).unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let Some((tag, request)) = read_frame(&mut stream) else {
+                continue;
+            };
+            assert_eq!(tag, CONTROL);
+            match request.as_slice() {
+                b"status" => stream
+                    .write_all(&frame_bytes(EXIT, &0_i32.to_be_bytes()))
+                    .unwrap(),
+                b"connect" | b"listen" => return session(stream),
+                other => panic!("unexpected request {other:?}"),
+            }
+        }
+    })
+}
+
+/// 가짜 에이전트가 `before` 프레임들을 보낸 뒤 `reply` 를 `split` 바이트까지만 보낸다.
+/// 그 사이 사용자가 y 를 입력하면 approve 를 받은 뒤 `reply` 의 나머지와 `after` 를 보낸다.
+fn split_reply_session(
+    before: Vec<Vec<u8>>,
+    reply: Vec<u8>,
+    split: usize,
+    after: Vec<u8>,
+    partial_tx: mpsc::Sender<()>,
+) -> impl FnOnce(UnixStream) + Send + 'static {
+    move |mut stream| {
+        let (tag, _) = read_frame(&mut stream).unwrap();
+        assert_eq!(tag, STDIN);
+        for frame in before {
+            stream.write_all(&frame).unwrap();
+        }
+        let (head, rest) = reply.split_at(split);
+        stream.write_all(head).unwrap();
+        partial_tx.send(()).unwrap();
+        let answer = read_frame(&mut stream).unwrap();
+        assert_eq!(answer, (STDIN, b"approve".to_vec()));
+        stream.write_all(rest).unwrap();
+        stream.write_all(&after).unwrap();
+        // CLI 가 끝날 때까지 연결을 열어 둔다.
+        let _ = stream.read(&mut [0u8; 1]);
+    }
+}
+
+/// 프롬프트가 뜨고 일부 프레임이 CLI 에 닿은 뒤 y 를 보내고 종료 코드와 stderr 를 돌려준다.
+fn answer_yes_during_a_split_frame(
+    mut proc: Interactive,
+    prompt: &str,
+    partial_rx: mpsc::Receiver<()>,
+) -> (i32, String) {
+    proc.wait_for_substr(prompt, Duration::from_secs(10));
+    partial_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    // CLI 가 프레임 앞부분을 읽고 나머지를 기다리는 동안 입력이 도착하게 한다.
+    thread::sleep(Duration::from_millis(300));
+    proc.send_line("y\n");
+    let (code, _, err) = proc.finish(Duration::from_secs(10));
+    (code, err)
+}
+
+#[test]
+fn connect_keeps_an_agent_frame_split_around_the_confirmation_answer() {
+    let target: iroh::EndpointId = Node::new("split-t").id().0.parse().unwrap();
+    let invite = herdvia::pair::codec::encode_invite(target, &[7; 16]);
+    let sas = frame_bytes(STDOUT, b"SAS target 0000-1111-2222-3333 123-4567\n");
+    let error = frame_bytes(ERROR, b"target rejected pairing");
+    let rejected = frame_bytes(STDOUT, b"REJECTED busy\n");
+    // 태그 뒤에서 쪼갠 ERROR, 내용 중간에서 쪼갠 REJECTED(뒤에 EXIT).
+    let cases = [
+        (
+            error,
+            1,
+            Vec::new(),
+            255,
+            "herdvia: target rejected pairing\n",
+        ),
+        (
+            rejected,
+            8,
+            frame_bytes(EXIT, &1_i32.to_be_bytes()),
+            1,
+            "herdvia: pairing rejected: busy\n",
+        ),
+    ];
+    for (reply, split, after, code, expected) in cases {
+        let a = Node::new("split-c");
+        let (partial_tx, partial_rx) = mpsc::channel();
+        let agent = fake_agent(
+            &a,
+            split_reply_session(vec![sas.clone()], reply, split, after, partial_tx),
+        );
+        let proc = Interactive::spawn(&a, &["connect", "home", &invite]);
+        let (got, err) =
+            answer_yes_during_a_split_frame(proc, "Same code on both PCs? [y/N]:", partial_rx);
+        assert_eq!((got, err.as_str()), (code, expected));
+        agent.join().unwrap();
+        assert!(a.peers_text().trim().is_empty());
+    }
+}
+
+#[test]
+fn listen_keeps_an_agent_frame_split_around_the_allow_answer() {
+    // listen 은 READY 를 받으면 LAN 에 비콘을 보낸다.
+    let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let b = Node::new("split-l");
+    let id = Node::new("split-t").id().0;
+    let ready = format!("READY {id} 1 {} hvi1-unused fake-host\n", "ab".repeat(16));
+    let before = vec![
+        frame_bytes(STDOUT, ready.as_bytes()),
+        frame_bytes(STDOUT, b"PROMPT caller x 0000-1111-2222-3333 123-4567\n"),
+    ];
+    let (partial_tx, partial_rx) = mpsc::channel();
+    let agent = fake_agent(
+        &b,
+        split_reply_session(
+            before,
+            frame_bytes(ERROR, b"caller went away"),
+            3,
+            Vec::new(),
+            partial_tx,
+        ),
+    );
+    let proc = Interactive::spawn(&b, &["listen"]);
+    let (code, err) = answer_yes_during_a_split_frame(proc, "Allow? [y/N]:", partial_rx);
+    assert_eq!(code, 255, "stderr: {err}");
+    assert_eq!(
+        err.lines().last(),
+        Some("herdvia: caller went away"),
+        "{err}"
+    );
+    agent.join().unwrap();
 }

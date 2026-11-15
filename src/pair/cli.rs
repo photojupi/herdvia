@@ -27,9 +27,14 @@ fn parse_yes_no(input: &str) -> bool {
 enum PeerChoice {
     Peer(usize),
     Invite,
+    /// A blank line, as Enter alone gives.
+    Cancel,
 }
 
 fn parse_peer_selection(input: &str, count: usize) -> Option<PeerChoice> {
+    if input.trim().is_empty() {
+        return Some(PeerChoice::Cancel);
+    }
     let n: usize = input.trim().parse().ok()?;
     if n == 0 {
         Some(PeerChoice::Invite)
@@ -112,10 +117,11 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
         let _ = writeln!(io::stderr(), "herdvia: warning: {warn}");
     }
 
-    let mut stream = ipc::connect(&dir).await?;
-    if frame::write(&mut stream, CONTROL, b"listen").await.is_err()
+    // Split, so that a frame read can go on while the answer to the prompt is written.
+    let (mut reader, mut writer) = tokio::io::split(ipc::connect(&dir).await?);
+    if frame::write(&mut writer, CONTROL, b"listen").await.is_err()
         || frame::write(
-            &mut stream,
+            &mut writer,
             STDIN,
             explicit_name.as_deref().unwrap_or("").as_bytes(),
         )
@@ -125,7 +131,7 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
         return Err(check_older_agent(&dir, "failed to start listen session").await);
     }
 
-    let first = match frame::read(&mut stream).await {
+    let first = match frame::read(&mut reader).await {
         Ok(Some(f)) => f,
         Ok(None) | Err(_) => {
             return Err(check_older_agent(&dir, "agent closed listen session unexpectedly").await);
@@ -180,11 +186,12 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
 
     let _ = writeln!(
         io::stdout(),
-        "Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...\n\n  Same local network: run on the Herdr PC:\n    herdvia connect <name>\n\n  Different network:  run on the Herdr PC:\n    herdvia connect <name> {invite_token}\n"
+        "Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...\nThis PC's fingerprint: {}\n\n  Same local network: run on the Herdr PC:\n    herdvia connect <name>\n  and choose the entry with this fingerprint.\n\n  Different network:  run on the Herdr PC:\n    herdvia connect <name> {invite_token}\n",
+        peers::fingerprint(endpoint_id)
     );
     let _ = io::stdout().flush();
 
-    let next = frame::read(&mut stream)
+    let next = frame::read(&mut reader)
         .await?
         .ok_or_else(|| frame::invalid("agent closed listen session"))?;
     let _ = stop_tx.send(true);
@@ -199,7 +206,7 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
         STDOUT => {
             let line = String::from_utf8_lossy(&next.payload);
             if line.trim() == "TIMEOUT" {
-                let _ = frame::read(&mut stream).await;
+                let _ = frame::read(&mut reader).await;
                 let _ = writeln!(
                     io::stderr(),
                     "herdvia: listen timed out after 5 minutes without a connection"
@@ -217,19 +224,22 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
             );
             let _ = io::stdout().flush();
 
-            tokio::select! {
-                input = read_stdin_line() => {
-                    let approved = input?.as_deref().is_some_and(parse_yes_no);
-                    let decision = if approved { b"approve".as_slice() } else { b"reject".as_slice() };
-                    frame::write(&mut stream, STDIN, decision).await?;
+            // The frame read is kept after the answer, not started again: it may have read
+            // part of a frame already.
+            let outcome = {
+                let read = frame::read(&mut reader);
+                tokio::pin!(read);
+                tokio::select! {
+                    input = read_stdin_line() => {
+                        let approved = input?.as_deref().is_some_and(parse_yes_no);
+                        let decision = if approved { b"approve".as_slice() } else { b"reject".as_slice() };
+                        frame::write(&mut writer, STDIN, decision).await?;
+                        read.await?
+                    }
+                    agent_early = &mut read => agent_early?,
                 }
-                agent_early = frame::read(&mut stream) => {
-                    return handle_listen_outcome(&mut stream, agent_early?).await;
-                }
-            }
-
-            let outcome = frame::read(&mut stream).await?;
-            handle_listen_outcome(&mut stream, outcome).await
+            };
+            handle_listen_outcome(&mut reader, outcome).await
         }
         _ => Err(frame::invalid("unexpected frame during listen")),
     }
@@ -303,22 +313,14 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
             )
             .await?;
 
+            // Beacons are not authenticated: anyone on the LAN can announce any key. Always let the
+            // person pick, by the fingerprint the target PC's listen screen shows.
             let selected_lan = match found.len() {
                 0 => None,
-                1 => {
-                    let p = &found[0];
-                    let _ = writeln!(
-                        io::stdout(),
-                        "Found {} (fingerprint {}) on local network.",
-                        p.info.hostname,
-                        peers::fingerprint(p.info.endpoint_id)
-                    );
-                    Some(p.clone())
-                }
                 count => {
                     let _ = writeln!(
                         io::stdout(),
-                        "Multiple waiting PCs found on the local network:"
+                        "Waiting PCs found on the local network.\nChoose the PC whose fingerprint matches the one 'herdvia listen' shows on the target PC:"
                     );
                     for (i, p) in found.iter().enumerate() {
                         let _ = writeln!(
@@ -330,7 +332,12 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
                         );
                     }
                     let _ = writeln!(io::stdout(), "  0) Paste an invite token instead");
-                    let _ = write!(io::stdout(), "Select [1-{count}, or 0]: ");
+                    let range = if count == 1 {
+                        "1".to_owned()
+                    } else {
+                        format!("1-{count}")
+                    };
+                    let _ = write!(io::stdout(), "Select [{range}, or 0]: ");
                     let _ = io::stdout().flush();
 
                     let Some(line) = read_stdin_line().await? else {
@@ -340,6 +347,10 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
                     match parse_peer_selection(&line, count) {
                         Some(PeerChoice::Peer(idx)) => Some(found[idx].clone()),
                         Some(PeerChoice::Invite) => None,
+                        Some(PeerChoice::Cancel) => {
+                            let _ = writeln!(io::stderr(), "herdvia: pairing cancelled");
+                            return Ok(1);
+                        }
                         None => {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidInput,
@@ -379,7 +390,8 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
             }
         };
 
-    let mut stream = ipc::connect(&dir).await?;
+    // Split, so that a frame read can go on while the answer to the prompt is written.
+    let (mut reader, mut writer) = tokio::io::split(ipc::connect(&dir).await?);
     let req = match direct_addr {
         Some(addr) => format!(
             "{name} {target_id} {mode} {} {addr}",
@@ -387,10 +399,10 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
         ),
         None => format!("{name} {target_id} {mode} {}", HEXLOWER.encode(&token)),
     };
-    if frame::write(&mut stream, CONTROL, b"connect")
+    if frame::write(&mut writer, CONTROL, b"connect")
         .await
         .is_err()
-        || frame::write(&mut stream, STDIN, req.as_bytes())
+        || frame::write(&mut writer, STDIN, req.as_bytes())
             .await
             .is_err()
     {
@@ -398,8 +410,14 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
     }
 
     let mut saw_any = false;
+    let mut confirmed = false;
+    let mut early = None;
     loop {
-        let f = match frame::read(&mut stream).await {
+        let read = match early.take() {
+            Some(read) => read,
+            None => frame::read(&mut reader).await,
+        };
+        let f = match read {
             Ok(Some(f)) => {
                 saw_any = true;
                 f
@@ -415,24 +433,51 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
 
         match f.tag {
             ERROR => {
-                return Err(io::Error::other(
-                    String::from_utf8_lossy(&f.payload).into_owned(),
-                ));
+                let msg = String::from_utf8_lossy(&f.payload).into_owned();
+                // An agent from before the confirmation step fails like this on the confirmation
+                // frame, before saving anything.
+                if confirmed && msg == "unexpected frame during connect" {
+                    return Err(io::Error::other(
+                        "the running agent is older than this herdvia executable; restart it with 'herdvia agent install' (or restart 'herdvia agent') and pair again",
+                    ));
+                }
+                return Err(io::Error::other(msg));
             }
             STDOUT => {
                 let text = String::from_utf8_lossy(&f.payload);
                 if let Some(rest) = text.strip_prefix("SAS ") {
                     let parts: Vec<_> = rest.split_whitespace().collect();
-                    if parts.len() == 3 {
-                        let (target_name, target_fp, sas) = (parts[0], parts[1], parts[2]);
-                        let _ = writeln!(
-                            io::stdout(),
-                            "\nConnected to {target_name} (fingerprint {target_fp}).\n  Verification code: {sas}\n\nWaiting for approval on the other PC..."
-                        );
-                        let _ = io::stdout().flush();
+                    if parts.len() != 3 {
+                        return Err(frame::invalid("malformed SAS line from agent"));
                     }
+                    let (target_name, target_fp, sas) = (parts[0], parts[1], parts[2]);
+                    let _ = write!(
+                        io::stdout(),
+                        "\nConnected to {target_name} (fingerprint {target_fp}).\n  Verification code: {sas}\n\nCheck that the other PC shows {sas}. If it shows a different code, answer n: you may be connected to another PC.\nSame code on both PCs? [y/N]: "
+                    );
+                    let _ = io::stdout().flush();
+
+                    // The frame read is kept after the answer, not started again: it may have
+                    // read part of a frame already.
+                    let read = frame::read(&mut reader);
+                    tokio::pin!(read);
+                    early = Some(tokio::select! {
+                        input = read_stdin_line() => {
+                            if !input?.as_deref().is_some_and(parse_yes_no) {
+                                let _ = frame::write(&mut writer, STDIN, b"reject").await;
+                                let _ = writeln!(io::stderr(), "herdvia: pairing cancelled");
+                                return Ok(1);
+                            }
+                            frame::write(&mut writer, STDIN, b"approve").await?;
+                            confirmed = true;
+                            let _ = writeln!(io::stdout(), "Waiting for approval on the other PC...");
+                            let _ = io::stdout().flush();
+                            read.await
+                        }
+                        agent_early = &mut read => agent_early,
+                    });
                 } else if let Some(rest) = text.strip_prefix("REJECTED") {
-                    let _ = frame::read(&mut stream).await;
+                    let _ = frame::read(&mut reader).await;
                     let reason = rest.trim();
                     if reason.is_empty() {
                         let _ = writeln!(io::stderr(), "herdvia: pairing rejected");
@@ -441,7 +486,13 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
                     }
                     return Ok(1);
                 } else if text.starts_with("APPROVED ") {
-                    let _ = frame::read(&mut stream).await;
+                    if !confirmed {
+                        // Only an agent from before the confirmation step approves on its own.
+                        return Err(io::Error::other(format!(
+                            "the running agent is older than this herdvia executable and saved '{name}' without your confirmation; run 'herdvia revoke {name}', restart the agent with 'herdvia agent install' (or restart 'herdvia agent'), and pair again"
+                        )));
+                    }
+                    let _ = frame::read(&mut reader).await;
                     break;
                 }
             }
@@ -511,7 +562,18 @@ mod tests {
         );
         assert_eq!(parse_peer_selection("3", 3), Some(PeerChoice::Peer(2)));
         assert_eq!(parse_peer_selection("4", 3), None);
-        assert_eq!(parse_peer_selection("", 3), None);
         assert_eq!(parse_peer_selection("abc", 3), None);
+        assert_eq!(parse_peer_selection("-1", 3), None);
+    }
+
+    #[test]
+    fn parse_peer_selection_reads_a_blank_line_as_cancel() {
+        for blank in ["", "\n", "\r\n", "  \n", "\t"] {
+            assert_eq!(
+                parse_peer_selection(blank, 3),
+                Some(PeerChoice::Cancel),
+                "{blank:?}"
+            );
+        }
     }
 }

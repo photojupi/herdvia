@@ -402,6 +402,36 @@ fn no_agent_means_immediate_255() {
 }
 
 #[test]
+fn agent_and_via_refuse_a_data_directory_below_a_directory_others_can_write() {
+    // 이미 있는 데이터 폴더라도 상위 폴더를 다른 계정이 바꿀 수 있으면 에이전트도 via 도 거부한다.
+    let n = Node::new("A");
+    n.id();
+    let names = |dir: &Path| {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = names(&n.herdvia_dir);
+    fs::set_permissions(&n.root, fs::Permissions::from_mode(0o775)).unwrap();
+    let refusal = format!(
+        "{} is writable by other users",
+        fs::canonicalize(&n.root).unwrap().display()
+    );
+    let o = expect_agent_refused(&n, "상위 폴더 0775");
+    assert!(o.err().contains(&refusal), "stderr: {}", o.err());
+    let out = n.run_via("b", DEFAULT_LINE, b"");
+    assert_eq!(out.code(), Some(255), "stderr: {}", out.err());
+    assert!(out.err().contains(&refusal), "stderr: {}", out.err());
+    assert!(out.stdout.is_empty());
+    assert_eq!(n.invoked(), None);
+    assert_eq!(names(&n.herdvia_dir), before, "거부한 명령이 무언가를 만듦");
+    fs::set_permissions(&n.root, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
 fn stale_socket_means_immediate_255() {
     let n = Node::new("A");
     // 소켓 파일은 남아 있지만 듣는 쪽이 없음 (연결 거부)
