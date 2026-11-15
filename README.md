@@ -56,6 +56,10 @@ When you register a remote computer in Herdr (`hc machine add --via <command>`),
 | **Mesh VPN** | Not needed | Full virtual network interface + account | Exposes whole IP interface (unless ACL-tuned) | Medium |
 | **`herdvia`** | **Not needed** | **Single lightweight user-space binary** | **Only `herdr-core connect` to explicitly allowed keys** | **~5 minutes** |
 
+![4 PCs connected to Herdr via herdvia running Claude Code, Codex, and Antigravity simultaneously](docs/assets/herdr-multi-pc-demo.png)
+
+*4 machines (`This computer`, `macbook`, `macmini`, `win1` — Windows + macOS) connected over `herdvia`, running 27 Claude Code, Codex, and Antigravity sessions side-by-side in a single Herdr window.*
+
 ---
 
 ## How it works

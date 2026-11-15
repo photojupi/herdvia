@@ -57,6 +57,10 @@
 | **组网 VPN** | 不需要 | 虚拟网卡驱动 + 平台账号 | 暴露整个虚拟网卡 IP（未精细配置 ACL 时） | 中 |
 | **`herdvia`** | **不需要** | **单个轻量级用户态可执行文件（免账号）** | **仅向显式授权的公钥开放 `herdr-core connect`** | **约 5 分钟** |
 
+![通过 herdvia 连接 4 台电脑并在同一 Herdr 窗口中同时运行 Claude Code、Codex 与 Antigravity](assets/herdr-multi-pc-demo.png)
+
+*通过 `herdvia` 连接的 4 台电脑（`This computer`、`macbook`、`macmini`、`win1` —— Windows + macOS），在单个 Herdr 窗口中并排协同运行 27 个 Claude Code、Codex 与 Antigravity 会话。*
+
 ---
 
 <a id="how-it-works"></a>

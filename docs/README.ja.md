@@ -57,6 +57,10 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 | **メッシュ VPN** | 不要 | 仮想ネットワークドライバ + アカウント登録 | IP インターフェース全体（ACL で制限しない限り） | 中 |
 | **`herdvia`** | **不要** | **軽量な単一バイナリのみ（アカウント不要）** | **許可した公開鍵に対し `herdr-core connect` のみ実行** | **約 5 分** |
 
+![herdvia で接続した 4 台の PC 上で Claude Code、Codex、Antigravity を同時実行している Herdr の画面](assets/herdr-multi-pc-demo.png)
+
+*`herdvia` で接続した 4 台の PC（`This computer`、`macbook`、`macmini`、`win1` — Windows + macOS）で、計 27 個の Claude Code・Codex・Antigravity セッションを 1 つの Herdr ウィンドウから同時運用している様子。*
+
 ---
 
 <a id="how-it-works"></a>

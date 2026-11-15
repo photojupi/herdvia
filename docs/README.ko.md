@@ -57,6 +57,10 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 | **메시 VPN** | 불필요 | 가상 네트워크 드라이버 + 계정 가입 | IP 인터페이스 전체 (별도 ACL 설정이 없으면) | 중간 |
 | **`herdvia`** | **불필요** | **경량 사용자 공간 실행 파일 하나 (무계정)** | **명시적으로 허용한 키에 한해 `herdr-core connect`만 실행** | **약 5분** |
 
+![herdvia로 연결된 4대 PC에서 Claude Code, Codex, Antigravity를 동시에 실행 중인 Herdr 화면](assets/herdr-multi-pc-demo.png)
+
+*`herdvia`로 연결된 4대의 PC(`This computer`, `macbook`, `macmini`, `win1` — Windows + macOS)에서 총 27개의 Claude Code, Codex, Antigravity 세션을 하나의 Herdr 창으로 동시에 운용하는 모습.*
+
 ---
 
 <a id="how-it-works"></a>
