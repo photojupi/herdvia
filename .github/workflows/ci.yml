@@ -62,6 +62,7 @@ jobs:
             revoke_of_an_unknown_name_fails_and_changes_nothing \
             one_endpoint_id_cannot_take_a_second_name \
             revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name \
+            revoke_after_dashes_removes_a_peer_an_older_version_saved_as_help \
             a_data_directory_below_a_directory_others_can_write_is_refused \
             revoke_fails_when_the_running_agent_never_answers_the_reload \
             revoke_keeps_the_duplicate_key_warning_when_the_agent_answers_an_error \

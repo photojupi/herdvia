@@ -685,6 +685,32 @@ fn revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name() {
     assert_eq!(o.err(), OTHER_PC_NOTE);
 }
 
+#[test]
+fn revoke_after_dashes_removes_a_peer_an_older_version_saved_as_help() {
+    let n = Node::new("A");
+    let _ = n.id();
+    let x = Node::new("X").id().0;
+    // As v0.1.4 and earlier saved it: herdvia allow --help <EndpointId> --inbound.
+    fs::write(n.peers_file(), format!("--help {x} in\n")).unwrap();
+    chmod(&n.peers_file(), 0o600);
+    let before = n.peers_text();
+    // Without `--` it asks for help and leaves the peer alone.
+    let o = n.herdvia(&["revoke", "--help"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert!(
+        o.out().starts_with("usage: herdvia revoke <name>\n"),
+        "stdout: {}",
+        o.out()
+    );
+    assert_eq!(n.peers_text(), before);
+    let o = n.herdvia(&["revoke", "--", "--help"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("revoked --help {x}\n"));
+    assert_eq!(o.err(), OTHER_PC_NOTE);
+    let peers = n.peers_text();
+    assert!(!has_peer_name(&peers, "--help"), "peers:\n{peers}");
+}
+
 const HERDR_NOTE_X: &str =
     "herdvia: note: Herdr may still list x; remove it with: hc machine rm x\n";
 const OTHER_PC_NOTE: &str = "herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)\n";

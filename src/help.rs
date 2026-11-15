@@ -135,7 +135,8 @@ example: herdvia allow win1 <EndpointId from herdvia id on win1> --outbound
 
 Removes the peer named <name>; a running agent closes its connections at once. It does
 not remove the machine from Herdr (hc machine rm <name>) or this PC from the other PC's
-peers (run herdvia revoke there too).
+peers (run herdvia revoke there too). To remove a peer an older version saved as --help
+or -h, put -- before its name: herdvia revoke -- --help.
 
 example: herdvia revoke win1
 "

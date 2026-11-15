@@ -680,7 +680,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
      확인을 먼저 보내면 구버전 에이전트는 그 프레임을 예상하지 못해 저장 없이 오류로 끝나고, CLI는 에이전트를 다시 시작하라고 안내한다.
 6. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한, 전체 `listen` 5분 만료 및 동시 실패 중단도 함께 감시):
    - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 A의 `EndpointId` 앞부분 16진수 접두사(`-<4~24자>`)를 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
-     호스트명이 `--help`나 `-h`면 쓰는 키가 없어도 같은 접미사를 붙인다. 그 이름으로 저장하면 `herdvia revoke --help`가 도움말이 되어 지울 수 없기 때문이다(아래 "도움말: --help").
+     호스트명이 `--help`나 `-h`면 쓰는 키가 없어도 같은 접미사를 붙인다. 그 이름으로 저장하면 `herdvia register --help`와 `herdvia revoke --help`가 도움말이 되어 등록할 수 없고 `revoke -- <이름>`으로만 지울 수 있기 때문이다(아래 "도움말: --help").
      B의 승인과 A의 확인은 서로를 기다리지 않는다. 그래서 B가 승인하고 A가 거절하면(순서와 관계없이. A가 먼저 거절해 연결을 닫은 뒤에 B가 `y`를 눌러도 B는 저장한다) B에는 A가 inbound로 남지만, A가 B를 outbound로 저장하지 않았으므로 연결은 생기지 않는다. 필요하면 B에서 `herdvia revoke`로 지운다.
    - B가 승인 응답을 보내고 A의 사용자도 확인했으면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(재접속 대기 중이던 기존 outbound 워커도 즉시 깨워 재시도 지연을 초기화하며, LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
    - A의 CLI는 최대 5초 동안 `status`가 연결됨을 보일 때까지 짧게 기다린 뒤, 현재 실행 파일 경로를 OS 규칙(Unix는 `sh` 단일 인용, Windows는 `CommandLineToArgvW` 인용)에 맞게 감싼 `--via` 값으로 `hc machine add --via <...> --name <이름>`을 직접 실행한다(셸을 거치지 않는다).
@@ -856,7 +856,9 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 도움말 형태는 인자 해석에서 가장 먼저 본다. `--help`와 `-h`는 이름 규칙(`[A-Za-z0-9._-]{1,32}`)에 맞는 피어 이름이기도 해서, 예전에는 `listen --help`가 `--help`라는 이름으로 5분 동안 기다렸다.
   도움말로 보는 것은 인자가 하나뿐일 때(`--help`, `-h`, `help`)와, 알려진 명령 바로 뒤에 `--help`나 `-h` 하나만 올 때다.
   그 밖의 자리는 도움말이 아니다. `connect <이름> --help`는 초대 문자열이 `--help`인 `connect`이고, `revoke home --help`, `agent install --help`, `help listen`은 인자 오류다.
-- 그래서 `revoke --help`, `register --help`는 도움말이 되어, `--help`나 `-h`라는 이름의 피어는 지우거나 등록할 수 없다. 피어를 저장하는 명령은 이 둘을 이름으로 받지 않는다.
+- 그래서 `revoke --help`, `register --help`는 도움말이 되어, `--help`나 `-h`라는 이름의 피어는 그렇게 지우거나 등록할 수 없다. 피어를 저장하는 명령은 이 둘을 이름으로 받지 않는다.
+  0.1.4 이하는 `allow --help <EndpointId> --inbound`처럼 이 이름으로 저장했고 `peers`는 지금도 그 항목을 읽으므로, `revoke`만 `revoke -- <이름>`을 받는다.
+  `--`는 뒤가 이름이라는 표시일 뿐이라 올바른 이름이면 무엇이든 그대로 지운다(`herdvia revoke -- --help`). 다른 명령은 `--`를 받지 않는다. `revoke` 도움말이 이를 한 문장으로 안내한다.
   `connect --help <초대>`, `allow --help <EndpointId> ...`, `accept --help <지문> ...`(`-h`도 같다)은 `--help and -h cannot be peer names`로 거부한다(255).
   `listen`이 상대 호스트명을 기본 이름으로 쓸 때는 접미사를 붙인다(위 "흐름과 종료 코드" 6).
 - 인자 오류는 예전처럼 usage 줄을 stderr에 쓰고 255로 끝난다. 그 줄은 새 명령을 넣어

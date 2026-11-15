@@ -48,7 +48,8 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd, flag] if help::is_flag(flag) && help::command(cmd).is_some() => {
             Ok(Command::Help(help::command(cmd).unwrap_or_default()))
         }
-        // A peer saved as --help or -h could not be revoked or registered: those would print help.
+        // A peer saved as --help or -h could not be registered: that would print help. (Revoke
+        // takes it after `--`.)
         [cmd, name, ..]
             if help::is_flag(name)
                 && matches!(
@@ -91,6 +92,10 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd] if cmd == "pending" => Ok(Command::Pending),
         [cmd] if cmd == "doctor" => Ok(Command::Doctor),
         [cmd, name] if cmd == "revoke" && peers::valid_name(name) => {
+            Ok(Command::Revoke(name.clone()))
+        }
+        // `--` only marks a name, so a peer an older version saved as --help or -h can go.
+        [cmd, dashes, name] if cmd == "revoke" && dashes == "--" && peers::valid_name(name) => {
             Ok(Command::Revoke(name.clone()))
         }
         [cmd, name, id, flag] if cmd == "allow" && peers::valid_name(name) => {
@@ -865,6 +870,28 @@ mod tests {
         ] {
             assert!(parse(args(a)).is_err(), "{a:?}");
         }
+    }
+
+    #[test]
+    fn revoke_takes_any_name_after_dashes() {
+        for name in ["--help", "-h", "home", "--"] {
+            match parse(args(&["revoke", "--", name])).unwrap() {
+                Command::Revoke(got) => assert_eq!(got, name),
+                _ => panic!("revoke -- {name}"),
+            }
+        }
+        // Only revoke takes `--`, and only right before one valid name.
+        for a in [
+            &["revoke", "--", "bad/name"][..],
+            &["revoke", "--", "a", "b"],
+            &["revoke", "-", "home"],
+            &["revoke", "home", "--"],
+            &["register", "--", "home"],
+        ] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
+        }
+        // Help still comes first.
+        assert!(help_text(&["revoke", "--help"]).starts_with("usage: herdvia revoke"));
     }
 
     #[test]
