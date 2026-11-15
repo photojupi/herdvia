@@ -16,5 +16,6 @@ mod log;
 pub mod network;
 pub mod pair;
 pub mod peers;
+pub mod status;
 pub mod template;
 pub mod via;

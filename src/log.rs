@@ -19,7 +19,7 @@ pub(crate) const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const MAX_SIZE: u64 = 10 * 1024 * 1024;
 const KEEP: u64 = 5 * 1024 * 1024;
 /// Longer text is cut to this many characters after escaping.
-const MAX_CHARS: usize = 300;
+pub(crate) const MAX_CHARS: usize = 300;
 
 /// Which rate limit a log line counts against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

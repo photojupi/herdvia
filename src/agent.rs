@@ -164,6 +164,7 @@ async fn connection(mut stream: ipc::ServerStream, network: Arc<Network>) -> io:
             let result = match command.as_str() {
                 "reload" => network.reload().map(|()| "reloaded\n".to_owned()),
                 "status" => Ok(network.status()),
+                "status-detail" => Ok(network.status_detail()),
                 "pending" => Ok(network.pending()),
                 "doctor" => Ok(crate::doctor::agent_report(&network.endpoint)),
                 _ => Err(frame::invalid("unknown control request")),
@@ -242,6 +243,44 @@ mod tests {
         let _listener = listen(dir.path(), &network).unwrap();
         assert!(network.outbound_ids().is_empty());
         assert_eq!(network.status(), "name permission connection path rtt\n");
+        network.endpoint.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_agent_answers_status_detail_next_to_the_plain_status() {
+        let dir = tempfile::tempdir().unwrap();
+        peers::allow(
+            dir.path(),
+            peers::Peer {
+                name: "tab".into(),
+                id: iroh::SecretKey::generate().public(),
+                permission: peers::Permission::In,
+            },
+        )
+        .unwrap();
+        let network = Network::bind(dir.path().to_owned()).await.unwrap();
+        let mut listener = listen(dir.path(), &network).unwrap();
+        let serving = tokio::spawn({
+            let network = network.clone();
+            async move {
+                loop {
+                    let stream = listener.accept().await.unwrap();
+                    let _ = connection(stream, network.clone()).await;
+                }
+            }
+        });
+        assert_eq!(
+            crate::control::request(dir.path(), "status-detail")
+                .await
+                .unwrap(),
+            "herdvia-status-detail 1\ntab in waiting - - - -\n"
+        );
+        assert_eq!(
+            crate::control::request(dir.path(), "status").await.unwrap(),
+            "name permission connection path rtt\ntab in disconnected - -\n"
+        );
+        serving.abort();
         network.endpoint.close().await;
     }
 

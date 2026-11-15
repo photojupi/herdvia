@@ -3,12 +3,13 @@ use crate::{
     frame::{self, *},
     log::{self, Kind},
     peers::{self, Peer},
+    status::{self, Reason, Row, State},
 };
 use iroh::{
     Endpoint, EndpointId,
     endpoint::{
-        AfterHandshakeOutcome, Connection, EndpointHooks, QuicTransportConfig, RecvStream,
-        SendStream, Side, VarInt, presets,
+        AfterHandshakeOutcome, ConnectError, ConnectingError, Connection, ConnectionError,
+        EndpointHooks, QuicTransportConfig, RecvStream, SendStream, Side, VarInt, presets,
     },
 };
 use std::{
@@ -117,6 +118,48 @@ fn retry_delay(previous: u64, connected_for: Duration) -> u64 {
     }
 }
 
+/// What `status-detail` reports about a peer this PC dials: why the last outbound connection
+/// failed or ended, and when the worker dials next. Kept in memory only.
+#[derive(Debug, Default)]
+struct Record {
+    failure: Option<Reason>,
+    next_retry: Option<Instant>,
+}
+
+/// A close by the remote with code 403: the peer refused this PC.
+fn rejection(err: &ConnectionError) -> Option<Reason> {
+    match err {
+        ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 403 => {
+            let text = match String::from_utf8_lossy(&close.reason) {
+                reason if reason.is_empty() => "403".to_owned(),
+                reason => format!("403 {reason}"),
+            };
+            Some(Reason::new(status::Kind::Rejected, &text))
+        }
+        _ => None,
+    }
+}
+
+/// A failed dial: rejected when the remote closed it with 403, otherwise unreachable.
+fn dial_failure(err: &ConnectError) -> Reason {
+    let closed = match err {
+        ConnectError::Connection { source, .. }
+        | ConnectError::Connecting {
+            source: ConnectingError::ConnectionError { source, .. },
+            ..
+        } => Some(source),
+        _ => None,
+    };
+    closed
+        .and_then(rejection)
+        .unwrap_or_else(|| Reason::new(status::Kind::Unreachable, &err.to_string()))
+}
+
+/// The end of a connection this PC dialed: rejected when the remote closed it with 403.
+fn close_failure(err: &ConnectionError) -> Reason {
+    rejection(err).unwrap_or_else(|| Reason::new(status::Kind::Closed, &err.to_string()))
+}
+
 #[derive(Debug)]
 struct Policy {
     peers: watch::Receiver<Vec<Peer>>,
@@ -180,6 +223,8 @@ pub struct Network {
     connections: Mutex<HashMap<usize, Connection>>,
     attempts: Arc<Mutex<Attempts>>,
     addr_hints: Mutex<HashMap<EndpointId, SocketAddr>>,
+    /// Outbound peers only. Lock order: `connections` before `records`.
+    records: Mutex<HashMap<EndpointId, Record>>,
     pub(crate) pairing: Arc<crate::pair::session::PairingGate>,
     reconnect: watch::Sender<u64>,
     changed: watch::Sender<u64>,
@@ -214,6 +259,7 @@ impl Network {
             connections: Mutex::new(HashMap::new()),
             attempts,
             addr_hints: Mutex::new(HashMap::new()),
+            records: Mutex::new(HashMap::new()),
             pairing,
             reconnect: watch::channel(0).0,
             changed: watch::channel(0).0,
@@ -276,6 +322,10 @@ impl Network {
             .lock()
             .expect("attempts poisoned")
             .forget_permitted(&new);
+        self.records
+            .lock()
+            .expect("records poisoned")
+            .retain(|id, _| permitted(&new, *id, false));
         for conn in connections
             .values()
             .filter(|c| changed.contains(&c.remote_id()))
@@ -288,10 +338,21 @@ impl Network {
     }
 
     pub fn status(&self) -> String {
+        status::table(&self.rows())
+    }
+
+    /// The `status-detail` reply: the `status` table plus why each peer is not connected.
+    pub fn status_detail(&self) -> String {
+        status::format(&self.rows())
+    }
+
+    fn rows(&self) -> Vec<Row> {
         let connections = self.connections.lock().expect("connections poisoned");
-        let mut text = String::from("name permission connection path rtt\n");
+        let records = self.records.lock().expect("records poisoned");
+        let now = Instant::now();
+        let mut rows = Vec::new();
         for peer in self.peers.borrow().iter() {
-            let state = if let Some(conn) = connections
+            let (state, path, rtt) = if let Some(conn) = connections
                 .values()
                 .find(|c| c.remote_id() == peer.id && c.close_reason().is_none())
             {
@@ -308,23 +369,74 @@ impl Network {
                     } else {
                         "unknown"
                     };
-                    format!(
-                        "connected {route} {:.2}ms",
-                        path.rtt().as_secs_f64() * 1000.0
+                    (
+                        State::Connected,
+                        route,
+                        format!("{:.2}ms", path.rtt().as_secs_f64() * 1000.0),
                     )
                 } else {
-                    "connected unknown -".into()
+                    (State::Connected, "unknown", "-".into())
                 }
+            } else if peer.permission.outbound() {
+                (State::Disconnected, "-", "-".into())
             } else {
-                "disconnected - -".into()
+                (State::Waiting, "-", "-".into())
             };
-            text.push_str(&format!(
-                "{} {} {state}\n",
-                peer.name,
-                peer.permission.as_str()
-            ));
+            let record = records.get(&peer.id).filter(|_| peer.permission.outbound());
+            rows.push(Row {
+                name: peer.name.clone(),
+                permission: peer.permission.as_str().to_owned(),
+                state,
+                path: path.to_owned(),
+                rtt,
+                reason: record.and_then(|r| r.failure.clone()),
+                // Rounded up, so a pending retry never shows as 0 seconds early.
+                retry_secs: record.and_then(|r| r.next_retry).map(|at| {
+                    let left = at.saturating_duration_since(now);
+                    left.as_secs() + u64::from(left.subsec_nanos() > 0)
+                }),
+            });
         }
-        text
+        rows
+    }
+
+    /// Changes `id`'s record only while it has outbound permission. Checked under the lock, so
+    /// what a reload that removes the permission drops cannot be written back afterwards.
+    fn update_record(&self, id: EndpointId, update: impl FnOnce(&mut Record)) {
+        let mut records = self.records.lock().expect("records poisoned");
+        if permitted(&self.peers.borrow(), id, false) {
+            update(records.entry(id).or_default());
+        }
+    }
+
+    /// The `via` error when no connection came within 5 seconds, with the last failure when there
+    /// is one, so that Herdr shows the cause. It fits the log line limit, so sanitizing it again
+    /// leaves it unchanged.
+    fn timeout_message(&self, name: &str) -> String {
+        const TEXT: &str = "peer did not connect within 5 seconds";
+        let records = self.records.lock().expect("records poisoned");
+        let failure = self
+            .peers
+            .borrow()
+            .iter()
+            .find(|p| p.name == name && p.permission.outbound())
+            .and_then(|p| {
+                records
+                    .get(&p.id)?
+                    .failure
+                    .as_ref()
+                    .map(status::short_reason)
+            });
+        let Some(failure) = failure else {
+            return TEXT.to_owned();
+        };
+        let text = format!("{TEXT}: {failure}");
+        if text.chars().count() <= log::MAX_CHARS {
+            return text;
+        }
+        let mut cut: String = text.chars().take(log::MAX_CHARS - 3).collect();
+        cut.push_str("...");
+        cut
     }
 
     pub fn pending(&self) -> String {
@@ -349,6 +461,7 @@ impl Network {
         let mut delay = 0;
         loop {
             let _ = *reconnect.borrow_and_update();
+            self.update_record(id, |r| r.next_retry = None);
             let addr = match self
                 .addr_hints
                 .lock()
@@ -367,10 +480,13 @@ impl Network {
                 }
                 Err(err) => {
                     log::line(Kind::Other, &format!("connection to {id} failed: {err}"));
+                    self.update_record(id, |r| r.failure = Some(dial_failure(&err)));
                     Duration::ZERO
                 }
             };
             delay = retry_delay(delay, connected_for);
+            let retry = Instant::now() + Duration::from_secs(delay);
+            self.update_record(id, |r| r.next_retry = Some(retry));
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
                 Ok(()) = reconnect.changed() => {
@@ -393,6 +509,9 @@ impl Network {
                 return;
             }
             connections.insert(conn.stable_id(), conn.clone());
+            if conn.side() == Side::Client {
+                self.update_record(id, |r| r.failure = None);
+            }
         }
         let _registration = Registration {
             network: self.clone(),
@@ -450,6 +569,12 @@ impl Network {
         }
         streams.abort_all();
         while streams.join_next().await.is_some() {}
+        // Only the direction this PC dials: an inbound connection ending says nothing about it.
+        if conn.side() == Side::Client
+            && let Some(err) = conn.close_reason()
+        {
+            self.update_record(id, |r| r.failure = Some(close_failure(&err)));
+        }
         log::line(Kind::Other, &format!("disconnected {id}"));
     }
 
@@ -503,10 +628,7 @@ impl Network {
             result => {
                 let err = match result {
                     Ok(Err(err)) => err,
-                    Err(_) => io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "peer did not connect within 5 seconds",
-                    ),
+                    Err(_) => io::Error::new(io::ErrorKind::TimedOut, self.timeout_message(name)),
                     _ => unreachable!(),
                 };
                 // iroh's errors can carry a close reason that the remote chose.
@@ -899,6 +1021,254 @@ mod tests {
         // Rejected right after the handshake: still a failure.
         assert_eq!(retry_delay(4, Duration::from_millis(9_999)), 8);
         assert_eq!(retry_delay(30, Duration::from_secs(10)), 1);
+    }
+
+    #[test]
+    fn only_a_remote_403_close_counts_as_rejected() {
+        let closed = |code: u32, reason: &[u8]| {
+            ConnectionError::ApplicationClosed(iroh::endpoint::ApplicationClose {
+                error_code: code.into(),
+                reason: reason.to_vec().into(),
+            })
+        };
+        assert_eq!(
+            close_failure(&closed(403, b"peer not allowed")),
+            Reason::new(status::Kind::Rejected, "403 peer not allowed")
+        );
+        assert_eq!(
+            close_failure(&closed(403, b"")),
+            Reason::new(status::Kind::Rejected, "403")
+        );
+        // A remote agent that stops or restarts closes with 0.
+        assert_eq!(
+            close_failure(&closed(0, b"session closed")),
+            Reason::new(
+                status::Kind::Closed,
+                "closed by peer: session closed (code 0)"
+            )
+        );
+        assert_eq!(
+            close_failure(&ConnectionError::TimedOut),
+            Reason::new(status::Kind::Closed, "timed out")
+        );
+        // The remote chose this text: it is stored escaped, on one line.
+        let hostile = close_failure(&closed(403, b"no\nhome out connected\x1b[31m"));
+        assert_eq!(hostile.kind, status::Kind::Rejected);
+        assert_eq!(hostile.text, r"403 no\nhome out connected\u{1b}[31m");
+    }
+
+    /// Two local networks: `a` may dial `b`, which has not allowed `a`.
+    async fn rejected_pair() -> (
+        tempfile::TempDir,
+        Arc<Network>,
+        Arc<Network>,
+        EndpointId,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let id_b = peers::load_key(dir_b.path()).unwrap().public();
+        peers::grant_outbound(dir_a.path(), "home", id_b).unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+        net_a.set_addr_hint(id_b, ([127, 0, 0, 1], net_b.quic_port()).into());
+        let accept_b = tokio::spawn({
+            let net_b = net_b.clone();
+            async move {
+                let mut set = JoinSet::new();
+                while let Some(incoming) = net_b.endpoint.accept().await {
+                    let net_b = net_b.clone();
+                    set.spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            net_b.serve_connection(conn).await;
+                        }
+                    });
+                }
+            }
+        });
+        (dir_a, net_a, net_b, id_b, accept_b)
+    }
+
+    /// Waits until `network`'s detail row for `name` satisfies `done`.
+    async fn row_until(network: &Network, name: &str, done: impl Fn(&Row) -> bool) -> Row {
+        tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let rows = status::parse(&network.status_detail()).expect("detail parses");
+                if let Some(row) = rows.into_iter().find(|r| r.name == name && done(r)) {
+                    return row;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the expected status-detail row")
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_has_not_allowed_this_pc_shows_as_rejected_with_a_retry_countdown() {
+        let (dir_a, net_a, net_b, id_b, accept_b) = rejected_pair().await;
+        let worker_a = tokio::spawn(net_a.clone().outbound(id_b));
+
+        let row = row_until(&net_a, "home", |r| {
+            r.reason.is_some() && r.retry_secs.is_some()
+        })
+        .await;
+        assert_eq!(row.state, State::Disconnected);
+        assert_eq!(
+            row.reason,
+            Some(Reason::new(status::Kind::Rejected, "403 peer not allowed"))
+        );
+        assert!(row.retry_secs.unwrap() <= 30, "{row:?}");
+        let detail = net_a.status_detail();
+        assert_eq!(
+            status::table(&status::parse(&detail).unwrap()),
+            net_a.status()
+        );
+        assert_eq!(
+            net_a.status(),
+            "name permission connection path rtt\nhome out disconnected - -\n"
+        );
+
+        // Herdr shows the cause when via gives up after 5 seconds. With the worker stopped, no
+        // short-lived connection can turn up meanwhile and fail the stream instead.
+        worker_a.abort();
+        let _ = worker_a.await;
+        let (local, mut herdr) = tokio::io::duplex(4096);
+        let err = net_a.forward(local, "home", "line").await.unwrap_err();
+        let expected =
+            "peer did not connect within 5 seconds: rejected by the peer (403 peer not allowed)";
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(err.to_string(), expected);
+        let sent = frame::read(&mut herdr).await.unwrap().unwrap();
+        assert_eq!(
+            (sent.tag, sent.payload.as_slice()),
+            (ERROR, expected.as_bytes())
+        );
+
+        // Losing outbound permission drops the record, and the worker cannot write it back.
+        peers::allow(
+            dir_a.path(),
+            Peer {
+                name: "home".into(),
+                id: id_b,
+                permission: Permission::In,
+            },
+        )
+        .unwrap();
+        net_a.reload().unwrap();
+        assert!(net_a.records.lock().unwrap().is_empty());
+        let id_a = net_a.endpoint.id();
+        let attempts = || {
+            net_b
+                .pending()
+                .lines()
+                .find(|l| l.contains(&id_a.to_string()))
+                .and_then(|l| l.split(' ').nth(2)?.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let before = attempts();
+        let worker_a = tokio::spawn(net_a.clone().outbound(id_b));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while attempts() == before {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("another rejected attempt on B");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(net_a.records.lock().unwrap().is_empty());
+        let rows = status::parse(&net_a.status_detail()).unwrap();
+        assert_eq!(rows[0].state, State::Waiting);
+        assert_eq!((&rows[0].reason, rows[0].retry_secs), (&None, None));
+        assert_eq!(
+            net_a.timeout_message("home"),
+            "peer did not connect within 5 seconds"
+        );
+
+        worker_a.abort();
+        accept_b.abort();
+        net_a.endpoint.close().await;
+        net_b.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_dial_that_fails_without_a_403_is_unreachable() {
+        // A real dead address only fails after QUIC's 30-second idle timeout. A live endpoint
+        // that does not speak herdvia/1 fails the handshake at once: also a dial error with no
+        // application close.
+        let dir = tempfile::tempdir().unwrap();
+        let remote_key = SecretKey::generate();
+        let id = remote_key.public();
+        peers::grant_outbound(dir.path(), "gone", id).unwrap();
+        let network = Network::bind(dir.path().to_owned()).await.unwrap();
+        let remote = Endpoint::builder(presets::Minimal)
+            .secret_key(remote_key)
+            .alpns(vec![b"other/1".to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let port = remote
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
+        network.set_addr_hint(id, ([127, 0, 0, 1], port).into());
+        let accepting = tokio::spawn({
+            let remote = remote.clone();
+            async move {
+                while let Some(incoming) = remote.accept().await {
+                    let _ = incoming.await;
+                }
+            }
+        });
+        let worker = tokio::spawn(network.clone().outbound(id));
+        let row = row_until(&network, "gone", |r| r.reason.is_some()).await;
+        let reason = row.reason.unwrap();
+        assert_eq!(reason.kind, status::Kind::Unreachable, "{reason:?}");
+        assert!(!reason.text.is_empty());
+        assert_eq!(row.state, State::Disconnected);
+        worker.abort();
+        accepting.abort();
+        remote.close().await;
+        network.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn the_via_timeout_names_the_last_failure_within_one_log_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = SecretKey::generate().public();
+        peers::grant_outbound(dir.path(), "home", id).unwrap();
+        let network = Network::bind(dir.path().to_owned()).await.unwrap();
+        assert_eq!(
+            network.timeout_message("home"),
+            "peer did not connect within 5 seconds"
+        );
+        network.update_record(id, |r| {
+            r.failure = Some(Reason::new(status::Kind::Unreachable, "timed out"))
+        });
+        assert_eq!(
+            network.timeout_message("home"),
+            "peer did not connect within 5 seconds: could not reach it (timed out)"
+        );
+        // A long remote reason: cut to fit, so that sanitizing the error again changes nothing.
+        let long = format!("403 {}", "\n\u{1b}".repeat(200));
+        network.update_record(id, |r| {
+            r.failure = Some(Reason::new(status::Kind::Rejected, &long))
+        });
+        let text = network.timeout_message("home");
+        assert!(text.starts_with(
+            "peer did not connect within 5 seconds: rejected by the peer (403 \\n\\u{1b}"
+        ));
+        assert!(text.ends_with("..."), "{text}");
+        assert_eq!(text.chars().count(), log::MAX_CHARS);
+        assert_eq!(log::sanitize(&text), text);
+        // Only outbound peers are looked up by name.
+        assert_eq!(
+            network.timeout_message("other"),
+            "peer did not connect within 5 seconds"
+        );
+        network.endpoint.close().await;
     }
 
     #[tokio::test]

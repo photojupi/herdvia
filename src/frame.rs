@@ -31,7 +31,7 @@ fn validate_header(tag: u8, len: usize) -> io::Result<()> {
     }
     if (tag == STDIN_EOF && len != 0)
         || (tag == EXIT && len != 4)
-        || (tag == CONTROL && !(6..=7).contains(&len))
+        || (tag == CONTROL && !(6..=13).contains(&len))
     {
         return Err(invalid("invalid frame payload length"));
     }
@@ -46,6 +46,7 @@ fn validate_text(tag: u8, payload: &[u8]) -> io::Result<()> {
         && ![
             b"reload".as_slice(),
             b"status",
+            b"status-detail",
             b"pending",
             b"doctor",
             b"listen",
@@ -160,6 +161,7 @@ mod tests {
         for payload in [
             b"reload".as_slice(),
             b"status".as_slice(),
+            b"status-detail".as_slice(),
             b"pending".as_slice(),
             b"doctor".as_slice(),
             b"listen".as_slice(),
@@ -175,6 +177,8 @@ mod tests {
         for payload in [
             b"".as_slice(),
             b"status\n".as_slice(),
+            b"status-details".as_slice(),
+            b"status-detai".as_slice(),
             b"delete".as_slice(),
             b"pendinG".as_slice(),
             b"pendings".as_slice(),
