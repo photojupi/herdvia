@@ -99,6 +99,9 @@ jobs:
             register_prints_the_manual_command_when_hc_fails_or_is_missing \
             register_says_the_outcome_is_unknown_when_hc_machine_add_times_out \
             register_needs_an_outbound_peer_and_creates_nothing
+          cargo test --locked --test help -- --exact \
+            help_prints_to_stdout_and_creates_nothing \
+            listen_help_prints_help_instead_of_listening
 
   windows-cross:
     runs-on: ubuntu-latest

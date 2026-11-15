@@ -6,6 +6,8 @@ use herdvia::{
 use iroh::EndpointId;
 use std::io::{self, Write};
 
+mod help;
+
 enum Command {
     Agent,
     #[cfg(windows)]
@@ -36,10 +38,16 @@ enum Command {
     Register(String),
     Version,
     Doctor,
+    Help(String),
 }
 
 fn parse(args: Vec<String>) -> io::Result<Command> {
     match args.as_slice() {
+        // First: --help and -h are also valid peer names, but here they ask for help.
+        [flag] if help::is_flag(flag) || flag == "help" => Ok(Command::Help(help::overview())),
+        [cmd, flag] if help::is_flag(flag) && help::command(cmd).is_some() => {
+            Ok(Command::Help(help::command(cmd).unwrap_or_default()))
+        }
         [flag] if flag == "--version" => Ok(Command::Version),
         [cmd] if cmd == "agent" => Ok(Command::Agent),
         #[cfg(windows)]
@@ -118,9 +126,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version | --help"
             } else {
-                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version | --help"
             },
         )),
     }
@@ -161,6 +169,10 @@ async fn main() {
         Ok(Command::Doctor) => herdvia::doctor::run().await,
         Ok(Command::Version) => {
             println!("herdvia {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
+        Ok(Command::Help(text)) => {
+            print!("{text}");
             Ok(0)
         }
         Ok(command) => manage(command).await.map(|()| 0),
@@ -284,7 +296,7 @@ async fn manage(command: Command) -> io::Result<()> {
                 .map_err(|err| not_confirmed("saved", &name, &err, ""))?;
             println!("{name} {id} {}", permission.as_str());
         }
-        _ => unreachable!("agent, via and version are handled separately"),
+        _ => unreachable!("agent, via, version and help are handled separately"),
     }
     Ok(())
 }
@@ -757,6 +769,88 @@ mod tests {
             &["Register", "a"],
         ] {
             assert!(parse(args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    fn help_text(a: &[&str]) -> String {
+        match parse(args(a)) {
+            Ok(Command::Help(text)) => text,
+            _ => panic!("expected help for {a:?}"),
+        }
+    }
+
+    const PUBLIC: [&str; 12] = [
+        "agent", "listen", "connect", "register", "peers", "id", "allow", "revoke", "status",
+        "pending", "accept", "doctor",
+    ];
+
+    #[test]
+    fn every_command_has_help_with_its_usage_line_and_an_example() {
+        let usage = parse(vec![]).err().unwrap().to_string();
+        for cmd in PUBLIC {
+            for flag in ["--help", "-h"] {
+                let text = help_text(&[cmd, flag]);
+                let first = text.lines().next().unwrap();
+                let shape = first
+                    .strip_prefix("usage: herdvia ")
+                    .unwrap_or_else(|| panic!("{cmd}: {first}"));
+                assert!(shape.starts_with(cmd), "{cmd}: {first}");
+                // The usage line agrees with the one a parse error prints.
+                assert!(usage.contains(shape), "{cmd}: {shape} not in {usage}");
+                assert!(
+                    text.contains(&format!("\nexample: herdvia {cmd}")),
+                    "{cmd}: {text}"
+                );
+            }
+        }
+        let via = help_text(&["via", "--help"]);
+        assert!(
+            via.starts_with("usage: herdvia via <peer> <line>\n"),
+            "{via}"
+        );
+        assert!(via.contains("Internal"), "{via}");
+        assert!(!via.contains("example:"), "{via}");
+        let agent = help_text(&["agent", "--help"]);
+        for action in ["install", "uninstall", "reload"] {
+            assert!(agent.contains(&format!("\n  {action} ")), "{agent}");
+        }
+        assert_eq!(agent.contains("--log"), cfg!(windows), "{agent}");
+    }
+
+    #[test]
+    fn overview_lists_every_command_and_points_to_command_help() {
+        let text = help_text(&["--help"]);
+        for a in [&["-h"][..], &["help"]] {
+            assert_eq!(help_text(a), text, "{a:?}");
+        }
+        for cmd in PUBLIC.iter().chain(&["--version", "via"]) {
+            assert!(text.contains(&format!("\n  {cmd} ")), "{cmd}: {text}");
+        }
+        assert!(text.contains("herdvia <command> --help"), "{text}");
+    }
+
+    #[test]
+    fn help_comes_before_peer_names_and_only_in_known_shapes() {
+        // --help and -h are valid peer names; they still ask for help.
+        assert!(peers::valid_name("--help") && peers::valid_name("-h"));
+        for a in [
+            &["listen", "--help"][..],
+            &["connect", "-h"],
+            &["register", "--help"],
+            &["revoke", "-h"],
+        ] {
+            assert!(help_text(a).starts_with(&format!("usage: herdvia {}", a[0])));
+        }
+        for a in [
+            &["help", "listen"][..],
+            &["--help", "extra"],
+            &["--help", "--help"],
+            &["Help"],
+            &["unknown", "--help"],
+            &["revoke", "home", "--help"],
+            &["agent", "install", "--help"],
+        ] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
         }
     }
 }
