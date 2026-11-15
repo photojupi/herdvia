@@ -359,6 +359,32 @@ fn register_prints_the_manual_command_when_hc_fails_or_is_missing() {
 }
 
 #[test]
+fn register_says_the_outcome_is_unknown_when_hc_machine_add_times_out() {
+    let node = register_node("reg-slow");
+    let script = "#!/bin/sh\ncase \"$1 $2 $3\" in\n  'machine ls --json') printf '%s' '{\"machines\":[]}'; exit 0 ;;\n  'machine add --via') exec sleep 60 ;;\nesac\nexit 64\n";
+    let hc_path = node.bin.join("hc");
+    fs::write(&hc_path, script).unwrap();
+    fs::set_permissions(&hc_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let started = Instant::now();
+    let o = node.herdvia(&["register", "home"]);
+    assert!(
+        started.elapsed() >= Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(o.code(), Some(1), "stderr: {}", o.err());
+    assert_eq!(o.out(), "");
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: hc machine add did not finish within 15 seconds, so whether Herdr registered 'home' is unknown; check hc machine ls, and if 'home' is missing, run:\n  hc machine add --via '{} via home' --name home\n",
+            common::HERDVIA
+        )
+    );
+}
+
+#[test]
 fn register_needs_an_outbound_peer_and_creates_nothing() {
     let node = Node::new("reg-none");
     let record = install_register_hc(&node, Some(r#"{"machines":[]}"#), 0);

@@ -97,6 +97,7 @@ jobs:
             register_does_nothing_when_herdr_already_has_this_executable \
             register_refuses_a_machine_that_uses_another_executable_or_no_herdvia \
             register_prints_the_manual_command_when_hc_fails_or_is_missing \
+            register_says_the_outcome_is_unknown_when_hc_machine_add_times_out \
             register_needs_an_outbound_peer_and_creates_nothing
 
   windows-cross:
