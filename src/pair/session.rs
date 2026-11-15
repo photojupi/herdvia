@@ -472,8 +472,8 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
 
     match decision_rx.await {
         Ok(PromptDecision::Approve { saved, ack_tx }) => {
-            let _ = tokio::time::timeout(STEP_TIMEOUT, write_msg(&mut send, &PairMsg::Approved))
-                .await;
+            let _ =
+                tokio::time::timeout(STEP_TIMEOUT, write_msg(&mut send, &PairMsg::Approved)).await;
             let _ = send.finish();
             let _ = tokio::time::timeout(Duration::from_millis(200), send.stopped()).await;
             log::line(
@@ -771,7 +771,9 @@ where
 
         let (mut send, mut recv) = tokio::time::timeout(STEP_TIMEOUT, conn.open_bi())
             .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out opening pairing stream"))?
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "timed out opening pairing stream")
+            })?
             .map_err(io::Error::other)?;
 
         tokio::time::timeout(
@@ -787,7 +789,9 @@ where
             ),
         )
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out sending pairing hello"))??;
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::TimedOut, "timed out sending pairing hello")
+        })??;
 
         let challenge_msg = tokio::time::timeout(STEP_TIMEOUT, read_msg(&mut recv))
             .await
@@ -818,7 +822,9 @@ where
             write_msg(&mut send, &PairMsg::Reveal { nonce_a }),
         )
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out sending pairing reveal"))??;
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::TimedOut, "timed out sending pairing reveal")
+        })??;
 
         let sas = derive_sas(&tls_binding, self_id, target_id, &nonce_a, &nonce_b);
         let sas_line = format!(

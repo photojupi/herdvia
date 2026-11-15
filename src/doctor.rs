@@ -1044,7 +1044,9 @@ pub(crate) async fn core_preflight_warning() -> Option<String> {
     };
     let check = core_check(
         &found,
-        version.as_ref().map(|r| r.as_deref().map_err(String::as_str)),
+        version
+            .as_ref()
+            .map(|r| r.as_deref().map_err(String::as_str)),
         cfg!(windows),
         &searched,
         &link,

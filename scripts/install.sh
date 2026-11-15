@@ -172,15 +172,14 @@ main() {
 
   say ""
   say "Next steps"
-  say "To connect from this machine to another one, run here:"
-  say "  $run allow <name> <EndpointId of the other machine> --outbound"
-  say "Then accept this machine on the other one (herdvia pending and herdvia accept, as below), and run here:"
-  # hc runs --via as an sh line, so the path inside it is quoted too.
-  say "  hc machine add --via $(quote "$run via <name>") --name <name>"
-  say "To let another machine connect to this one, allow this machine on it with --outbound and run its agent. Its connection attempts then show up here:"
-  say "  $run pending"
-  say "  $run accept <name> <fingerprint> --inbound"
-  say "Check each fingerprint against what herdvia id prints on the other machine, in person or over a channel other than the one you copied it through."
+  say "If another machine (running Herdr) will control this Mac, wait for pairing here:"
+  say "  $run listen"
+  say "If this Mac runs Herdr and will control another machine, run 'herdvia listen' there first, then run here:"
+  say "  $run connect <name>"
+  say "On different networks, pass the hvi1-... invite printed by herdvia listen:"
+  say "  $run connect <name> <invite>"
+  say "Check that both screens show the same 6-digit verification code before approving on the target machine."
+  say "For manual pairing (allow / pending / accept), see https://github.com/photojupi/herdvia#manual-pairing"
 }
 
 main "$@"

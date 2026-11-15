@@ -25,6 +25,7 @@
 - [工作原理](#how-it-works)
 - [前置准备](#requirements)
 - [5 分钟快速上手](#quick-start)
+  - [手动配对](#manual-pairing)
 - [安装指南](#install)
   - [一键安装脚本（推荐）](#install-script)
   - [手动安装](#manual-install)
@@ -66,7 +67,7 @@
 ![herdvia 工作原理图](assets/how-it-works.zh-CN.svg)
 
 1. **常驻后台代理 (`herdvia agent`)：** 在每台电脑的当前用户会话中运行，持有设备密钥身份（`EndpointId`），并与已授权对端保持加密 QUIC 连接。
-2. **双向显式授权 (`allow` / `accept`)：** 从不自动信任陌生设备。主控端 A 必须显式允许拨向 B（`--outbound`），被控端 B 也必须显式允许 A 接入（`--inbound`）。
+2. **双向显式授权 (`listen` / `connect`，或 `allow` / `accept`)：** 从不自动信任陌生设备。交互式配对（`herdvia listen` + `herdvia connect`）在两端屏幕显示相同的 6 位验证码并等待人工确认后，为主控端 A 写入 `--outbound`、为被控端 B 写入 `--inbound`。
 3. **命令逐字白名单校验：** 接收端（电脑 B）仅执行与 `hc` 发送的 `herdr-core connect` 命令逐字完全一致的指令（已基于 **`hc 0.1.21`** 实测验证），其余任何命令均会被拒绝并写入日志。
 
 ---
@@ -140,7 +141,7 @@ curl -fsSL https://github.com/photojupi/herdvia/releases/latest/download/install
 powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download/install.ps1 | iex"
 ```
 
-安装完成后，请**新开一个终端窗口**使 `PATH` 生效（在 Windows 上请打开新的 PowerShell 窗口，若 Herdr 正在运行请重启 Herdr）。
+安装完成后，请**新开一个终端窗口**使 `PATH` 生效（在 Windows 上请打开新的 PowerShell 窗口，若 Herdr 正在运行请重启 Herdr）。如果未使用一键安装脚本而是手动安装，请先在两台电脑上运行 `herdvia agent install`（macOS/Windows）或 `herdvia agent` 启动后台代理（参见[开机自动启动](#automatic-startup)）。
 
 完整配对流程一览：
 
@@ -150,107 +151,54 @@ sequenceDiagram
     participant A as 电脑 A (Herdr / hc)
     participant B as 电脑 B (远程电脑)
 
-    Note over A,B: 步骤 1~2：两端均已安装 herdvia 且后台 agent 正在运行
-    B->>B: herdvia id（复制 B 的 64 位 EndpointId）
-    A->>A: herdvia allow B <B的EndpointId> --outbound
-    A-->>B: agent 主动拨号连接 B（首次因未授权被拒，记录到 pending）
-    B->>B: herdvia pending
-    Note over A,B: 直接在 A 的屏幕上核对 16 位指纹（fingerprint）
-    B->>B: herdvia accept A <A的指纹> --inbound
-    A-->>B: 下一次自动重试（最长约 30 秒）建立端到端加密通道
-    A->>B: hc machine add --via 'herdvia via B' --name B
+    Note over A,B: 两端均已安装 herdvia + herdr-core 且后台 agent 正在运行
+    B->>B: herdvia listen（最长等待 5 分钟；局域网广播 + 打印 hvi1-... 邀请串）
+    A->>B: herdvia connect B（同局域网自动发现，或跨网传入 hvi1-... 邀请串）
+    Note over A,B: 两端屏幕显示相同的 6 位验证码（如 482-917）
+    B->>B: 核对验证码一致后在 Allow? [y/N]: 输入 y
+    B-->>A: B 保存 A (--inbound)，A 保存 B (--outbound) 并立即建立连接
+    A->>A: 自动运行 hc machine add --via '... via B' --name B
 ```
 
-### 步骤 1. 查看每台电脑的身份标识
-
-在 **A 和 B 两台电脑**上运行（若使用了一键脚本，安装时已打印过一次）：
+### 步骤 1. 在被控端电脑 B 上等待配对
 
 ```sh
-herdvia id
+herdvia listen
 ```
 
-- **第 1 行：** 完整的 64 位 `EndpointId`（本机公钥）。
-- **第 2 行：** 每 4 位一组的 16 位短指纹（例如 `28af-63b6-258e-859d`）。首次运行时会自动创建私钥。
+- `listen` 会开启一个 5 分钟有效的一次性配对窗口，在当前局域网/Wi-Fi 发送发现广播，同时打印一条供跨网络配对使用的一次性 `hvi1-...` 邀请字符串。
+- 默认情况下，电脑 B 会使用电脑 A 净化后的主机名作为对端名称（若该名称已被其他公钥占用则自动追加 `-2`、`-3`…）。如需自定义 A 在本机的名称，可运行 `herdvia listen <名称>`。
 
-### 步骤 2. 确保两台电脑上的代理正在运行
+### 步骤 2. 在运行 Herdr 的电脑 A 上发起连接
 
-如果使用了[一键安装脚本](#install-script)，后台代理**已经注册开机自启并正在运行**，可直接跳到步骤 3。
+- **同一 Wi-Fi / 局域网：**
+  ```sh
+  herdvia connect B
+  ```
+  `connect` 会在局域网内自动扫描约 2 秒并连接（若有多台电脑正在 `herdvia listen` 会提示按序号选择；若访客 Wi-Fi 隔离拦截了广播，则会提示粘贴 B 屏幕上的 `hvi1-...` 邀请串）。
 
-如果是手动安装，可以注册登录自启并立即启动（支持 macOS 与 Windows）：
+- **不同网络（例如家里 ↔ 办公室或咖啡馆）：**
+  ```sh
+  herdvia connect B <B屏幕上打印的 hvi1-... 邀请串>
+  ```
 
-```sh
-herdvia agent install
-```
+`B`（或 `home-pc`、`office` 等）是在 `herdvia` 与 Herdr 中共同使用的主机名称（支持 `1–32` 个 `A-Z a-z 0-9 . _ -` 字符）。
 
-或者直接在终端前台运行：
+### 步骤 3. 核对 6 位验证码并在电脑 B 上确认
 
-```sh
-herdvia agent
-```
+两端终端会显示一组 6 位验证码（例如 `482-917`）：
 
-各平台详情请参阅[开机自动启动](#automatic-startup)。
+1. 核对**两块屏幕上显示的 6 位数字是否完全相同**。
+2. 在**电脑 B** 的 `Allow? [y/N]:` 提示符后输入 `y`。
 
-### 步骤 3. 在电脑 A 上授权连接电脑 B (`--outbound`)
+确认通过后立即完成：
+- **电脑 B** 将电脑 A 保存为 `--inbound`，**电脑 A** 将电脑 B 保存为 `--outbound`。
+- 两端代理无需等待退避重试，立即建立端到端加密通道。
+- **电脑 A** 自动执行 `hc machine add`，`B` 会直接出现在 Herdr 中。*（若 `PATH` 中找不到 `hc` 或注册失败，配对本身依然保留，并会打印可直接复制执行的 `hc machine add --via ... --name B` 命令。）*
 
-对端绝不会被自动信任。将 **B 的 `EndpointId`** 复制到 **A**，允许 A 主动连接 B：
+### 步骤 4. 检查连接状态
 
-```sh
-herdvia allow B <B的EndpointId> --outbound
-```
-
-核对你粘贴的 `EndpointId` 前 16 位字符是否与 B 上 `herdvia id` 打印的指纹一致（建议当面核对，或通过不同于复制 ID 所用的另一条渠道核对）。
-
-| 方向参数 | 含义 |
-|---|---|
-| `--outbound` | 允许**本机**主动拨号连接该对端 |
-| `--inbound` | 允许**该对端**连入本机并开启会话 |
-| `--both` | 同时允许双向连接 |
-
-*对端名称（如 `A`、`B`、`home-pc`）是本地标签，支持 `1–32` 个 `A-Z a-z 0-9 . _ -` 字符。使用相同名称再次执行 `allow` 会更新该记录，`allow` 会输出保存后的记录（如 `B <EndpointId> out`）。每个 `EndpointId` 只能对应一个名称——若该 `EndpointId` 已以其他名称注册，`allow` 会拒绝。*
-
-### 步骤 4. 在电脑 B 上接受电脑 A (`--inbound`)
-
-A 的代理会立即开始尝试连接 B。由于 A 尚未加入 B 的授权列表，B 会拒绝该连接，但会将 A 已通过认证的公钥暂存在内存中，免去你再次手动复制 64 位长 ID。
-
-在 **B** 上查看待确认连接：
-
-```sh
-herdvia pending
-```
-
-```text
-fingerprint id attempts last-seen
-28af-63b6-258e-859d 28af63b6258e859dc534c014248ebf7284cdbb34e7cff524e3e4d35c2df1fc55 3 4s
-```
-
-请**直接查看 A 自己的屏幕**读取 A 的指纹（即 A 上 `herdvia id` 的第 2 行——任何知道 B 的 `EndpointId` 的设备都可能出现在 `pending` 中，因此切勿直接照抄 `pending` 列表里的指纹！），然后在 **B** 上执行：
-
-```sh
-herdvia accept A <A的指纹> --inbound
-```
-
-- `accept` 会将该指纹对应的完整 `EndpointId` 写入授权列表（等效于 `herdvia allow A <A的EndpointId> --inbound`），并输出 `A <EndpointId> in`。
-- 输入指纹时可带或不带连字符 `-`，不区分大小写。如果希望 B 也能反向连接 A，可使用 `--both`（`accept` 不接受 `--outbound`）。
-- A 对被拒连接采用递增退避重试（最长间隔 **30 秒**），因此 A 出现在 `pending` 中最长可能需要约 30 秒，`accept` 后重新连上最长也可能需要约 30 秒。
-- *（备选方式：若直接将 A 的完整 ID 复制到 B 更方便，也可以在 B 上运行 `herdvia allow A <A的EndpointId> --inbound`，并像步骤 3 那样核对指纹。）*
-
-### 步骤 5. 在电脑 A 上将电脑 B 添加到 Herdr
-
-在 **A** 上执行：
-
-```sh
-hc machine add --via 'herdvia via B' --name B
-```
-
-- `'herdvia via B'` 中的 `B` 必须与步骤 3 中 `herdvia allow` 使用的名称一致；`--name B` 是 Herdr 界面中显示的名称，可自由命名。
-- `hc` 会在该命令末尾追加一个远程命令参数后执行。
-- **如果 `hc` 在其 `PATH` 中找不到 `herdvia`：** 请填写可执行文件的完整路径，若路径含空格需加引号：
-  - **macOS：** `hc` 通过 `sh` 执行 `--via`，请按 `sh` 规则加引号（安装脚本会自动输出可直接粘贴的命令）。
-  - **Windows：** `hc` 不经过 shell 拆分 `--via`（`CommandLineToArgvW` 规则），路径含空格时需用双引号包裹。由于 Windows PowerShell 5.1 在未转义时会剥离内层双引号，更简单的做法是将 `herdvia` 保留在用户 `PATH` 中（安装后打开新的 PowerShell 窗口并重启 Herdr），然后如上运行 `hc machine add --via 'herdvia via B' --name B`。
-
-### 步骤 6. 检查连接状态
-
-在 **A** 上查看连接详情：
+在 **A** 上随时查看连接详情：
 
 ```sh
 herdvia status
@@ -261,10 +209,31 @@ name permission connection path rtt
 B out connected direct 4.12ms
 ```
 
-- **`path`：** 连接刚建立时通常走 `relay`（中继），一般在几秒内自动升级为 `direct`（点对点直连）。
-- **macOS 局域网权限提示：** 如果两台设备在同一局域网/Wi-Fi 下却一直停留在 `relay`，请在 Mac 的 **系统设置 > 隐私与安全性 > 本地网络** 中允许 `herdvia`（详见 [macOS 自动启动](#macos)）。
-- **提示：** 在 B 尚未 `accept` A 之前，每次重试期间在 B 关闭连接前，A 侧的 `herdvia status` 可能会短暂闪现 `connected`。在 **B** 上运行 `herdvia status`，则只有在 A 真正获准接入并连上后才会显示 `connected`。
+- **`path`：** 同局域网下通常直接走 `direct`（点对点直连）；跨网络时先走 `relay`（中继），一般在几秒内自动升级为 `direct`。
+- **macOS 局域网权限提示：** 如果两台设备在同一局域网/Wi-Fi 下无法自动发现或一直停留在 `relay`，请在 Mac 的 **系统设置 > 隐私与安全性 > 本地网络** 中允许 `herdvia`（及当前终端，详见 [macOS 自动启动](#macos)）。
 - **如果遇到连接异常：** 请在两台电脑上运行 `herdvia doctor`，每条 `warn` 或 `fail` 输出都会直接提示处理方法（详见[运行 `herdvia doctor`](#run-herdvia-doctor)）。
+
+<a id="manual-pairing"></a>
+### 手动配对
+
+如果你在无交互终端的脚本环境中配置，或倾向于不使用 `listen` / `connect` 而手动交换密钥，仍可使用 `id`、`allow`、`pending` 与 `accept` 完成配对：
+
+1. **查看身份标识 (`herdvia id`)：** 第 1 行输出 64 位完整 `EndpointId`，第 2 行输出 16 位短指纹（如 `28af-63b6-258e-859d`），首次运行时自动生成 `secret.key`。
+2. **在电脑 A 上允许连接 B (`--outbound`)：**
+   ```sh
+   herdvia allow B <B的EndpointId> --outbound
+   ```
+   请当面或通过独立渠道核对前 16 位字符是否与 B 上的指纹一致。方向参数为 `--outbound`（允许本机拨出）、`--inbound`（允许对端连入）或 `--both`（双向），每个 `EndpointId` 只能对应一个名称。
+3. **在电脑 B 上接受 A (`--inbound`)：** A 的代理拨向 B 时，B 会拒绝未授权公钥并暂存于内存（`herdvia pending`）。请**直接从 A 自己的屏幕读取指纹**（切勿照抄 `pending` 列表），在 **B** 上运行：
+   ```sh
+   herdvia accept A <A的指纹> --inbound
+   ```
+   *（也可直接在 B 上运行 `herdvia allow A <A的EndpointId> --inbound`。手动配对下 A 最长可能需要约 30 秒在下一次重试时连上。）*
+4. **在电脑 A 上添加到 Herdr：**
+   ```sh
+   hc machine add --via 'herdvia via B' --name B
+   ```
+   若 `hc` 在其 `PATH` 中找不到 `herdvia`，请传入可执行文件的完整路径并按平台规则加引号（macOS 按 `sh` 规则，Windows 按 `CommandLineToArgvW` 双引号规则——在 Windows 上保留 `herdvia` 在用户 `PATH` 中并重启 Herdr 最为简单）。
 
 ---
 
@@ -426,6 +395,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | 命令 | 说明 |
 |---|---|
+| `herdvia listen [<名称>]` | 在被控目标电脑上等待最长 5 分钟的交互式配对请求，发送局域网发现广播并打印供跨网使用的一次性 `hvi1-...` 邀请串，显示 6 位验证码并在用户于 `[y/N]` 确认后授予 `--inbound`（省略 `<名称>` 时默认使用对方净化后的主机名）。拒绝或超时以退出码 `1` 结束。需要代理正在运行。 |
+| `herdvia connect <名称> [<邀请串>]` | 从运行 Herdr 的主控电脑通过局域网自动发现或 `<邀请串>`（`hvi1-...`）与等待中的目标电脑配对，显示相同的 6 位验证码，对方确认后授予 `--outbound` 并自动执行 `hc machine add --via ... --name <名称>`。拒绝、超时或 `hc` 注册失败（打印手动命令）时以退出码 `1` 结束。需要代理正在运行。 |
 | `herdvia id` | 打印本机 `EndpointId`（第 1 行）与 16 位短指纹（第 2 行）。若 `secret.key` 不存在则自动生成。 |
 | `herdvia allow <名称> <EndpointId> (--inbound \| --outbound \| --both)` | 添加或更新对端，并输出保存后的记录（`<名称> <EndpointId> <in\|out\|both>`）。若该 `EndpointId` 已以其他名称注册则拒绝。对运行中的代理立即生效（否则在代理下次启动时生效）。 |
 | `herdvia revoke <名称>` | 移除对端并输出 `revoked <名称> <EndpointId>`，立即关闭与该对端的连接，并终止由这些连接启动的 `herdr-core connect` 进程（无法撤销的影响参见[安全模型](#security-model)）。若不存在该名称的对端则失败。若同一 `EndpointId` 仍以其他名称注册（旧版本写入的 `peers` 文件），会发出警告。 |
@@ -495,7 +466,7 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 
 输出行写往标准输出（`stdout`），以 `ok`、`warn` 或 `fail` 开头；`warn` 与 `fail` 行会在同一行给出处理建议。对端连接按每个对端输出一行，当前置步骤失败时会省略依赖它的后续检查：若数据目录检查为 `fail`，将跳过代理检查及其后的所有行（除非仅因 Unix 套接字路径过长而失败，否则 `secret.key` 与 `peers` 也会一并跳过）；若代理无响应，则跳过 `relay`、对端连接与 `pending` 行。没有任何 `fail` 时退出码为 `0`（仅有 `warn` 仍为 `0`），存在任一 `fail` 时退出码为 `1`。命令参数错误等情况仍输出一行 `herdvia:` 并以 `255` 结束。
 
-- **只读行为：** `doctor` 不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直保持 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到运行某个会准备数据目录的命令来限制权限——即 `herdvia id`、`allow`、`accept`、`revoke` 或启动代理（`status`、`pending` 和 `doctor` 不做任何修改）。由于 Windows 版 `v0.1.2` 未修改数据目录及内部文件的权限，沿用了从用户配置文件继承的默认权限（可能允许其他账户读取），从 `v0.1.2` 升级上来的电脑在用新版本运行上述任一命令之前，这三项可能都会显示 `warn`（安装脚本会运行 `herdvia id`）。一旦运行过上述命令，该目录和两个文件将仅向当前用户、SYSTEM 和 Administrators 授予访问权限，三行都会变为 `ok`。
+- **只读行为：** `doctor` 不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直保持 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到运行某个会准备数据目录的命令来限制权限——即 `herdvia id`、`listen`（确认通过时）、`connect`（确认通过时）、`allow`、`accept`、`revoke` 或启动代理（`status`、`pending` 和 `doctor` 不做任何修改）。由于 Windows 版 `v0.1.2` 未修改数据目录及内部文件的权限，沿用了从用户配置文件继承的默认权限（可能允许其他账户读取），从 `v0.1.2` 升级上来的电脑在用新版本运行上述任一命令之前，这三项可能都会显示 `warn`（安装脚本会运行 `herdvia id`）。一旦运行过上述命令，该目录和两个文件将仅向当前用户、SYSTEM 和 Administrators 授予访问权限，三行都会变为 `ok`。
 - **超时限制：** 唯一调用的外部程序是 `herdr-core --version`（限时 2 秒）。发往代理的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，对应行会记为 `warn`（`status` 超时后跳过 `pending`）。
 - **旧版本代理：** `herdvia doctor` 自 `v0.1.2` 起新增。更早版本的代理不识别该请求，因此 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理的日志会记录一行 `unknown CONTROL request`。
 
@@ -521,6 +492,7 @@ ok   pending: no rejected connection attempts
 
 | 现象 | 常见原因 | 解决方法 |
 |---|---|---|
+| 同一 Wi-Fi 下 `herdvia connect <名称>` 未自动发现对方电脑 | 访客 Wi-Fi 客户端隔离、防火墙拦截 UDP `48721`，或 macOS 本地网络权限未开启 | 直接传入 `herdvia listen` 打印的 `hvi1-...` 邀请串（`herdvia connect <名称> <邀请串>`），或开启本地网络权限 |
 | 在 B 上运行 `herdvia pending` 列表为空 | A 的代理未启动、A 未配置 `--outbound`，或正处于重试间隔内 | 确认 A 上 `herdvia status` 正常且已执行 `herdvia allow B <B_ID> --outbound`，等待最多 30 秒后再运行 `herdvia pending` |
 | 两台电脑连同一 Wi-Fi，`status` 却一直是 `relay` | macOS 15+ 拦截了后台 LaunchAgent 的局域网访问 | 在 Mac 的 **系统设置 > 隐私与安全性 > 本地网络** 中开启 `herdvia` |
 | Mac 上已通过 Homebrew 安装 `herdr-core`，但 Herdr 显示 `herdr-core is not installed here` | macOS LaunchAgent 仅搜索 `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | 运行 `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` |
@@ -591,6 +563,7 @@ ok   pending: no rejected connection attempts
   4. 运行 `herdvia id` 生成新身份。
   5. 运行 `herdvia agent install`（或重新启动 `herdvia agent`）。
   6. 与所有对端重新配对。
+- **交互式配对 (`listen` / `connect`)：** 配对运行在独立的 `herdvia/pair/1` ALPN 上，绝不执行远程命令，也不会写入 `pending`，且仅在 `herdvia listen` 正在等待时接受握手。每次 `listen` 会话都会生成 5 分钟后过期的 128 位一次性令牌，并在首次通过握手证明校验时立即消耗，攻击者无法对同一会话反复尝试猜测。双方基于 QUIC TLS 1.3 exporter（`herdvia-pair-v1`）与 commit-reveal 随机数交换导出 6 位验证码（`NNN-NNN`，约 20 位熵），在目标电脑用户核对两屏一致并输入 `y` 之前绝不修改 `peers`。授权遵循最小权限：目标电脑仅写入 `--inbound`，主控电脑仅写入 `--outbound`（不会默认授予 `--both`）。
 - **短指纹与 `pending` / `accept`：** 指纹仅表示 256 位 `EndpointId` 的前 16 个十六进制字符（64 位），供人工比对；`herdvia` 存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成已认证 `iroh` 握手的对端，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行；由于任何知道本机 `EndpointId` 的人都能填满列表，列表已满时也会拒绝。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
 
 **报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交；非敏感的 bug 请新建普通 Issue。
@@ -605,6 +578,7 @@ ok   pending: no rejected connection attempts
 - **公共中继服务器 ([n0](https://n0.computer))：** 每个代理会连接一个归属中继（home relay）用于信令协商与初始连接建立；当两端无法建立直连路径时，加密流量也会通过中继转发。
 - **DNS 地址发现 (`dns.iroh.link`)：** 每个代理会向该服务发布一条包含本机 **`EndpointId` 与归属中继 URL** 的签名记录，以便对端通过 `EndpointId` 寻址。
 - **路由器端口映射：** 默认开启 UPnP、PCP 与 NAT-PMP，在路由器支持时辅助打洞直连。
+- **前台局域网配对发现：** 仅当 `herdvia listen` 或未传邀请串的 `herdvia connect` 在前台运行时，才会在 UDP 端口 `48721`（IPv4 组播 `239.255.77.86` 及广播）收发包含目标 `EndpointId`、代理 QUIC 端口、一次性局域网令牌与净化后主机名的简短发现报文。常驻后台的 `herdvia agent` 从不打开此 UDP 端口。
 - **IP 地址与 `EndpointId`：** 地址发现服务只会收到归属中继 URL，但任何知道本机 `EndpointId` 的人都可以经由中继连接本机，而且在 `herdvia` 拒绝该连接之前，`iroh` 可能已把本机的直连地址候选（包括局域网地址和经端口映射的公网地址）发给对方。因此对方可能得知本机当前的 IP 地址。`EndpointId` 不是秘密，但请不要公开发布。
 - **加密与元数据：** 所有会话流量均通过 QUIC/TLS 端到端加密，中继服务器无法解密内容；但据 n0 说明，中继可观测到 IP 地址、连接时间与传输字节量等连接元数据。
 - **服务等级说明：** n0 将其公共中继定位为**仅供开发与个人业余使用（development and hobby use only）**，无 SLA 可用性承诺且设有速率限制。详见 iroh 文档中的 [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) 与 [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup)。
@@ -638,7 +612,7 @@ ok   pending: no rejected connection attempts
 | **数据目录（Linux）** | `$XDG_DATA_HOME/herdvia`（默认为 `~/.local/share/herdvia`） |
 | **覆盖数据目录环境变量** | `HERDVIA_DIR=<路径>` 可替换默认数据目录（必须为绝对路径；包含 `hc` 拉起的 `via` 在内的所有命令必须看到相同值；设置后无法使用 `agent install`） |
 | **`secret.key`** | 本机 32 字节 Ed25519 私钥（位于数据目录内） |
-| **`peers`** | 对端授权列表（每行 `<名称> <EndpointId> <in\|out\|both>`，通过 `allow`、`accept`、`revoke` 管理） |
+| **`peers`** | 对端授权列表（每行 `<名称> <EndpointId> <in\|out\|both>`，通过 `listen`、`connect` 或 `allow`、`accept`、`revoke` 管理） |
 | **`agent.sock`** | macOS/Unix 本地 Unix 域套接字（Windows 改用按用户 SID 区分的命名管道） |
 | **`agent.lock`** | 仅限 Windows：代理运行期间锁定的文件，确保同一数据目录只有一个代理在运行。代理停止后该文件仍会保留。 |
 | **日志（macOS 自动启动）** | `~/Library/Logs/herdvia.log` |

@@ -86,11 +86,7 @@ async fn read_stdin_line() -> io::Result<Option<String>> {
     tokio::task::spawn_blocking(|| {
         let mut line = String::new();
         let bytes = io::stdin().lock().read_line(&mut line)?;
-        if bytes == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(line))
-        }
+        if bytes == 0 { Ok(None) } else { Ok(Some(line)) }
     })
     .await
     .map_err(io::Error::other)?
@@ -117,9 +113,7 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
     }
 
     let mut stream = ipc::connect(&dir).await?;
-    if frame::write(&mut stream, CONTROL, b"listen")
-        .await
-        .is_err()
+    if frame::write(&mut stream, CONTROL, b"listen").await.is_err()
         || frame::write(
             &mut stream,
             STDIN,
@@ -199,11 +193,9 @@ pub async fn run_listen(explicit_name: Option<String>) -> io::Result<i32> {
     }
 
     match next.tag {
-        ERROR => {
-            return Err(io::Error::other(
-                String::from_utf8_lossy(&next.payload).into_owned(),
-            ));
-        }
+        ERROR => Err(io::Error::other(
+            String::from_utf8_lossy(&next.payload).into_owned(),
+        )),
         STDOUT => {
             let line = String::from_utf8_lossy(&next.payload);
             if line.trim() == "TIMEOUT" {
@@ -386,7 +378,10 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
 
     let mut stream = ipc::connect(&dir).await?;
     let req = match direct_addr {
-        Some(addr) => format!("{name} {target_id} {mode} {} {addr}", HEXLOWER.encode(&token)),
+        Some(addr) => format!(
+            "{name} {target_id} {mode} {} {addr}",
+            HEXLOWER.encode(&token)
+        ),
         None => format!("{name} {target_id} {mode} {}", HEXLOWER.encode(&token)),
     };
     if frame::write(&mut stream, CONTROL, b"connect")

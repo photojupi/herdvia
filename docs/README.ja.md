@@ -25,6 +25,7 @@
 - [仕組み](#how-it-works)
 - [事前準備（必要なもの）](#requirements)
 - [5分クイックスタート](#quick-start)
+  - [手動ペアリング](#manual-pairing)
 - [インストール方法](#install)
   - [インストールスクリプト（推奨）](#install-script)
   - [手動インストール](#manual-install)
@@ -66,7 +67,7 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 ![herdvia の動作仕組み図](assets/how-it-works.ja.svg)
 
 1. **常駐エージェント (`herdvia agent`):** 各マシンのユーザーセッションで動作し、マシン固有の鍵（`EndpointId`）を使って許可済みピアとの暗号化 QUIC 接続を維持します。
-2. **双方向の明示的な許可 (`allow` / `accept`):** 未知の端末が自動的に信頼されることはありません。発信側（マシン A）で `--outbound` を許可し、着信側（マシン B）で `--inbound` を承認して初めて通信が成立します。
+2. **双方向の明示的な許可 (`listen` / `connect`、または `allow` / `accept`):** 未知の端末が自動的に信頼されることはありません。対話型ペアリング（`herdvia listen` + `herdvia connect`）では両方の画面に同じ 6 桁の確認コードを表示し、承認後に発信側（マシン A）で `--outbound`、着信側（マシン B）で `--inbound` を保存します。
 3. **厳格なコマンド検証:** 着信側（マシン B）では、`hc` が送信する `herdr-core connect` コマンドラインと完全一致する場合のみ実行します（**`hc 0.1.21`** で検証済み）。それ以外のコマンド文字列はすべて拒否し、ログに記録します。
 
 ---
@@ -140,7 +141,7 @@ curl -fsSL https://github.com/photojupi/herdvia/releases/latest/download/install
 powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download/install.ps1 | iex"
 ```
 
-インストール後は `PATH` を反映させるため**新しいターミナルウィンドウ**を開いてください（Windows では新しい PowerShell を開き、Herdr が起動中なら再起動してください）。
+インストール後は `PATH` を反映させるため**新しいターミナルウィンドウ**を開いてください（Windows では新しい PowerShell を開き、Herdr が起動中なら再起動してください）。インストールスクリプトではなく手動で導入した場合は、先に両方のマシンで `herdvia agent install`（macOS・Windows）または `herdvia agent` を実行してエージェントを起動してください（[ログイン時の自動起動](#automatic-startup)を参照）。
 
 ペアリング全体の流れは次の通りです：
 
@@ -150,107 +151,54 @@ sequenceDiagram
     participant A as マシン A (Herdr / hc)
     participant B as マシン B (リモート PC)
 
-    Note over A,B: 手順 1〜2: 両方で herdvia 導入済み・エージェント稼働中
-    B->>B: herdvia id (B の 64文字 EndpointId をコピー)
-    A->>A: herdvia allow B <BのEndpointId> --outbound
-    A-->>B: エージェントが B へ発信 (未許可のため拒否され pending に記録)
-    B->>B: herdvia pending
-    Note over A,B: A の画面に表示された 16文字の指紋 (fingerprint) を目視確認
-    B->>B: herdvia accept A <Aのfingerprint> --inbound
-    A-->>B: 次の再試行 (最大約30秒) で暗号化 P2P 接続が確立
-    A->>B: hc machine add --via 'herdvia via B' --name B
+    Note over A,B: 両方で herdvia + herdr-core 導入済み・エージェント稼働中
+    B->>B: herdvia listen (最大5分待機・LAN通知 + hvi1-... 招待を表示)
+    A->>B: herdvia connect B (同一LANで自動検出、または別ネットワークから hvi1-... 招待で接続)
+    Note over A,B: 両方の画面に同じ6桁の確認コードを表示 (例: 482-917)
+    B->>B: コードの一致を確認して Allow? [y/N]: に y を入力
+    B-->>A: B は A (--inbound)、A は B (--outbound) を保存して即時接続
+    A->>A: hc machine add --via '... via B' --name B を自動実行
 ```
 
-### 手順 1. 各マシンの ID とフィンガープリントを確認する
-
-**A と B の両方**で実行します（インストールスクリプトを使った場合はすでに一度表示されています）：
+### 手順 1. 接続先のマシン B でペアリングを待機する
 
 ```sh
-herdvia id
+herdvia listen
 ```
 
-- **1 行目:** 64 文字の `EndpointId`（このマシンの公開鍵）
-- **2 行目:** 4 文字ずつ区切った 16 文字のフィンガープリント（例：`28af-63b6-258e-859d`）。秘密鍵は初回実行時に自動生成されます。
+- `listen` は 5 分間有効な 1 回限りのペアリング窓口を開き、同一 LAN / Wi-Fi 上へ検出ビーコンを送ると同時に、別ネットワーク間で使える 1 回限りの `hvi1-...` 招待文字列も表示します。
+- 既定では、マシン B はマシン A のサニタイズ済みホスト名で登録します（別の鍵がすでに使っている名前の場合は `-2`、`-3`… を付与）。A のローカル名を指定したい場合は `herdvia listen <名前>` を実行します。
 
-### 手順 2. 両方のマシンでエージェントを起動する
+### 手順 2. Herdr を操作するマシン A から接続する
 
-[インストールスクリプト](#install-script)を使った場合は、エージェントの**自動起動登録と起動がすでに完了**しているため、手順 3 へ進んでください。
+- **同じ Wi-Fi / LAN 内の場合:**
+  ```sh
+  herdvia connect B
+  ```
+  約 2 秒間ローカルネットワークを自動スキャンして接続します（`herdvia listen` 中の PC が複数ある場合は番号選択を促し、ゲスト Wi-Fi 分離などで検出パケットが届かない場合は B の `hvi1-...` 招待の貼り付けを求めます）。
 
-手動インストールした場合は、ログイン時の自動起動を登録して今すぐ起動するか（macOS・Windows）：
+- **別々のネットワーク（自宅 ↔ 職場・カフェなど）の場合:**
+  ```sh
+  herdvia connect B <Bに表示された hvi1-... 招待文字列>
+  ```
 
-```sh
-herdvia agent install
-```
+`B`（`home-pc`、`office` など）は `herdvia` と Herdr の両方で使うピア名です（`A-Z a-z 0-9 . _ -` の 1〜32 文字）。
 
-またはフォアグラウンドで直接起動します：
+### 手順 3. 6 桁のコードを確認してマシン B で承認する
 
-```sh
-herdvia agent
-```
+両方のターミナルに 6 桁の確認コード（例：`482-917`）が表示されます：
 
-OS ごとの詳細は[ログイン時の自動起動](#automatic-startup)を参照してください。
+1. **両方の画面にまったく同じ 6 桁のコードが表示されていること**を目視で確認します。
+2. **マシン B** の `Allow? [y/N]:` に `y` を入力します。
 
-### 手順 3. マシン A でマシン B への発信を許可する (`--outbound`)
+承認するとすぐに：
+- **マシン B** はマシン A を `--inbound` で保存し、**マシン A** はマシン B を `--outbound` で保存します。
+- 再試行の待ち時間なしで即座に暗号化トンネルが確立します。
+- **マシン A** で `hc machine add` が自動実行され、Herdr に `B` がそのまま追加されます。*（`PATH` に `hc` がない場合などもペアリング自体は完了し、手動で貼り付けられる `hc machine add --via ... --name B` コマンドが表示されます。）*
 
-ピアが自動で信頼されることはありません。**B の `EndpointId`** を **A** にコピーし、A から B への接続を許可します：
+### 手順 4. 接続状態を確認する
 
-```sh
-herdvia allow B <BのEndpointId> --outbound
-```
-
-貼り付けた `EndpointId` の先頭 16 文字が、B の画面で `herdvia id` が表示したフィンガープリントと一致しているか確認してください（ID を送った経路とは別の手段や直接の画面確認で照合すると安全です）。
-
-| 方向オプション | 意味 |
-|---|---|
-| `--outbound` | **このマシンから**相手ピアへ発信・接続してよい |
-| `--inbound` | **相手ピアが**このマシンに着信してセッションを開いてよい |
-| `--both` | 双方向とも許可する |
-
-*名前（`A`、`B`、`home-pc` など）はローカルでの識別名です（`A-Z a-z 0-9 . _ -` の 1〜32 文字）。同じ名前で再度 `allow` を実行すると項目が更新され、`allow` は保存した項目（`B <EndpointId> out` など）を出力します。各 `EndpointId` に付けられる名前は 1 つだけで、別の名前で登録済みの `EndpointId` は `allow` が拒否します。*
-
-### 手順 4. マシン B でマシン A の着信を承認する (`--inbound`)
-
-A のエージェントは直ちに B への接続を試みます。B の許可リストにまだ A がないため接続は拒否されますが、64 文字の ID をもう一度手作業でコピーせずに済むよう、B は A の認証済み公開鍵をメモリ上に一時記録します。
-
-**B** で保留リストを確認します：
-
-```sh
-herdvia pending
-```
-
-```text
-fingerprint id attempts last-seen
-28af-63b6-258e-859d 28af63b6258e859dc534c014248ebf7284cdbb34e7cff524e3e4d35c2df1fc55 3 4s
-```
-
-**必ず A 自身の画面に表示されているフィンガープリント**（A の `herdvia id` の 2 行目 — B の `EndpointId` を知る第三者も `pending` に現れ得るため、`pending` の表示からそのまま書き写さないでください）を読み取り、**B** で入力して承認します：
-
-```sh
-herdvia accept A <Aのfingerprint> --inbound
-```
-
-- `accept` は一致した試行の完全な `EndpointId` を（`herdvia allow A <AのEndpointId> --inbound` と同様に）登録し、`A <EndpointId> in` と出力します。
-- フィンガープリントはハイフン（`-`）の有無や大文字・小文字を問いません。B から A へも発信したい場合は `--both` を指定します（`accept` では `--outbound` は指定できません）。
-- A は拒否された接続を最大 **30 秒**間隔まで広げながら再試行するため、`pending` に出るまで最大約 30 秒、`accept` 後に接続されるまでさらに最大約 30 秒かかることがあります。
-- *（別解：A の 64 文字 `EndpointId` を B へコピーできるなら、B で `herdvia allow A <AのEndpointId> --inbound` を実行し手順 3 と同様に照合しても構いません。）*
-
-### 手順 5. マシン A の Herdr にマシン B を登録する
-
-**A** で Herdr にリモートマシンを追加します：
-
-```sh
-hc machine add --via 'herdvia via B' --name B
-```
-
-- `'herdvia via B'` の `B` は手順 3 の `herdvia allow` で付けたピア名です。`--name B` は Herdr 上の表示名（別の名前でも可）です。
-- `hc` はこのコマンドの末尾にリモート実行コマンドを 1 つの引数として追加して起動します。
-- **`hc` が `PATH` 上の `herdvia` を見つけられない場合:** 実行ファイルのフルパスを指定し、空白を含む場合はクォートしてください。
-  - **macOS:** `hc` は `--via` を `sh` コマンド行として実行するため、`sh` の規則でクォートします（インストールスクリプトがそのまま貼り付けられるコマンドを表示します）。
-  - **Windows:** `hc` はシェルを介さず `--via` を分割するため（`CommandLineToArgvW` 規則）、空白を含むパスはダブルクォートで囲む必要があります。Windows PowerShell 5.1 はエスケープしない限り内側のダブルクォートを除去してしまうため、ユーザー `PATH` に `herdvia` を入れた状態にして（インストール後に新しい PowerShell ウィンドウを開き Herdr を再起動）、上記の通り `hc machine add --via 'herdvia via B' --name B` を実行する方がずっと簡単です。
-
-### 手順 6. 接続状態を確認する
-
-**A** で接続状態を確認します：
+**A** でいつでも接続状態を確認できます：
 
 ```sh
 herdvia status
@@ -261,10 +209,31 @@ name permission connection path rtt
 B out connected direct 4.12ms
 ```
 
-- **`path`:** 最初は `relay`（リレー経由）で始まり、通常は数秒以内に `direct`（直接通信）へ切り替わります。
-- **macOS のローカルネットワーク権限:** 同じ Wi-Fi / LAN 内にあるのに `relay` のまま変わらない場合は、Mac の **システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` を許可してください（[macOS の自動起動](#macos)を参照）。
-- **ヒント:** B が A を `accept` する前でも、再試行のたびに B が接続を閉じるまでの間、A 側の `status` が一瞬 `connected` になることがあります。**B 側**で `herdvia status` を実行すれば、A が正式に承認されて接続した後にのみ接続済みとして表示されます。
+- **`path`:** 同一 LAN では最初から `direct`（直接通信）になり、別ネットワーク間では `relay`（リレー経由）で始まって通常は数秒以内に `direct` へ切り替わります。
+- **macOS のローカルネットワーク権限:** 同じ Wi-Fi / LAN 内にあるのに自動検出できない場合や `relay` のまま変わらない場合は、Mac の **システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia`（およびお使いのターミナル）を許可してください（[macOS の自動起動](#macos)を参照）。
 - **うまく動かない場合:** 両方のマシンで `herdvia doctor` を実行してください。各 `warn` や `fail` の行に、何をすべきかがそのまま表示されます（[`herdvia doctor` を実行する](#run-herdvia-doctor)を参照）。
+
+<a id="manual-pairing"></a>
+### 手動ペアリング
+
+対話型ターミナルを使わずにスクリプトで設定する場合や、`listen` / `connect` を使わず直接鍵を交換したい場合は、`id`、`allow`、`pending`、`accept` で手動ペアリングできます：
+
+1. **ID とフィンガープリントの確認 (`herdvia id`):** 1 行目に 64 文字の `EndpointId`、2 行目に 16 文字のフィンガープリント（例：`28af-63b6-258e-859d`）を表示します（初回実行時に `secret.key` を自動生成）。
+2. **マシン A でマシン B を許可 (`--outbound`):**
+   ```sh
+   herdvia allow B <BのEndpointId> --outbound
+   ```
+   先頭 16 文字が B の画面のフィンガープリントと一致しているか直接または別経路で照合します。方向オプションは `--outbound`（発信許可）、`--inbound`（着信許可）、`--both`（双方向）で、1 つの `EndpointId` に付けられる名前は 1 つだけです。
+3. **マシン B でマシン A を承認 (`--inbound`):** A のエージェントが B へ発信すると、B は未許可の鍵を拒否してメモリ上に記録します（`herdvia pending`）。**必ず A 自身の画面に表示されたフィンガープリント**（`pending` からそのまま書き写さないでください）を **B** で入力します：
+   ```sh
+   herdvia accept A <Aのfingerprint> --inbound
+   ```
+   *（または B で `herdvia allow A <AのEndpointId> --inbound` を実行しても構いません。手動ペアリングでは A の次の再試行まで最大約 30 秒かかることがあります。）*
+4. **マシン A の Herdr に登録:**
+   ```sh
+   hc machine add --via 'herdvia via B' --name B
+   ```
+   `hc` が `PATH` 上で `herdvia` を見つけられない場合は実行ファイルのフルパスを指定し、空白を含む場合はクォートしてください（macOS は `sh` 規則、Windows は `CommandLineToArgvW` のダブルクォート — Windows ではユーザー `PATH` に `herdvia` を入れて Herdr を再起動するのが最も簡単です）。
 
 ---
 
@@ -426,6 +395,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | コマンド | 説明 |
 |---|---|
+| `herdvia listen [<名前>]` | 接続先 PC で最大 5 分間対話型ペアリング要求を待機し、ローカルネットワークへ通知を送るとともに別ネットワーク用の 1 回限り `hvi1-...` 招待を表示し、6 桁の確認コードを表示して `[y/N]` で承認された場合のみ `--inbound` を付与します（`<名前>` 省略時は相手のサニタイズ済みホスト名）。拒否またはタイムアウト時は終了コード `1`。エージェントの起動が必要です。 |
+| `herdvia connect <名前> [<招待>]` | Herdr を動かす PC から LAN 自動検出または `<招待>`（`hvi1-...`）で待機中の接続先 PC とペアリングし、6 桁の確認コードを表示して相手が承認すると `--outbound` を付与したうえで `hc machine add --via ... --name <名前>` を自動実行します。拒否・タイムアウト・`hc` 登録失敗時（手動コマンドを表示）は終了コード `1`。エージェントの起動が必要です。 |
 | `herdvia id` | このマシンの `EndpointId`（1 行目）と 16 文字のフィンガープリント（2 行目）を表示します。`secret.key` がなければ生成します。 |
 | `herdvia allow <名前> <EndpointId> (--inbound \| --outbound \| --both)` | ピアを追加または更新し、保存した項目（`<名前> <EndpointId> <in\|out\|both>`）を出力します。別の名前で登録済みの `EndpointId` は拒否します。稼働中のエージェントには即座に反映されます（または次回エージェント起動時に反映）。 |
 | `herdvia revoke <名前>` | ピアを削除して `revoked <名前> <EndpointId>` を出力し、そのピアとの接続を即座に閉じて、その接続が起動した `herdr-core connect` プロセスを終了します（取り消せない影響については[セキュリティモデル](#security-model)を参照）。該当する名前のピアがなければ失敗します。同じ `EndpointId` が別の名前で残っている場合（以前のバージョンが作成した `peers` ファイル）は警告します。 |
@@ -495,7 +466,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 標準出力（`stdout`）に書き出される各行は `ok`、`warn`、`fail` のいずれかで始まり、`warn` と `fail` の行には同じ行内に対処法が示されます。ピア接続はピアごとに 1 行出力され、前の段階が失敗した場合はそれに依存する後続の点検が省略されます：データフォルダの点検が `fail` になるとエージェント点検とそれ以降の行はすべて省略され（Unix ソケットパス長の上限超過のみが原因である場合を除き、`secret.key` と `peers` も省略）、エージェントが応答しない場合は `relay`、ピア、`pending` の行が省略されます。失敗（`fail`）が 1 つもなければ終了コード `0`（警告のみでも `0`）、1 つでも失敗があれば `1` で終了します。引数エラーなどは他のコマンドと同様に `herdvia:` の 1 行を出力して `255` で終了します。
 
-- **読み取り専用の動作:** `doctor` はデータフォルダ、`secret.key`、`peers`、自動起動の登録、エージェントの状態を作成・変更しません。そのため Windows で他のアカウントにアクセス権が付与されているデータフォルダ、`secret.key`、`peers` は、データフォルダを準備するコマンドが権限を制限するまで `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`）のままになります — 該当するコマンドは `herdvia id`、`allow`、`accept`、`revoke`、およびエージェントの起動であり、`status`、`pending`、`doctor` は何も変更しません。Windows 版の `v0.1.2` はデータフォルダと内部ファイルの権限を変更せず、ユーザープロファイルから継承された既定の権限（他のアカウントに読み取りを許可している場合がある）をそのまま使っていたため、`v0.1.2` からアップグレードした PC では、新しいバージョンで上記コマンドのいずれかを実行するまで 3 項目すべてで警告が表示されることがあります（インストールスクリプトは `herdvia id` を実行します）。実行後はフォルダと 2 つのファイルが現在のユーザー・SYSTEM・Administrators のみにアクセスを許可する状態となり、3 行とも `ok` になります。
+- **読み取り専用の動作:** `doctor` はデータフォルダ、`secret.key`、`peers`、自動起動の登録、エージェントの状態を作成・変更しません。そのため Windows で他のアカウントにアクセス権が付与されているデータフォルダ、`secret.key`、`peers` は、データフォルダを準備するコマンドが権限を制限するまで `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`）のままになります — 該当するコマンドは `herdvia id`、`listen`（承認時）、`connect`（承認時）、`allow`、`accept`、`revoke`、およびエージェントの起動であり、`status`、`pending`、`doctor` は何も変更しません。Windows 版の `v0.1.2` はデータフォルダと内部ファイルの権限を変更せず、ユーザープロファイルから継承された既定の権限（他のアカウントに読み取りを許可している場合がある）をそのまま使っていたため、`v0.1.2` からアップグレードした PC では、新しいバージョンで上記コマンドのいずれかを実行するまで 3 項目すべてで警告が表示されることがあります（インストールスクリプトは `herdvia id` を実行します）。実行後はフォルダと 2 つのファイルが現在のユーザー・SYSTEM・Administrators のみにアクセスを許可する状態となり、3 行とも `ok` になります。
 - **タイムアウト:** 実行する外部プログラムは `herdr-core --version`（2 秒制限）のみです。エージェントへの各リクエストには 3 秒の制限があり、エージェントが稼働中でも 3 秒以内に応答しない場合は `fail agent: it may be running, but it did not answer within 3 seconds; …` を出力して残りのエージェント点検を省略します。後続のピア状態や `pending` のリクエストが 3 秒を超えた場合はその行が `warn` になります（`status` がタイムアウトした場合は `pending` を省略）。
 - **古いバージョンのエージェント:** `herdvia doctor` は `v0.1.2` で追加されました。それより前のバージョンのエージェントは `doctor` リクエストを認識しないため、`doctor` は稼働中のエージェントがこの実行ファイルより古く再起動が必要であると警告し（`relay` は省略しつつピアと `pending` は点検します）、エージェント側のログには `unknown CONTROL request` が 1 行記録されます。
 
@@ -521,6 +492,7 @@ ok   pending: no rejected connection attempts
 
 | 症状 | 主な原因 | 対処法 |
 |---|---|---|
+| 同じ Wi-Fi 内なのに `herdvia connect <名前>` が相手 PC を自動検出できない | ゲスト Wi-Fi の端末分離、ファイアウォールによる UDP `48721` 遮断、または macOS のローカルネットワーク権限未許可 | `herdvia listen` が表示した `hvi1-...` 招待を直接渡すか（`herdvia connect <名前> <招待>`）、ローカルネットワーク権限を許可する |
 | B で `herdvia pending` を実行しても空のまま | A のエージェント未起動、A で `--outbound` 未設定、または再試行の待機中 | A で `herdvia status` が動くか、`herdvia allow B <B_ID> --outbound` 済みかを確認し、最大 30 秒待ってから再度 `herdvia pending` を実行 |
 | 同じ Wi-Fi 内なのに `status` がずっと `relay` のまま | macOS 15+ で LaunchAgent のローカルネットワークアクセスが未許可 | Mac の **システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` をオンにする |
 | Homebrew で `herdr-core` を入れた Mac で Herdr に `herdr-core is not installed here` と表示される | macOS の LaunchAgent は `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` のみを検索する | `mkdir -p ~/.local/bin && ln -s "$(command -v herdr-core)" ~/.local/bin/herdr-core` を実行 |
@@ -591,6 +563,7 @@ ok   pending: no rejected connection attempts
   4. `herdvia id` を実行して新しい ID を作成します。
   5. `herdvia agent install` を実行します（または `herdvia agent` を起動し直します）。
   6. すべてのピアと改めてペアリングします。
+- **対話型ペアリング (`listen` / `connect`):** ペアリングはリモートコマンドを一切実行せず `pending` にも記録されない専用 ALPN（`herdvia/pair/1`）上で動作し、`herdvia listen` が待機中のときのみハンドシェイクを受け付けます。各 `listen` セッションは 5 分で失効する 128 ビットの 1 回限りトークンを生成し、最初の有効なハンドシェイク証明で即座に消費されるため、同一セッションに対する繰り返し推測はできません。双方は QUIC TLS 1.3 exporter（`herdvia-pair-v1`）と commit-reveal 乱数交換から 6 桁の確認コード（`NNN-NNN`、約 20 ビット）を導出し、接続先 PC で人間が両画面の一致を確認して `y` を入力しない限り `peers` は一切変更されません。付与される権限も接続先 PC では `--inbound` のみ、操作側 PC では `--outbound` のみです（自動で `--both` にはなりません）。
 - **フィンガープリントと `pending` / `accept`:** フィンガープリントは目視照合のために 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）のみを表示したもので、`herdvia` が保存・検証するのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了したピアのみをメモリ上に最大 16 件・10 分間保持し、`accept` は接頭辞の重複で候補が複数ある場合や、リストが満杯の場合（この PC の `EndpointId` を知る誰もが埋められるため）をいずれも拒否します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
 
 **脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
@@ -605,6 +578,7 @@ ok   pending: no rejected connection attempts
 - **公開リレーサーバー（[n0](https://n0.computer)）:** 各エージェントはホームリレーに接続し、接続確立の仲介や、直接通信できない場合のフォールバック経路として使用します。
 - **DNS アドレス検索（`dns.iroh.link`）:** `EndpointId` から互いを見つけられるよう、各エージェントは自身の **`EndpointId` とホームリレー URL** を含む署名付きレコードを公開サービスへ登録します。
 - **ルーターのポートマッピング:** ルーターが対応していれば UPnP、PCP、NAT-PMP によるポート開放を要求し、直接接続を補助します。
+- **フォアグラウンド LAN ペアリング検出:** `herdvia listen` または招待指定なしの `herdvia connect` がフォアグラウンドで実行されている間のみ、UDP ポート `48721`（IPv4 マルチキャスト `239.255.77.86` およびブロードキャスト）で接続先の `EndpointId`、エージェント QUIC ポート、1 回限り LAN トークン、サニタイズ済みホスト名を含む短い検出パケットを送受信します。常駐する `herdvia agent` はこの UDP ポートを開きません。
 - **IP アドレスと `EndpointId`:** アドレス検索サービスに登録されるのはホームリレー URL だけですが、この PC の `EndpointId` を知る者はリレー経由でこの PC に接続でき、`herdvia` がその接続を拒否する前に、`iroh` がこの PC の直接接続用アドレス候補（LAN アドレスやポートマッピングされたグローバルアドレスを含む）をその相手に送ることがあります。そのため、この PC の現在の IP アドレスを知られる可能性があります。`EndpointId` は秘密ではありませんが、公開の場には掲載しないでください。
 - **暗号化とメタデータ:** セッション通信はすべて QUIC/TLS によりエンドツーエンドで暗号化され、リレーサーバーが中身を読むことはできません。ただし n0 によれば、IP アドレス、接続時刻、転送データ量などのメタデータはリレー側から観測可能です。
 - **サービス品質に関する注意:** n0 の公開リレーは**開発および趣味用途（development and hobby use only）**とされており、SLA や稼働保証はなくレート制限があります。詳細は iroh ドキュメントの [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) と [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup) を参照してください。
@@ -638,7 +612,7 @@ ok   pending: no rejected connection attempts
 | **データフォルダ（Linux）** | `$XDG_DATA_HOME/herdvia`（既定値 `~/.local/share/herdvia`） |
 | **保存先の上書き環境変数** | `HERDVIA_DIR=<パス>` でデータフォルダを変更可能（絶対パスであること。`hc` が起動する `via` を含む全コマンドに同じ値を渡す必要あり。`agent install` とは併用不可） |
 | **`secret.key`** | このマシンの 32 バイト Ed25519 秘密鍵（データフォルダ内） |
-| **`peers`** | ピア許可リスト（1 行に `<名前> <EndpointId> <in\|out\|both>`、`allow`・`accept`・`revoke` で管理） |
+| **`peers`** | ピア許可リスト（1 行に `<名前> <EndpointId> <in\|out\|both>`、`listen`・`connect` または `allow`・`accept`・`revoke` で管理） |
 | **`agent.sock`** | macOS/Unix のローカル Unix ドメインソケット（Windows は代わりにユーザー SID 別の名前付きパイプを使用） |
 | **`agent.lock`** | Windows のみ。エージェントが実行中にロックするファイルで、1 つのデータフォルダでエージェントが 1 つだけ動くようにします。エージェント停止後も残ります。 |
 | **ログ（macOS 自動起動時）** | `~/Library/Logs/herdvia.log` |

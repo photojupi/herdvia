@@ -33,9 +33,9 @@ jobs:
       - name: Unit tests
         run: cargo test --locked --lib --bins
 
-      # The integration tests in tests/ that never connect two agents. Every other one needs the
-      # public n0 relay and address lookup to connect, so it runs in integration.yml instead of
-      # here. Listed by exact name, so a new test joins this step only when added here.
+      # The integration tests in tests/ that do not need the public n0 relay or address lookup.
+      # Every other one needs n0 to connect, so it runs in integration.yml instead of here.
+      # Listed by exact name, so a new test joins this step only when added here.
       - name: Integration tests (no connection)
         run: |
           cargo test --locked --test doctor -- --exact \
@@ -65,6 +65,11 @@ jobs:
             stale_socket_means_immediate_255 \
             permissions_when_agent_creates_dir \
             permissions_when_dir_is_too_open
+          cargo test --locked --test pair -- --exact \
+            listen_and_connect_fail_without_running_agent \
+            connect_refuses_duplicate_peer_name_before_dialing \
+            lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic \
+            declining_or_eof_on_listen_leaves_peers_empty_and_exits_one
 
   windows-cross:
     runs-on: ubuntu-latest
@@ -217,24 +222,20 @@ jobs:
           cat "$work/out4"
           check grep -qxF "Installed herdvia $version at $exe" "$work/out4"
           # The printed commands, run as printed. Without an agent, herdvia itself fails with 255.
-          pending=$(grep -x '  .* pending' "$work/out4" || true)
-          via=$(grep -x '  hc machine add --via .* --name <name>' "$work/out4" | sed 's/<name>/B/g' || true)
-          check test -n "$pending"
-          check test -n "$via"
+          listen=$(grep -x '  .* listen' "$work/out4" || true)
+          connect=$(grep -x '  .* connect <name>' "$work/out4" | sed 's/<name>/B/g' || true)
+          check test -n "$listen"
+          check test -n "$connect"
           code=0
-          HERDVIA_DIR="$work/d" sh -c "$pending" > "$work/pending.out" 2>&1 || code=$?
-          cat "$work/pending.out"
+          HERDVIA_DIR="$work/d" sh -c "$listen" > "$work/listen.out" 2>&1 || code=$?
+          cat "$work/listen.out"
           check test "$code" = 255
-          check grep -q '^herdvia: ' "$work/pending.out"
-          # hc runs the --via value as an sh line, with its remote line appended as one argument.
-          value=$(sh -c 'hc() { printf "%s" "$4"; }; '"$via")
-          echo "--via value: $value"
-          check test "$(sh -c "set -- $value; \"\$1\" --version")" = "herdvia $version"
+          check grep -q '^herdvia: ' "$work/listen.out"
           code=0
-          HERDVIA_DIR="$work/d" sh -c "$value 'true'" > "$work/via.out" 2>&1 || code=$?
-          cat "$work/via.out"
+          HERDVIA_DIR="$work/d" sh -c "$connect" > "$work/connect.out" 2>&1 || code=$?
+          cat "$work/connect.out"
           check test "$code" = 255
-          check grep -q '^herdvia: ' "$work/via.out"
+          check grep -q '^herdvia: ' "$work/connect.out"
 
           echo "--- doctor"
           # Read-only. No herdr-core and no agent here, so it reports failures and exits with 1.

@@ -690,7 +690,10 @@ mod tests {
         let p3 = grant_inbound(dir.path(), None, &long_name, id_3).unwrap();
         assert!(valid_name(&p3.name));
         assert!(p3.name.len() <= 32);
-        assert_eq!(p3.name, format!("{}-{}", "m".repeat(27), &id_3.to_string()[..4]));
+        assert_eq!(
+            p3.name,
+            format!("{}-{}", "m".repeat(27), &id_3.to_string()[..4])
+        );
     }
 
     #[test]

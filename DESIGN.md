@@ -226,14 +226,14 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 
 ### 로컬 통신 추가
 
-tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending`, `doctor` 중 하나다(`pending`과 `doctor`는 나중에 추가).
+tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending`, `doctor`, `listen`(`\0`과 인자 허용), `connect`(`\0`과 인자 허용) 중 하나다(`pending`, `doctor`, `listen`, `connect`는 나중에 추가).
 그 밖의 payload는 프레임을 읽는 단계에서 프로토콜 오류로 보고 연결을 끊는다.
-에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. 네트워크 스트림에서는 CONTROL을 받지 않는다.
+단발 요청(`reload`, `status`, `pending`, `doctor`)에 에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. `listen`과 `connect`는 STDIN·STDOUT·ERROR·EXIT 프레임으로 대화한다(아래 "대화형 페어링: listen / connect"). 네트워크 스트림에서는 CONTROL을 받지 않는다.
 
 ### M3에 넣지 않는 것
 
 초대 코드, 자체 중계 서버 설정, 자동 시작, Windows, 키 교체, `hc machine add` 자동 실행.
-자동 시작은 M4, Windows는 M5에서 넣었다. 초대 코드는 지금도 없고, 대신 나중에 `pending`/`accept`를 넣었다(아래).
+자동 시작은 M4, Windows는 M5에서 넣었다. 피어 등록 간소화는 먼저 `pending`/`accept`를 넣었고, 나중에 LAN 자동 발견·일회용 초대 문자열·`hc machine add` 자동 실행을 묶은 `listen`/`connect`를 넣었다(아래).
 키 교체 명령도 없다. 손으로 하는 순서(모든 피어에서 이 PC의 옛 항목을 revoke, 에이전트 중지, `secret.key` 삭제, `herdvia id`,
 `agent install`, 다시 페어링)를 README에 적는다. 키를 백업에서 복원했거나 다른 PC로 옮긴 경우도 교체 대상이다.
 
@@ -454,6 +454,45 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 목록에 보인다는 것은 신뢰의 근거가 아니다. 이 PC의 EndpointId를 아는 누구나 목록에 나타날 수 있다.
   그래서 지문은 대기 목록이 아니라 상대 PC 화면에서 읽는다. 목록의 지문을 옮겨 치면 대조가 되지 않는다.
 
+## 대화형 페어링: listen / connect
+
+| 명령 | 역할 |
+|---|---|
+| `herdvia listen [<이름>]` | 연결될 대상 PC(받는 쪽)에서 5분 동안 페어링 요청을 기다리고, 6자리 확인 번호를 대조해 `--inbound` 승인 여부를 묻는다 |
+| `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC(거는 쪽)에서 LAN 자동 발견 또는 일회용 초대 문자열로 대상 PC와 페어링하고, `--outbound` 등록 뒤 `hc machine add`까지 수행한다 |
+
+기존 `id`, `allow`, `pending`, `accept`는 비대화형·수동 등록용으로 그대로 둔다. `listen`과 `connect`는 처음 설치한 사용자가 긴 EndpointId 복사, 방향 플래그(`--inbound`/`--outbound`) 판단, 최대 30초 재시도 대기, `hc machine add --via ...` 따옴표 처리를 직접 하지 않게 하려는 것이다.
+
+### 흐름과 종료 코드
+
+1. 두 명령 모두 시작할 때 `herdr-core` 설치 여부를 `doctor` 5번과 같은 기준으로 확인해, 없거나 경로·버전이 어긋나면 표준 오류에 `warning: ...`을 먼저 쓴다(실행을 막지는 않는다).
+2. 받는 쪽 B에서 `herdvia listen [<이름>]`을 실행한다. 에이전트가 떠 있어야 하며, 이미 다른 `listen`이 돌고 있으면 거부한다(255).
+   에이전트는 5분짜리 일회용 비밀 두 개(`invite_secret` 16바이트, `lan_token` 16바이트)를 메모리에만 만들고, CLI는 원격 연결용 초대 문자열 `hvi1-<base32>`를 화면에 출력하는 동시에 포그라운드 UDP 소켓으로 같은 LAN에 신호를 보낸다.
+3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 `peers`에 있으면 다이얼 전에 거부한다(255).
+   - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대면 바로 연결하고, 여러 대면 번호 선택을 묻고, 0대면(터미널일 때) 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(비대화형 표준 입력이면 255로 끝낸다).
+   - `<초대>`를 주면 LAN 탐색 없이 초대에 들어 있는 `EndpointId`로 바로 건다(외부망이면 공개 릴레이·주소 조회 경유).
+4. 두 에이전트는 전용 ALPN `herdvia/pair/1` 위에서 TLS 1.3 exporter에 묶인 commit-reveal로 6자리 확인 번호(`NNN-NNN`, `000-000`~`999-999`)를 계산해 양쪽 화면에 동시에 보여 준다.
+5. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면:
+   - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 `-2`, `-3`…을 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
+   - B가 승인 응답과 자기 호스트명을 보내면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
+   - A의 CLI는 최대 5초 동안 `status`가 연결됨을 보일 때까지 짧게 기다린 뒤, 현재 실행 파일 경로를 OS 규칙(Unix는 `sh` 단일 인용, Windows는 `CommandLineToArgvW` 인용)에 맞게 감싼 `--via` 값으로 `hc machine add --via <...> --name <이름>`을 직접 실행한다(셸을 거치지 않는다).
+6. 종료 코드:
+   - `0`: 양쪽 피어 등록(거는 쪽은 `hc machine add`까지) 성공.
+   - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 5분 대기 시간 초과, 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
+   - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 초대 문자열, 프로토콜·인증 실패.
+
+### 프로토콜과 보안 경계
+
+- **ALPN 격리 (`herdvia/pair/1`)**: 원격 명령을 실행하는 `herdvia/1`과 완전히 분리한다. 에이전트의 `Policy::after_handshake`는 현재 활성 `listen` 세션이 열려 있을 때만 `herdvia/pair/1` 인바운드 핸드셰이크를 통과시키고, 평소에는 즉시 거부하며 `pending` 목록에도 남기지 않는다. 한 번에 스트림 1개만 받고 단계별 시간 제한(인사·응답 10초, 사용자 승인 대기 최대 5분)을 둔다.
+- **포그라운드 전용 LAN 발견**: 상주 `herdvia agent`는 LAN 발견용 UDP 포트를 열지 않는다. `herdvia listen`과 `herdvia connect` CLI 프로세스가 실행되는 짧은 동안에만 UDP 포트 `48721`(IPv4 멀티캐스트 `239.255.77.86`, 브로드캐스트 `255.255.255.255`, 루프백 `127.0.0.1`)로 `HDVD1`(탐색 질의)과 `HDVB1`(비콘: 버전, 에이전트 QUIC 포트, `EndpointId`, `lan_token`, 정화된 호스트명)을 주고받는다. 게스트 Wi-Fi 클라이언트 격리나 방화벽으로 UDP가 막혀 있으면 `hvi1-...` 초대 문자열로 똑같이 연결된다.
+- **일회용 초대 문자열 (`hvi1-...`)**: `target_id(32바이트) || invite_secret(16바이트)` 48바이트를 소문자 무패딩 RFC 4648 Base32(77자)로 인코딩해 `hvi1-` 뒤에 붙인 82자 토큰이다(대소문자 무시). 별도 랑데부 서버를 두지 않고 공개키와 128비트 일회용 비밀을 함께 옮긴다.
+- **TLS 채널 바인딩과 1회용 commit-reveal SAS**:
+  - 양쪽 에이전트는 QUIC 연결의 TLS 1.3 exporter(`export_keying_material`, 라벨 `"herdvia-pair-v1"`, 빈 컨텍스트, 32바이트)를 뽑는다. 중간자(MITM)가 양쪽과 각각 다른 TLS 세션을 맺으면 두 exporter 값이 달라진다.
+  - A는 먼저 `auth_proof = BLAKE3("herdvia-pair-auth-v1" || auth_kind || secret || exporter)`와 `commit_a = BLAKE3("herdvia-pair-commit-v1" || nonce_a)`를 보낸다. B는 `auth_proof`가 현재 활성 `listen`의 `lan_token` 또는 `invite_secret`과 일치하는지 상수 시간에 검증하고, 틀리면 토큰을 소모하지 않고 끊는다(아무나 패킷을 보내 `listen`을 깨뜨리지 못하게 하려는 것이다).
+  - `auth_proof`가 맞으면 B는 그 즉시 해당 `listen` 슬롯을 **소모(1회용)** 처리해 동시·재시도 접속을 막고 `nonce_b`를 보낸다. A가 `nonce_a`를 공개해 `commit_a`와 일치하면 양쪽 모두 `BLAKE3("herdvia-pair-sas-v1" || exporter || client_id || server_id || nonce_a || nonce_b)`의 앞 4바이트(`u32::from_be_bytes(...) % 1_000_000`)로 6자리 번호를 얻는다.
+  - commit-reveal로 어느 한쪽도 상대 난수를 보고 자기 난수를 고르지 못하며, 활성 슬롯이 이미 소모되었으므로 공격자가 중간에 끼어들어도 1회(`1 / 1,000,000`) 이상 번호 일치를 시도할 수 없다. 새 시도를 하려면 받는 쪽 사람이 `herdvia listen`을 다시 실행해야 한다.
+- **최소 권한 유지**: `listen`은 `--inbound`만, `connect`는 `--outbound`만 부여한다(기존 반대 방향 권한이 이미 있을 때만 `both`가 된다). 자동으로 `--both`를 주지 않는다.
+
 ## 설치 스크립트
 
 - `scripts/install.sh`(macOS arm64, POSIX sh)와 `scripts/install.ps1`(Windows x64, PowerShell 5.1·7)을 릴리스에 함께 올리고 `SHA256SUMS`에도 넣는다.
@@ -479,7 +518,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   Dependabot은 github-actions만 매주 확인해 고정 SHA를 올리는 PR을 연다(cargo 의존성 PR은 열지 않는다).
 - 의존성 권고는 audit.yml이 매주, 수동 실행, main에서 `Cargo.lock`이 바뀔 때 `cargo audit --deny warnings`로 확인한다(unmaintained·yanked도 실패).
   Linux 전용 빌드 도구인 paste(RUSTSEC-2024-0436)만 무시한다. 새 권고가 무관한 PR을 깨지 않도록 pull_request에는 걸지 않는다.
-- CI의 macOS 잡은 단위 테스트와, 두 에이전트를 잇지 않는 통합 테스트(이름으로 나열한다)를 PR마다 돌린다.
+- CI의 macOS 잡은 단위 테스트와, 공개 n0 릴레이·주소 조회 없이 도는 통합 테스트(루프백 LAN 페어링 포함, 이름으로 나열한다)를 PR마다 돌린다.
   나머지 통합 테스트는 공개 n0 릴레이와 주소 조회가 필요하고 연결을 30~45초까지 기다리므로, integration.yml이 매주와 수동 실행 때 전체를 돌린다(PR 필수 검사가 아니다).
   Windows 단위 테스트는 M5a의 windows 잡이다.
 

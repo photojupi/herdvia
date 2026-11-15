@@ -183,19 +183,14 @@ try {
 
     Write-Host ""
     Write-Host "Next steps"
-    Write-Host "To connect from this PC to another one, run here:"
-    Write-Host "  $run allow <name> <EndpointId of the other machine> --outbound"
-    Write-Host "Then accept this PC on the other machine (herdvia pending and herdvia accept, as below), and run here:"
-    if ($exe -match "[\s']") {
-        Write-Host "  hc machine add --via 'herdvia via <name>' --name <name>"
-        Write-Host "  (In a new PowerShell window, after restarting Herdr, so that herdvia is found on your PATH. The full path contains spaces or quotes and would have to be quoted inside --via; see step 5 of the Quick start in the README.)"
-    } else {
-        Write-Host "  hc machine add --via '$exe via <name>' --name <name>"
-    }
-    Write-Host "To let another machine connect to this one, allow this PC on it with --outbound and run its agent. Its connection attempts then show up here:"
-    Write-Host "  $run pending"
-    Write-Host "  $run accept <name> <fingerprint> --inbound"
-    Write-Host "Check each fingerprint against what herdvia id prints on the other machine, in person or over a channel other than the one you copied it through."
+    Write-Host "If another machine (running Herdr) will control this PC, wait for pairing here:"
+    Write-Host "  $run listen"
+    Write-Host "If this PC runs Herdr and will control another machine, run 'herdvia listen' there first, then run here:"
+    Write-Host "  $run connect <name>"
+    Write-Host "On different networks, pass the hvi1-... invite printed by herdvia listen:"
+    Write-Host "  $run connect <name> <invite>"
+    Write-Host "Check that both screens show the same 6-digit verification code before approving on the target machine."
+    Write-Host "For manual pairing (allow / pending / accept), see https://github.com/photojupi/herdvia#manual-pairing"
 } finally {
     try { Remove-Item -LiteralPath $tmp -Recurse -Force } catch { }
     if (Test-Path -LiteralPath $staged) { try { Remove-Item -LiteralPath $staged -Force } catch { } }

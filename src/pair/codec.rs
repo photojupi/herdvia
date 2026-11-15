@@ -158,13 +158,12 @@ pub fn derive_sas(
 
 pub fn sanitize_hostname(raw: &str, fallback: EndpointId) -> String {
     let trimmed = raw.trim().trim_end_matches('.');
-    let stripped = if trimmed.len() >= 6
-        && trimmed[trimmed.len() - 6..].eq_ignore_ascii_case(".local")
-    {
-        &trimmed[..trimmed.len() - 6]
-    } else {
-        trimmed
-    };
+    let stripped =
+        if trimmed.len() >= 6 && trimmed[trimmed.len() - 6..].eq_ignore_ascii_case(".local") {
+            &trimmed[..trimmed.len() - 6]
+        } else {
+            trimmed
+        };
 
     let mut out = String::new();
     let mut need_dash = false;
@@ -379,10 +378,8 @@ mod tests {
 
         let mut flipped = encoded.into_bytes();
         flipped[10] = if flipped[10] == b'a' { b'b' } else { b'a' };
-        let (tampered_id, tampered_secret) =
-            decode_invite(&String::from_utf8(flipped).unwrap()).unwrap_or_else(|_| {
-                (SecretKey::generate().public(), [0u8; 16])
-            });
+        let (tampered_id, tampered_secret) = decode_invite(&String::from_utf8(flipped).unwrap())
+            .unwrap_or_else(|_| (SecretKey::generate().public(), [0u8; 16]));
         assert_ne!((tampered_id, tampered_secret), (id, secret));
     }
 
@@ -491,9 +488,7 @@ mod tests {
                 nonce_b: [5u8; 32],
                 target_name: "home-server".into(),
             },
-            PairMsg::Reveal {
-                nonce_a: [6u8; 32],
-            },
+            PairMsg::Reveal { nonce_a: [6u8; 32] },
             PairMsg::Approved,
             PairMsg::Rejected {
                 reason: "busy".into(),
