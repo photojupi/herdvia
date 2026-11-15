@@ -647,6 +647,28 @@ pub fn says_connected(line: &str) -> bool {
         .any(|p| l.contains(p))
 }
 
+/// `node` 의 status 가 성공하고 stdout 에 `needle` 이 나올 때까지 기다리고 그 결과를 돌려준다.
+pub fn wait_status(node: &Node, needle: &str, timeout: Duration) -> Out {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let o = node.status();
+        if o.code() == Some(0) && o.out().contains(needle) {
+            return o;
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "[{}] {timeout:?} 안에 status 에 {needle:?} 가 보이지 않음. 코드 {:?}\nstdout:\n{}stderr:\n{}로그:\n{}",
+                node.label,
+                o.code(),
+                o.out(),
+                o.err(),
+                node.agent_log()
+            );
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// `node` 의 status 가 `peer` 를 연결됨으로 보일 때까지 기다린다.
 /// status 형식을 해석하지 못하면 via 왕복으로 연결을 확인하고 경고만 남긴다
 /// (형식 자체는 status 전용 테스트가 따로 본다).

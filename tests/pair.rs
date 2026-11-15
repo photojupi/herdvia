@@ -311,6 +311,69 @@ fn lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic() {
     assert_eq!(via_out.stdout, b"paired over lan");
 }
 
+/// Two real agents with no relay: once B revokes A, A's next dial is refused, and A's status
+/// shows the 403 reason B's agent sent below the usual table.
+#[test]
+fn status_shows_the_reason_a_peer_gave_for_rejecting_this_pc() {
+    let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut a = Node::new("rej-a");
+    let mut b = Node::new("rej-b");
+    let (a_id, _) = a.id();
+    let b_fp = b.id().1;
+    install_fake_hc(&a);
+    b.start_agent();
+    a.start_agent();
+
+    // Pairing over the LAN gives A the address of B, so A's agent dials it without n0.
+    let mut listen_proc = Interactive::spawn(&b, &["listen"]);
+    listen_proc.wait_for_substr("hvi1-", Duration::from_secs(10));
+    let mut connect_proc = Interactive::spawn(&a, &["connect", "home"]);
+    let menu = connect_proc.wait_for_substr("or 0]:", Duration::from_secs(10));
+    connect_proc.send_line(&lan_choice(&menu, &b_fp));
+    connect_proc.wait_for_substr("[y/N]:", Duration::from_secs(10));
+    listen_proc.wait_for_substr("Allow? [y/N]:", Duration::from_secs(10));
+    connect_proc.send_line("y\n");
+    connect_proc.wait_for_substr(
+        "Waiting for approval on the other PC...",
+        Duration::from_secs(10),
+    );
+    listen_proc.send_line("y\n");
+    let (b_code, _, b_err) = listen_proc.finish(Duration::from_secs(10));
+    let (a_code, _, a_err) = connect_proc.finish(Duration::from_secs(10));
+    assert_eq!(b_code, 0, "listen stderr: {b_err}");
+    assert_eq!(a_code, 0, "connect stderr: {a_err}");
+
+    let b_peers = b.peers_text();
+    let name_on_b = b_peers
+        .lines()
+        .find(|l| l.contains(&a_id))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("A is not in B's peers:\n{b_peers}"))
+        .to_owned();
+    b.revoke(&name_on_b);
+
+    let o = common::wait_status(
+        &a,
+        "\nhome: rejected by the peer (403 peer not allowed); on home run herdvia pending, then herdvia accept. Retrying in ",
+        Duration::from_secs(30),
+    );
+    assert_eq!(o.err(), "", "stdout: {}", o.out());
+    let out = o.out();
+    let (table, reasons) = out.split_once("\n\n").expect("no reason lines");
+    assert_eq!(
+        table, "name permission connection path rtt\nhome out disconnected - -",
+        "{out}"
+    );
+    let lines: Vec<_> = reasons.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    let secs = lines[0]
+        .rsplit_once(" Retrying in ")
+        .and_then(|(_, rest)| rest.strip_suffix("s."))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(secs.parse::<u64>().is_ok(), "{out}");
+    assert_eq!(lines[1], "Run herdvia agent reload to retry now.", "{out}");
+}
+
 #[test]
 fn declining_or_eof_on_listen_leaves_peers_empty_and_exits_one() {
     let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());

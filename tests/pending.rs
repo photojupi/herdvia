@@ -93,6 +93,12 @@ fn accept_registers_the_pending_caller_and_it_connects() {
         "마지막으로 본 시각: {fields:?}"
     );
     assert_eq!(b.invoked(), None, "수락 전인데 A 의 줄이 B 에서 실행됨");
+    // A 의 status 는 B 가 거부한 이유와 할 일을 보인다.
+    wait_status(
+        &a,
+        "\nb: rejected by the peer (403 peer not allowed); on b run herdvia pending, then herdvia accept. Retrying in ",
+        Duration::from_secs(30),
+    );
 
     // 다른 화면을 보고 손으로 치는 값이므로 대문자·대시 없음도 받는다.
     let typed = fingerprint_of(&a_id).replace('-', "").to_uppercase();
