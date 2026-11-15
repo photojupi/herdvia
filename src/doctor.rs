@@ -510,10 +510,16 @@ fn peer_checks(status: &str, detail: Option<&[status::Row]>, macos: bool) -> Vec
             continue;
         };
         let peer = format!("peer {name} ({permission})");
+        let detail = detail.and_then(|rows| rows.iter().find(|r| r.name == name));
+        // The detail is asked for after the status, so a peer may have connected in between.
+        let (state, path, rtt) = match detail {
+            Some(row) if row.state == status::State::Connected => {
+                ("connected", row.path.as_str(), row.rtt.as_str())
+            }
+            _ => (state, path, rtt),
+        };
         if state != "connected"
-            && let Some(line) = detail
-                .and_then(|rows| rows.iter().find(|r| r.name == name))
-                .and_then(status::human)
+            && let Some(line) = detail.and_then(status::human)
         {
             let reason = line.strip_prefix(&format!("{name}: ")).unwrap_or(&line);
             checks.push(check(Level::Warn, format!("{peer}: {reason}")));
@@ -702,13 +708,18 @@ pub async fn run() -> io::Result<i32> {
             let mut stuck = status.is_none();
             match status {
                 Some(Ok(status)) => {
-                    // Without it, as from an agent that predates it, the lines say less.
-                    let detail = match ask(&dir, "status-detail").await {
-                        Some(Ok(reply)) => status::parse(&reply),
-                        Some(Err(_)) => None,
-                        None => {
-                            stuck = true;
-                            None
+                    // Without it, as from an agent that predates it, the lines say less. An
+                    // agent that did not know doctor does not know it either.
+                    let detail = if matches!(reply, AgentReply::Old) {
+                        None
+                    } else {
+                        match ask(&dir, "status-detail").await {
+                            Some(Ok(reply)) => status::parse(&reply),
+                            Some(Err(_)) => None,
+                            None => {
+                                stuck = true;
+                                None
+                            }
                         }
                     };
                     for c in peer_checks(&status, detail.as_deref(), cfg!(target_os = "macos")) {
@@ -1751,6 +1762,28 @@ mod tests {
                 "warn peer d (both): could not reach it (timed out); its agent may be off or offline. Retrying in 3s.",
                 // Not in the detail (the list changed between the two requests): today's wording.
                 "warn peer e (out): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_peer_that_connected_after_the_status_is_reported_connected() {
+        let status = "name permission connection path rtt\na out disconnected - -\nb both disconnected - -\nc out disconnected - -\n";
+        let detail = status::parse(&format!(
+            "{}\na out connected direct 1.25ms - -\nb both connected relay 238.82ms - -\nc out connected unknown - - -\n",
+            status::HEADER
+        ))
+        .unwrap();
+        let texts: Vec<_> = peer_checks(status, Some(&detail), false)
+            .into_iter()
+            .map(|c| line(&c))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "ok   peer a (out): connected directly, 1.25ms",
+                "ok   peer b (both): connected through a relay, 238.82ms",
+                "ok   peer c (out): connected, path unknown",
             ]
         );
     }

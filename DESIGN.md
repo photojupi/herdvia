@@ -833,6 +833,8 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
      표는 여전히 `status` 답으로 판단하고, `status-detail`을 따로 요청한다. 답을 해석할 수 있으면 연결되지 않은 피어의 warn 줄은 `herdvia status`의 이유 줄에서 앞의 이름을 뺀 문구를 쓴다
      (`warn peer <이름> (<in|out|both>): <이유 줄>`, 예: `warn peer win1 (out): rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s.`).
      `status-detail`을 모르는 에이전트이거나 두 요청 사이에 목록이 바뀌어 그 피어가 답에 없으면 위의 예전 문구다.
+     두 요청 사이에 연결되어 `status-detail`의 그 피어 줄이 connected면, 그 줄의 경로와 rtt로 위의 connected 문구(ok)를 쓴다.
+     7에서 `doctor`를 몰라 구버전으로 판정한 에이전트에는 `status-detail`을 보내지 않는다(그 에이전트는 이것도 몰라 연결을 끊는다).
   9. 대기 중인 접속 시도. `pending` 응답의 항목 수를 ok 한 줄로 쓰고, 1개 이상이면 `pending`으로 확인하고 `accept`로 수락하라고 안내한다.
 
   relay 줄과 8, 9는 에이전트가 응답할 때만 쓴다(relay 줄은 `doctor`에 답하는 에이전트일 때만).

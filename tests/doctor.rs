@@ -412,18 +412,21 @@ fn warns_within_the_timeout_when_status_or_pending_does_not_answer() {
 #[test]
 fn an_old_agent_is_told_apart_from_a_stuck_one() {
     // doctor 에서 끊고 status 에 답하면 구버전이다. 기다리지 않는다.
+    // 구버전은 status-detail 도 모르므로 묻지 않는다(물으면 여기서 멈춘다).
     let n = Node::new("X");
-    fake_agent(&n, |r| {
-        if r == "doctor" {
-            Act::Drop
-        } else {
-            Act::Answer
-        }
+    fake_agent(&n, |r| match r {
+        "doctor" => Act::Drop,
+        "status-detail" => Act::Hang,
+        _ => Act::Answer,
     });
     let (o, took) = timed_doctor(&n);
     let l = lines(&o);
     find(&l, "warn agent: running, but older than this executable");
     find(&l, "ok   pending: no rejected connection attempts");
+    assert!(
+        !l.iter().any(|l| l[5..].starts_with("peer details:")),
+        "{l:?}"
+    );
     assert!(took < AGENT_TIMEOUT, "{took:?} 걸림");
 
     // doctor 에서 끊고 status 에서 멈추면 멈춘 에이전트다.
