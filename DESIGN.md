@@ -704,6 +704,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
    - 그 밖(`via`가 false이거나 다른 피어나 다른 프로그램을 거치는 머신)이면
      `Herdr already has a machine named <이름> that does not go through herdvia to peer <이름>; rename or remove it (hc machine rename / hc machine rm), then run herdvia register <이름>`으로 1로 끝난다.
    - `hc machine ls`가 실패하거나, 15초를 넘기거나, 출력을 읽을 수 없거나, 그 이름이 없거나, `via`나 `target`이 없으면 이 확인을 건너뛰고 다음으로 간다. 읽지 못한 것을 "이미 등록됨"으로 보지 않는다.
+     JSON 문법에 맞지 않는 출력(숫자 문법 포함)과, 읽는 키(맨 위 `machines`, 항목의 `name`, `target`, `via`)가 한 객체에 두 번 나오는 출력도 읽을 수 없는 것으로 본다. 서로 다른 두 값 중 하나를 골라 판정하지 않으려는 것이다.
 3. `connect`와 같은 `hc machine add --via <...> --name <이름>`을 15초 제한으로 실행한다.
    - 성공: 표준 출력에 `Registered machine '<이름>' in Herdr.`, 0.
    - `hc`가 없음: `'hc' was not found, so '<이름>' was not added to Herdr. After installing Herdr, run:`과 들여 쓴 수동 `hc machine add ...` 줄(`connect`가 쓰는 줄과 같다), 1.

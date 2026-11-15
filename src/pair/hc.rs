@@ -297,7 +297,8 @@ fn classify(machines: &[Machine], peer: &str, expected: &str) -> Option<Listed> 
 }
 
 /// The `machines` of `hc machine ls --json`. None for anything else, including a truncated or
-/// otherwise invalid document; entries without a string `name` are left out.
+/// otherwise invalid document, or one that repeats a key read here (`machines`, or an entry's
+/// `name`, `target`, `via`); entries without a string `name` are left out.
 fn machines(text: &str) -> Option<Vec<Machine>> {
     let mut reader = JsonReader {
         text,
@@ -312,7 +313,7 @@ fn machines(text: &str) -> Option<Vec<Machine>> {
     let Json::Object(fields) = doc else {
         return None;
     };
-    let Some((_, Json::Array(entries))) = fields.into_iter().find(|(k, _)| k == "machines") else {
+    let Some(Json::Array(entries)) = unique(&fields, "machines")? else {
         return None;
     };
     let mut machines = Vec::new();
@@ -320,23 +321,35 @@ fn machines(text: &str) -> Option<Vec<Machine>> {
         let Json::Object(fields) = entry else {
             return None;
         };
-        let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v);
-        let Some(Json::String(name)) = field("name") else {
+        let (name, target, via) = (
+            unique(fields, "name")?,
+            unique(fields, "target")?,
+            unique(fields, "via")?,
+        );
+        let Some(Json::String(name)) = name else {
             continue;
         };
         machines.push(Machine {
             name: name.clone(),
-            target: match field("target") {
+            target: match target {
                 Some(Json::String(target)) => Some(target.clone()),
                 _ => None,
             },
-            via: match field("via") {
+            via: match via {
                 Some(Json::Bool(via)) => Some(*via),
                 _ => None,
             },
         });
     }
     Some(machines)
+}
+
+/// The value of `key` (`Some(None)` when it is missing), or None when `key` appears more than
+/// once: the first and the last of contradictory values must not pick the answer.
+fn unique<'a>(fields: &'a [(String, Json)], key: &str) -> Option<Option<&'a Json>> {
+    let mut values = fields.iter().filter(|(k, _)| k == key).map(|(_, v)| v);
+    let first = values.next();
+    values.next().is_none().then_some(first)
 }
 
 /// A JSON value, as far as `machines` needs it.
@@ -399,17 +412,51 @@ impl JsonReader<'_> {
                 self.depth -= 1;
                 value
             }
-            b'-' | b'0'..=b'9' => {
-                let rest = &self.text[self.pos..];
-                let len = rest.len()
-                    - rest
-                        .trim_start_matches(|c: char| c.is_ascii_digit() || "+-.eE".contains(c))
-                        .len();
-                self.pos += len;
-                Some(Json::Other)
-            }
+            b'-' | b'0'..=b'9' => self.number(),
             _ => None,
         }
+    }
+
+    /// A number, checked against JSON's grammar but not kept: `-`? (`0` | [1-9][0-9]*)
+    /// (`.` [0-9]+)? ([eE] [+-]? [0-9]+)?. A leading zero ends the number, so `01` fails at `1`.
+    fn number(&mut self) -> Option<Json> {
+        let bytes = self.text.as_bytes();
+        let at = |pos: usize| bytes.get(pos).copied();
+        let digits = |pos: &mut usize| {
+            let start = *pos;
+            while at(*pos).is_some_and(|b| b.is_ascii_digit()) {
+                *pos += 1;
+            }
+            *pos > start
+        };
+        let mut pos = self.pos;
+        if at(pos) == Some(b'-') {
+            pos += 1;
+        }
+        match at(pos)? {
+            b'0' => pos += 1,
+            b'1'..=b'9' => {
+                digits(&mut pos);
+            }
+            _ => return None,
+        }
+        if at(pos) == Some(b'.') {
+            pos += 1;
+            if !digits(&mut pos) {
+                return None;
+            }
+        }
+        if matches!(at(pos), Some(b'e' | b'E')) {
+            pos += 1;
+            if matches!(at(pos), Some(b'+' | b'-')) {
+                pos += 1;
+            }
+            if !digits(&mut pos) {
+                return None;
+            }
+        }
+        self.pos = pos;
+        Some(Json::Other)
     }
 
     fn array(&mut self) -> Option<Json> {
@@ -605,6 +652,46 @@ mod tests {
             "]".repeat(100)
         );
         assert_eq!(machines(&deep), None);
+    }
+
+    #[test]
+    fn a_repeated_key_that_register_reads_makes_the_list_unreadable() {
+        let entry = r#"{"name":"home","target":"/opt/herdvia via home","via":true}"#;
+        let one = format!(r#"{{"machines":[{entry}]}}"#);
+        assert_eq!(
+            classify(&machines(&one).unwrap(), "home", "/opt/herdvia via home"),
+            Some(Listed::Same)
+        );
+        for text in [
+            format!(r#"{{"machines":[{entry}],"machines":[]}}"#),
+            r#"{"machines":[{"name":"home","name":"other","target":"/opt/herdvia via home","via":true}]}"#.into(),
+            r#"{"machines":[{"name":"home","target":"/opt/herdvia via home","target":"ssh user@other","via":true}]}"#.into(),
+            r#"{"machines":[{"name":"home","target":"/opt/herdvia via home","via":true,"via":false}]}"#.into(),
+            // Spelled with an escape, it is still the same key.
+            r#"{"machines":[{"name":"home","target":"/opt/herdvia via home","v\u0069a":false,"via":true}]}"#.into(),
+        ] {
+            assert_eq!(machines(&text), None, "{text}");
+        }
+        // Keys register does not read may repeat, and so may keys inside other values.
+        let text = r#"{"x":1,"x":2,"machines":[{"name":"home","state":"a","state":"b","nested":{"via":false},"via":true}]}"#;
+        assert_eq!(machines(text).unwrap(), [machine("home", None, Some(true))]);
+    }
+
+    #[test]
+    fn numbers_follow_the_json_grammar() {
+        let doc = |number: &str| {
+            format!(
+                r#"{{"machines":[{{"name":"home","target":"/opt/herdvia via home","via":true}}],"x":{number}}}"#
+            )
+        };
+        for good in ["0", "-0", "1.5", "1e10", "-2.5E-3", "10", "0.0", "1E+2"] {
+            assert_eq!(machines(&doc(good)).map(|m| m.len()), Some(1), "{good}");
+        }
+        for bad in [
+            "-", "01", "1e", "1.2.3", "+1", ".5", "1.", "-a", "1e+", "--1", "00",
+        ] {
+            assert_eq!(machines(&doc(bad)), None, "{bad}");
+        }
     }
 
     #[test]
