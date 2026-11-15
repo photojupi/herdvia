@@ -159,6 +159,24 @@ fn fails_without_an_agent_and_reads_the_existing_identity() {
 }
 
 #[test]
+fn an_unreadable_key_points_to_a_new_identity_not_a_backup() {
+    let n = Node::new("X");
+    n.id();
+    fs::write(n.key_file(), [1; 31]).unwrap();
+    let o = n.herdvia(&["doctor"]);
+    assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
+    assert_eq!(
+        find(&lines(&o), "fail secret.key: "),
+        "fail secret.key: secret.key must contain exactly 32 bytes; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)"
+    );
+    assert_eq!(
+        fs::read(n.key_file()).unwrap(),
+        [1; 31],
+        "doctor 가 키를 바꿈"
+    );
+}
+
+#[test]
 fn fails_on_a_malformed_peer_list() {
     let n = Node::new("X");
     n.id();

@@ -592,7 +592,8 @@ fn allow_and_revoke_update_file_without_agent() {
     let o = n.herdvia(&["revoke", "x"]);
     assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
     assert_eq!(o.out(), format!("revoked x {x}\n"));
-    assert!(o.err().is_empty(), "stderr: {}", o.err());
+    // x 는 both 였으므로 Herdr 정리 안내도 나온다.
+    assert_eq!(o.err(), format!("{HERDR_NOTE_X}{OTHER_PC_NOTE}"));
     let peers = n.peers_text();
     assert!(
         !has_peer_name(&peers, "x"),
@@ -662,18 +663,116 @@ fn revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name() {
     assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
     assert_eq!(o.out(), format!("revoked a {x}\n"));
     let err = o.err();
-    assert_eq!(err.lines().count(), 1, "stderr: {err:?}");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 3, "stderr: {err:?}");
     assert!(
-        err.starts_with("herdvia: warning: ") && err.contains("still allowed as peer b;"),
+        lines[0].starts_with("herdvia: warning: ") && lines[0].contains("still allowed as peer b;"),
         "stderr: {err}"
+    );
+    // 경고가 먼저, 정리 안내가 뒤에 온다.
+    assert_eq!(
+        format!("{}\n{}\n", lines[1], lines[2]),
+        format!(
+            "herdvia: note: Herdr may still list a; remove it with: hc machine rm a\n{OTHER_PC_NOTE}"
+        )
     );
     let peers = n.peers_text();
     assert!(!has_peer_name(&peers, "a"), "peers:\n{peers}");
     assert!(has_peer_line(&peers, "b", &x, "in"), "peers:\n{peers}");
-    // 마지막 이름을 지우면 경고가 없다.
+    // 마지막 이름을 지우면 경고가 없고, inbound 만인 피어는 Herdr 안내도 없다.
     let o = n.herdvia(&["revoke", "b"]);
     assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.err(), OTHER_PC_NOTE);
+}
+
+const HERDR_NOTE_X: &str =
+    "herdvia: note: Herdr may still list x; remove it with: hc machine rm x\n";
+const OTHER_PC_NOTE: &str = "herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)\n";
+
+// ---------------------------------------------------------------------------
+// peers 목록과 allow 의 키 변경 경고
+// ---------------------------------------------------------------------------
+
+#[test]
+fn peers_lists_saved_peers_without_an_agent_and_creates_nothing() {
+    let n = Node::new("A");
+    // 데이터 폴더가 없어도, 비어 있어도 만들지 않고 알린다.
+    let missing = n.root.join("none");
+    for dir in [&missing, &n.herdvia_dir] {
+        let mut c = n.cmd(&["peers"]);
+        c.env("HERDVIA_DIR", dir);
+        let o = try_run(c, Duration::from_secs(10)).expect("peers 가 10초 안에 끝나지 않음");
+        assert_eq!(o.code(), Some(0), "[{}] stderr: {}", dir.display(), o.err());
+        assert_eq!(o.out(), "no peers registered\n");
+        assert!(o.err().is_empty(), "stderr: {}", o.err());
+    }
+    assert!(!missing.exists(), "peers 가 데이터 폴더를 만듦");
+    assert_eq!(
+        fs::read_dir(&n.herdvia_dir).unwrap().count(),
+        0,
+        "peers 가 데이터 폴더에 파일을 만듦"
+    );
+
+    let (x, x_fp) = Node::new("X").id();
+    let (y, y_fp) = Node::new("Y").id();
+    n.allow("x", &x, "--both");
+    n.allow("y", &y, "--inbound");
+    let before = fs::read_dir(&n.herdvia_dir).unwrap().count();
+    let o = n.herdvia(&["peers"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(
+        o.out(),
+        format!(
+            "name permission fingerprint\nx both {x_fp}\ny in {y_fp}\nin = may open sessions on this PC; out = this PC may connect to it\n"
+        )
+    );
     assert!(o.err().is_empty(), "stderr: {}", o.err());
+    assert!(!o.out().contains(&x), "EndpointId 전체가 출력됨");
+    assert_eq!(fs::read_dir(&n.herdvia_dir).unwrap().count(), before);
+
+    // 에이전트와 같은 안전 검사로 거부하고, 권한을 고치지 않는다.
+    chmod(&n.peers_file(), 0o644);
+    let o = n.herdvia(&["peers"]);
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    assert_eq!(o.err().lines().count(), 1, "stderr: {}", o.err());
+    assert!(o.err().contains("0600"), "stderr: {}", o.err());
+    assert_eq!(mode_of(&n.peers_file()), 0o644, "peers 가 권한을 고침");
+}
+
+#[test]
+fn allow_warns_when_a_name_moves_to_another_key() {
+    let n = Node::new("A");
+    let (x, x_fp) = Node::new("X").id();
+    let (y, y_fp) = Node::new("Y").id();
+    n.allow("p", &x, "--both");
+    // 같은 키의 권한만 바꾸면 경고가 없다.
+    let o = n.herdvia(&["allow", "p", &x, "--outbound"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
+    let o = n.herdvia(&["allow", "p", &y, "--outbound"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), format!("p {y} out\n"));
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: warning: p now points to a different key (fingerprint {x_fp} -> {y_fp})\n"
+        )
+    );
+    assert!(has_peer_line(&n.peers_text(), "p", &y, "out"));
+
+    // 에이전트가 reload 를 확인하지 않아도 경고는 오류보다 먼저 나온다.
+    fake_agent(&n, reload_error);
+    let o = n.herdvia(&["allow", "p", &x, "--both"]);
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: warning: p now points to a different key (fingerprint {y_fp} -> {x_fp})\nherdvia: saved p in the peers file, but the running agent did not confirm it (invalid peers file){AFTER}"
+        )
+    );
+    assert!(has_peer_line(&n.peers_text(), "p", &x, "both"));
 }
 
 // ---------------------------------------------------------------------------

@@ -247,7 +247,7 @@ fn key_check(state: &KeyState) -> Check {
         KeyState::Unreadable(err) => check(
             Level::Fail,
             format!(
-                "secret.key: {err}; restore it from a backup (removing it makes herdvia id create a new identity that every peer must allow again)"
+                "secret.key: {err}; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)"
             ),
         ),
     }
@@ -1254,10 +1254,14 @@ mod tests {
                 peers::fingerprint(key.public())
             )
         );
+        let unreadable = key_check(&KeyState::Unreadable("short".into()));
+        assert_eq!(unreadable.level, Level::Fail);
+        // The README's advice: a new identity, never a restored copy of the old one.
         assert_eq!(
-            level(&key_check(&KeyState::Unreadable("short".into()))),
-            Level::Fail
+            unreadable.text,
+            "secret.key: short; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)"
         );
+        assert!(!unreadable.text.contains('\n'));
     }
 
     #[cfg(unix)]

@@ -19,6 +19,7 @@ enum Command {
     Id,
     Allow(Peer),
     Revoke(String),
+    Peers,
     Status,
     Pending,
     Accept {
@@ -59,6 +60,7 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
                 invite: Some(invite.clone()),
             })
         }
+        [cmd] if cmd == "peers" => Ok(Command::Peers),
         [cmd] if cmd == "status" => Ok(Command::Status),
         [cmd] if cmd == "pending" => Ok(Command::Pending),
         [cmd] if cmd == "doctor" => Ok(Command::Doctor),
@@ -111,9 +113,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             } else {
-                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             },
         )),
     }
@@ -187,11 +189,20 @@ async fn manage(command: Command) -> io::Result<()> {
             println!("reloaded: peers re-read; waiting connections retry now");
         }
         Command::Allow(peer) => {
-            peers::allow(&dir, peer.clone())?;
-            control::reload_if_running(&dir)
-                .await
-                .map_err(|err| not_confirmed("saved", &peer.name, &err, ""))?;
-            println!("{} {} {}", peer.name, peer.id, peer.permission.as_str());
+            let replaced = peers::allow(&dir, peer.clone())?;
+            let reloaded = control::reload_if_running(&dir).await;
+            if reloaded.is_ok() {
+                println!("{} {} {}", peer.name, peer.id, peer.permission.as_str());
+            }
+            if let Some(old) = replaced {
+                eprintln!(
+                    "herdvia: warning: {} now points to a different key (fingerprint {} -> {})",
+                    peer.name,
+                    peers::fingerprint(old.id),
+                    peers::fingerprint(peer.id)
+                );
+            }
+            reloaded.map_err(|err| not_confirmed("saved", &peer.name, &err, ""))?;
         }
         Command::Revoke(name) => {
             let (peer, others) = peers::revoke(&dir, &name)?;
@@ -210,7 +221,17 @@ async fn manage(command: Command) -> io::Result<()> {
                 let risk = format!(", so it may still admit {name} until it reloads");
                 not_confirmed("revoked", &name, &err, &risk)
             })?;
+            // What revoke leaves behind elsewhere.
+            if peer.permission.outbound() {
+                eprintln!(
+                    "herdvia: note: Herdr may still list {name}; remove it with: hc machine rm {name}"
+                );
+            }
+            eprintln!(
+                "herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)"
+            );
         }
+        Command::Peers => print!("{}", peer_list(&peers::load(&dir)?)),
         Command::Status => {
             let status = control::request(&dir, "status").await?;
             print!("{status}");
@@ -250,6 +271,23 @@ fn not_confirmed(done: &str, name: &str, cause: &io::Error, risk: &str) -> io::E
     io::Error::other(format!(
         "{done} {name} in the peers file, but the running agent did not confirm it ({cause}){risk}; run herdvia agent reload, and if that fails, restart the agent (herdvia agent install, or restart herdvia agent)"
     ))
+}
+
+/// The saved peers as `herdvia peers` prints them; it says nothing about live connections.
+fn peer_list(list: &[Peer]) -> String {
+    if list.is_empty() {
+        return "no peers registered\n".into();
+    }
+    let mut text = String::from("name permission fingerprint\n");
+    for peer in list {
+        text += &format!(
+            "{} {} {}\n",
+            peer.name,
+            peer.permission.as_str(),
+            peers::fingerprint(peer.id)
+        );
+    }
+    text + "in = may open sessions on this PC; out = this PC may connect to it\n"
 }
 
 /// Whether a `status` response shows a peer connected through a relay.
@@ -464,6 +502,35 @@ mod tests {
         ] {
             assert!(parse(args(a)).is_err(), "{a:?}");
         }
+    }
+
+    #[test]
+    fn peers_takes_no_arguments_and_lists_saved_peers() {
+        assert!(matches!(parse(args(&["peers"])).unwrap(), Command::Peers));
+        for a in [&["peers", "extra"][..], &["Peers"]] {
+            assert!(parse(args(a)).is_err(), "{a:?}");
+        }
+        assert_eq!(peer_list(&[]), "no peers registered\n");
+        let id = iroh::SecretKey::generate().public();
+        let list = [
+            Peer {
+                name: "win1".into(),
+                id,
+                permission: Permission::Both,
+            },
+            Peer {
+                name: "laptop".into(),
+                id,
+                permission: Permission::In,
+            },
+        ];
+        let fp = peers::fingerprint(id);
+        assert_eq!(
+            peer_list(&list),
+            format!(
+                "name permission fingerprint\nwin1 both {fp}\nlaptop in {fp}\nin = may open sessions on this PC; out = this PC may connect to it\n"
+            )
+        );
     }
 
     #[test]

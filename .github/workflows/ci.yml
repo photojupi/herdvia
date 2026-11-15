@@ -42,6 +42,7 @@ jobs:
             creates_nothing_for_a_missing_data_directory \
             fails_without_an_agent_and_reads_the_existing_identity \
             fails_on_a_malformed_peer_list \
+            an_unreadable_key_points_to_a_new_identity_not_a_backup \
             reports_the_running_agents_version_and_executable \
             fails_within_the_timeout_when_the_agent_does_not_answer \
             warns_within_the_timeout_when_status_or_pending_does_not_answer \
@@ -65,7 +66,9 @@ jobs:
             revoke_keeps_the_duplicate_key_warning_when_the_agent_answers_an_error \
             allow_and_accept_fail_when_the_agent_answers_an_error \
             agent_reload_reports_a_confirmed_reload \
-            agent_reload_without_an_agent_is_255_and_creates_nothing
+            agent_reload_without_an_agent_is_255_and_creates_nothing \
+            peers_lists_saved_peers_without_an_agent_and_creates_nothing \
+            allow_warns_when_a_name_moves_to_another_key
           cargo test --locked --test pending -- --exact \
             accept_refuses_a_full_pending_list
           cargo test --locked --test transport -- --exact \

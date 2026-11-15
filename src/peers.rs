@@ -157,15 +157,20 @@ fn refuse_another_name(peers: &[Peer], peer: &Peer) -> io::Result<()> {
     ))
 }
 
-pub fn allow(dir: &Path, peer: Peer) -> io::Result<()> {
+/// Returns the entry it replaced when the name was registered with another EndpointId.
+pub fn allow(dir: &Path, peer: Peer) -> io::Result<Option<Peer>> {
     if !valid_name(&peer.name) {
         return Err(frame::invalid("invalid peer name"));
     }
     update(dir, |peers| {
         refuse_another_name(peers, &peer)?;
+        let replaced = peers
+            .iter()
+            .find(|p| p.name == peer.name && p.id != peer.id)
+            .cloned();
         peers.retain(|p| p.name != peer.name);
         peers.push(peer);
-        Ok(())
+        Ok(replaced)
     })
 }
 
@@ -503,10 +508,11 @@ mod tests {
             id: SecretKey::generate().public(),
             permission: Permission::In,
         };
-        allow(dir.path(), peer.clone()).unwrap();
+        assert_eq!(allow(dir.path(), peer.clone()).unwrap(), None);
         assert_eq!(load(dir.path()).unwrap(), vec![peer.clone()]);
+        // A permission change under the same key replaces no other key.
         peer.permission = Permission::Both;
-        allow(dir.path(), peer.clone()).unwrap();
+        assert_eq!(allow(dir.path(), peer.clone()).unwrap(), None);
         assert_eq!(load(dir.path()).unwrap(), vec![peer]);
         assert_eq!(
             fs::metadata(dir.path().join("peers"))
@@ -582,7 +588,7 @@ mod tests {
             ..peer.clone()
         };
         for result in [
-            allow(dir.path(), other.clone()),
+            allow(dir.path(), other.clone()).map(drop),
             accept(dir.path(), other.clone()),
         ] {
             let err = result.unwrap_err();
@@ -596,12 +602,12 @@ mod tests {
             ..peer.clone()
         };
         accept(dir.path(), changed.clone()).unwrap();
-        assert_eq!(load(dir.path()).unwrap(), vec![changed]);
+        assert_eq!(load(dir.path()).unwrap(), vec![changed.clone()]);
         let replaced = Peer {
             id: SecretKey::generate().public(),
             ..peer
         };
-        allow(dir.path(), replaced.clone()).unwrap();
+        assert_eq!(allow(dir.path(), replaced.clone()).unwrap(), Some(changed));
         assert_eq!(load(dir.path()).unwrap(), vec![replaced]);
     }
 
