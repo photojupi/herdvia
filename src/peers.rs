@@ -342,7 +342,10 @@ pub fn resolve_inbound_peer(
         });
     }
 
-    if !peers.iter().any(|p| p.name == caller_name) {
+    // herdvia revoke --help (or -h) prints help, so a peer saved under either name could not be
+    // revoked; such a caller name gets a suffix like a taken one.
+    let help_flag = matches!(caller_name, "--help" | "-h");
+    if !help_flag && !peers.iter().any(|p| p.name == caller_name) {
         return Ok(Peer {
             name: caller_name.to_owned(),
             id,
@@ -702,6 +705,16 @@ mod tests {
             p3.name,
             format!("{}-{}", "m".repeat(27), &id_3.to_string()[..4])
         );
+    }
+
+    #[test]
+    fn grant_inbound_does_not_save_a_help_flag_sent_as_the_caller_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for (seed, caller) in [(5u8, "--help"), (6, "-h")] {
+            let id = SecretKey::from_bytes(&[seed; 32]).public();
+            let saved = grant_inbound(dir.path(), None, caller, id).unwrap();
+            assert_eq!(saved.name, format!("{caller}-{}", &id.to_string()[..4]));
+        }
     }
 
     #[test]
