@@ -45,7 +45,7 @@ This batch fixes those eight items, chosen by the user from the improvement-opti
 
 - Rust, existing crates only. macOS + Windows supported, Linux builds.
 - Error convention stays: one `herdvia: ...` line on stderr, exit 255. Exit 1 keeps its existing meaning for pairing/registration outcomes.
-- Local IPC CONTROL payloads are an allow-list in `agent.rs`; an old agent answers an unknown payload with ERROR `unknown control request`.
+- Local IPC CONTROL payloads are an allow-list in `agent.rs`. An agent from before this batch (v0.1.4 and earlier) checks CONTROL payloads in its frame layer and drops the connection on an unknown one without any reply frame, so the client sees `agent closed without EXIT`, a reset, or a broken pipe. From this batch on, the frame layer only bounds the length and the agent answers an unknown payload with ERROR `unknown control request`.
 - A separate Claude session (Herdr terminal `t71`) currently has ~2,400 lines of uncommitted changes in the main working folder (pairing confirmation, data-dir parent checks, doctor timeouts, README updates) under review. This work must not touch the main working folder until that lands.
 
 ## Approaches Considered
@@ -54,7 +54,7 @@ This batch fixes those eight items, chosen by the user from the improvement-opti
 
 | Approach | Trade-off | Decision |
 |---|---|---|
-| **A. New CONTROL payload `status-detail`** returning a versioned line format; CLI and doctor fall back to plain `status` when the agent answers `unknown control request` | Old/new mixes keep working; one extra payload in the allow-list | **Chosen** |
+| **A. New CONTROL payload `status-detail`** returning a versioned line format; CLI and doctor fall back to plain `status` when the agent rejects it (an older agent drops the connection; a newer one answers `unknown control request`) | Old/new mixes keep working; one extra payload in the allow-list | **Chosen** |
 | B. Add columns to the existing `status` reply | Simplest, but the old `doctor` warns on anything other than exactly 5 fields | Rejected |
 | C. Only log reasons | Smallest, but the user must find OS-specific log files and still cannot see retry timing | Rejected |
 
@@ -121,7 +121,7 @@ home: could not reach it (timed out); its agent may be off or offline. Retrying 
 laptop: waiting for laptop to connect (this PC only accepts it).
 ```
 
-If the agent answers `unknown control request`, print the table only plus one stderr note: `herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected`.
+If the agent rejects `status-detail` (see Constraints for how an older agent does that), print the table only plus one stderr note: `herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected`.
 
 **`doctor`.** The per-peer `warn` line uses the same wording when detail is available, and keeps today's wording otherwise. `doctor` still parses the plain 5-column `status` for the table logic; it requests `status-detail` separately with the same timeout `doctor` uses for `status`.
 

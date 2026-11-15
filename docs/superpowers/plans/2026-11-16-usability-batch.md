@@ -59,8 +59,13 @@ rebased onto that session's final commits, so keep edits to existing lines small
    record map, never the reverse.
 4. **One request for `herdvia status`.** The CLI asks `status-detail` first and renders the
    5-column table from it (byte-identical to the `status` reply; a unit test compares the two).
-   Only when the agent answers `unknown control request` does it ask plain `status` and print the
-   restart note. Any other error is the command's error, as today.
+   Only when the agent rejects `status-detail` does it ask plain `status` and print the restart
+   note. Rejected means an ERROR `unknown control request` (agents from this batch on) or the
+   connection ending without a reply: `agent closed without EXIT`, `ConnectionReset`,
+   `ConnectionAborted`, `BrokenPipe`, or `UnexpectedEof` (v0.1.4 and earlier drop the connection
+   in the frame layer on a CONTROL payload they do not know; check what the Windows pipe
+   surfaces). Any other error (`TimedOut`, `NotFound`, `ConnectionRefused`, other ERROR text) is
+   the command's error, as today.
 5. **`herdvia status` stdout.** The table, then, if any peer is not connected, one empty line and
    one line per such peer. If any of them has a pending retry, a final line
    `Run herdvia agent reload to retry now.` The old-agent note and the relay note go to stderr.
@@ -160,7 +165,9 @@ Files: `src/main.rs`, `src/doctor.rs`, tests.
   wording, otherwise today's wording. A stuck agent is not asked again.
 - Tests: fake agent that answers `status-detail` with rejected / unreachable / waiting rows →
   `herdvia status` stdout and `doctor` lines; fake agent that answers `unknown control request` →
-  table plus the note, exit 0; integration with two real local agents if the existing harness can
+  table plus the note, exit 0; fake old agent that reads only the 5-byte header of the 13-byte
+  `status-detail` CONTROL frame and closes (as v0.1.4's frame check does), then answers plain
+  `status` → same; integration with two real local agents if the existing harness can
   do it without the relay.
 
 ### Task 5 — B1: `herdvia register <name>`

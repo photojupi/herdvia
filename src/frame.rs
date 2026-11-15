@@ -11,6 +11,9 @@ pub const ERROR: u8 = 6;
 pub const CONTROL: u8 = 7;
 pub const MAX_PAYLOAD: usize = 65_536;
 pub const MAX_OPEN: usize = 8_192;
+/// The agent, not this layer, decides which CONTROL requests exist, so a request it does not
+/// know is read in full and answered with an ERROR instead of a dropped connection.
+const MAX_CONTROL: usize = 64;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Frame {
@@ -31,7 +34,7 @@ fn validate_header(tag: u8, len: usize) -> io::Result<()> {
     }
     if (tag == STDIN_EOF && len != 0)
         || (tag == EXIT && len != 4)
-        || (tag == CONTROL && !(6..=13).contains(&len))
+        || (tag == CONTROL && !(1..=MAX_CONTROL).contains(&len))
     {
         return Err(invalid("invalid frame payload length"));
     }
@@ -41,20 +44,6 @@ fn validate_header(tag: u8, len: usize) -> io::Result<()> {
 fn validate_text(tag: u8, payload: &[u8]) -> io::Result<()> {
     if tag == OPEN || tag == ERROR || tag == CONTROL {
         std::str::from_utf8(payload).map_err(|_| invalid("frame payload is not UTF-8"))?;
-    }
-    if tag == CONTROL
-        && ![
-            b"reload".as_slice(),
-            b"status",
-            b"status-detail",
-            b"pending",
-            b"doctor",
-            b"listen",
-            b"connect",
-        ]
-        .contains(&payload)
-    {
-        return Err(invalid("unknown CONTROL request"));
     }
     Ok(())
 }
@@ -157,15 +146,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepts_only_known_control_requests() {
+    async fn control_requests_are_short_utf8_text() {
         for payload in [
             b"reload".as_slice(),
-            b"status".as_slice(),
             b"status-detail".as_slice(),
-            b"pending".as_slice(),
-            b"doctor".as_slice(),
-            b"listen".as_slice(),
-            b"connect".as_slice(),
+            b"x".as_slice(),
+            b"status-summary".as_slice(),
+            &[b'a'; MAX_CONTROL],
         ] {
             let mut bytes = Vec::new();
             write(&mut bytes, CONTROL, payload).await.unwrap();
@@ -176,16 +163,8 @@ mod tests {
         }
         for payload in [
             b"".as_slice(),
-            b"status\n".as_slice(),
-            b"status-details".as_slice(),
-            b"status-detai".as_slice(),
-            b"delete".as_slice(),
-            b"pendinG".as_slice(),
-            b"pendings".as_slice(),
-            b"Doctor".as_slice(),
-            b"doctors".as_slice(),
-            b"Listen".as_slice(),
-            b"Connect".as_slice(),
+            &[b'a'; MAX_CONTROL + 1],
+            b"status\xff".as_slice(),
         ] {
             assert!(write(&mut Vec::new(), CONTROL, payload).await.is_err());
         }

@@ -280,6 +280,14 @@ mod tests {
             crate::control::request(dir.path(), "status").await.unwrap(),
             "name permission connection path rtt\ntab in disconnected - -\n"
         );
+        // A later CLI's request this agent does not know gets an answer, not a dropped
+        // connection, so that CLI can tell an older agent from a broken one.
+        for unknown in ["status-summary", "status-details", "status\n", "Doctor"] {
+            let err = crate::control::request(dir.path(), unknown)
+                .await
+                .unwrap_err();
+            assert_eq!(err.to_string(), "unknown control request", "{unknown:?}");
+        }
         serving.abort();
         network.endpoint.close().await;
     }
