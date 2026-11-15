@@ -48,6 +48,19 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd, flag] if help::is_flag(flag) && help::command(cmd).is_some() => {
             Ok(Command::Help(help::command(cmd).unwrap_or_default()))
         }
+        // A peer saved as --help or -h could not be revoked or registered: those would print help.
+        [cmd, name, ..]
+            if help::is_flag(name)
+                && matches!(
+                    (cmd.as_str(), args.len()),
+                    ("connect", 3) | ("allow" | "accept", 4)
+                ) =>
+        {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--help and -h cannot be peer names",
+            ))
+        }
         [flag] if flag == "--version" => Ok(Command::Version),
         [cmd] if cmd == "agent" => Ok(Command::Agent),
         #[cfg(windows)]
@@ -852,5 +865,26 @@ mod tests {
         ] {
             assert!(parse(args(a)).is_err(), "{a:?}");
         }
+    }
+
+    #[test]
+    fn commands_that_save_a_peer_refuse_help_flags_as_names() {
+        let id = iroh::SecretKey::generate().public();
+        let (id_text, fp) = (id.to_string(), peers::fingerprint(id));
+        for flag in ["--help", "-h"] {
+            for a in [
+                &["connect", flag, "invite"][..],
+                &["allow", flag, &id_text, "--outbound"],
+                &["accept", flag, &fp, "--inbound"],
+            ] {
+                let err = parse(args(a)).err().unwrap_or_else(|| panic!("{a:?}"));
+                assert_eq!(err.to_string(), "--help and -h cannot be peer names");
+            }
+        }
+        // Saving under any other name still works.
+        assert!(matches!(
+            parse(args(&["allow", "home", &id_text, "--outbound"])).unwrap(),
+            Command::Allow(_)
+        ));
     }
 }
