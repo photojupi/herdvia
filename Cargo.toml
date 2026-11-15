@@ -1,6 +1,6 @@
 [package]
 name = "herdvia"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Unofficial iroh-based transport for Herdr's `hc machine add --via`: reach machines behind NAT without SSH or a VPN"
 license = "MIT OR Apache-2.0"
