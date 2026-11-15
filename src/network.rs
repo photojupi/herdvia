@@ -570,8 +570,10 @@ impl Network {
         streams.abort_all();
         while streams.join_next().await.is_some() {}
         // Only the direction this PC dials: an inbound connection ending says nothing about it.
+        // Nor does a close that this PC made (reload, when the peer's entry changed).
         if conn.side() == Side::Client
             && let Some(err) = conn.close_reason()
+            && !matches!(err, ConnectionError::LocallyClosed)
         {
             self.update_record(id, |r| r.failure = Some(close_failure(&err)));
         }
@@ -1186,6 +1188,71 @@ mod tests {
         );
 
         worker_a.abort();
+        accept_b.abort();
+        net_a.endpoint.close().await;
+        net_b.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_close_that_this_pc_makes_is_not_recorded_as_a_failure() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let id_a = peers::load_key(dir_a.path()).unwrap().public();
+        let id_b = peers::load_key(dir_b.path()).unwrap().public();
+        peers::grant_outbound(dir_a.path(), "home", id_b).unwrap();
+        peers::grant_inbound(dir_b.path(), Some("caller"), "caller", id_a).unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+        let accept_b = tokio::spawn({
+            let net_b = net_b.clone();
+            async move {
+                let mut set = JoinSet::new();
+                while let Some(incoming) = net_b.endpoint.accept().await {
+                    let net_b = net_b.clone();
+                    set.spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            net_b.serve_connection(conn).await;
+                        }
+                    });
+                }
+            }
+        });
+        // Dialed by hand: no worker dials again and replaces what the close leaves.
+        let addr =
+            iroh::EndpointAddr::new(id_b).with_ip_addr(([127, 0, 0, 1], net_b.quic_port()).into());
+        let conn = net_a.endpoint.connect(addr, ALPN).await.unwrap();
+        let served = tokio::spawn(net_a.clone().serve_connection(conn));
+        row_until(&net_a, "home", |r| r.state == State::Connected).await;
+
+        // A changed entry that keeps outbound permission: reload closes the connection here.
+        peers::allow(
+            dir_a.path(),
+            Peer {
+                name: "home".into(),
+                id: id_b,
+                permission: Permission::Both,
+            },
+        )
+        .unwrap();
+        net_a.reload().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), served)
+            .await
+            .expect("the connection ends")
+            .unwrap();
+        assert_eq!(
+            net_a.records.lock().unwrap().get(&id_b).map(|r| &r.failure),
+            Some(&None)
+        );
+        let rows = status::parse(&net_a.status_detail()).unwrap();
+        assert_eq!(
+            (rows[0].state, &rows[0].reason),
+            (State::Disconnected, &None)
+        );
+        assert_eq!(
+            net_a.timeout_message("home"),
+            "peer did not connect within 5 seconds"
+        );
+
         accept_b.abort();
         net_a.endpoint.close().await;
         net_b.endpoint.close().await;
