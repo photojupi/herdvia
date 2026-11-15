@@ -13,6 +13,7 @@ pub mod launchd;
 pub mod launchd;
 mod log;
 pub mod network;
+pub mod pair;
 pub mod peers;
 pub mod template;
 pub mod via;
