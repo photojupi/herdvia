@@ -1034,6 +1034,25 @@ async fn core_version_of(path: &Path) -> Result<String, String> {
     })
 }
 
+/// Returns a non-blocking warning message when `herdr-core` is missing or misconfigured on a target PC.
+pub(crate) async fn core_preflight_warning() -> Option<String> {
+    let home = ipc::home_dir().ok()?;
+    let (found, searched, link) = find_core(&home);
+    let version = match &found {
+        CoreFound::Agent(path) | CoreFound::ShellOnly(path) => Some(core_version_of(path).await),
+        CoreFound::Missing => None,
+    };
+    let check = core_check(
+        &found,
+        version.as_ref().map(|r| r.as_deref().map_err(String::as_str)),
+        cfg!(windows),
+        &searched,
+        &link,
+        AGENT_LOG,
+    );
+    (check.level != Level::Ok).then_some(check.text)
+}
+
 #[cfg(unix)]
 fn autostart(home: &io::Result<PathBuf>, exe: Option<&Path>) -> Autostart {
     if !cfg!(target_os = "macos") {
