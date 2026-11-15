@@ -571,7 +571,7 @@ pub async fn run_register(name: String) -> io::Result<i32> {
         Some(Listed::Foreign) => {
             let _ = writeln!(
                 io::stderr(),
-                "herdvia: Herdr already has a machine named {name} that does not use herdvia; rename or remove it (hc machine rename / hc machine rm), then run herdvia register {name}"
+                "herdvia: Herdr already has a machine named {name} that does not go through herdvia to peer {name}; rename or remove it (hc machine rename / hc machine rm), then run herdvia register {name}"
             );
             return Ok(1);
         }

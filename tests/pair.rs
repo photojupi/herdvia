@@ -301,7 +301,12 @@ fn register_refuses_a_machine_that_uses_another_executable_or_no_herdvia() {
         ),
         (
             r#"{"name":"home","target":"me@home.example","via":false}"#,
-            "herdvia: Herdr already has a machine named home that does not use herdvia; rename or remove it (hc machine rename / hc machine rm), then run herdvia register home\n",
+            "herdvia: Herdr already has a machine named home that does not go through herdvia to peer home; rename or remove it (hc machine rename / hc machine rm), then run herdvia register home\n",
+        ),
+        // herdvia, but to another peer: the message must not say it does not use herdvia.
+        (
+            r#"{"name":"home","target":"/x/herdvia via office","via":true}"#,
+            "herdvia: Herdr already has a machine named home that does not go through herdvia to peer home; rename or remove it (hc machine rename / hc machine rm), then run herdvia register home\n",
         ),
     ];
     for (entry, expected) in cases {

@@ -29,7 +29,8 @@ pub enum Listed {
     Same,
     /// Reached through another herdvia executable, as hc prints that program.
     OtherHerdvia(String),
-    /// A machine by that name that does not go through herdvia.
+    /// A machine by that name that does not go through herdvia to that peer (it may still use
+    /// herdvia for another peer).
     Foreign,
 }
 
