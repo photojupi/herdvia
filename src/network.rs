@@ -181,6 +181,7 @@ pub struct Network {
     attempts: Arc<Mutex<Attempts>>,
     addr_hints: Mutex<HashMap<EndpointId, SocketAddr>>,
     pub(crate) pairing: Arc<crate::pair::session::PairingGate>,
+    reconnect: watch::Sender<u64>,
     changed: watch::Sender<u64>,
     stopping: AtomicBool,
     /// Stream tasks whose `SessionEnd` has not been dropped yet.
@@ -214,6 +215,7 @@ impl Network {
             attempts,
             addr_hints: Mutex::new(HashMap::new()),
             pairing,
+            reconnect: watch::channel(0).0,
             changed: watch::channel(0).0,
             stopping: AtomicBool::new(false),
             streams: watch::channel(0).0,
@@ -280,6 +282,7 @@ impl Network {
         {
             conn.close(403u32.into(), b"peer permissions changed");
         }
+        self.reconnect.send_modify(|n| *n = n.wrapping_add(1));
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
         Ok(())
     }
@@ -342,8 +345,10 @@ impl Network {
     }
 
     pub async fn outbound(self: Arc<Self>, id: EndpointId) {
+        let mut reconnect = self.reconnect.subscribe();
         let mut delay = 0;
         loop {
+            let _ = *reconnect.borrow_and_update();
             let addr = match self
                 .addr_hints
                 .lock()
@@ -366,7 +371,12 @@ impl Network {
                 }
             };
             delay = retry_delay(delay, connected_for);
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                Ok(()) = reconnect.changed() => {
+                    delay = 0;
+                }
+            }
         }
     }
 
@@ -889,5 +899,66 @@ mod tests {
         // Rejected right after the handshake: still a failure.
         assert_eq!(retry_delay(4, Duration::from_millis(9_999)), 8);
         assert_eq!(retry_delay(30, Duration::from_secs(10)), 1);
+    }
+
+    #[tokio::test]
+    async fn reload_wakes_sleeping_outbound_worker_immediately() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let id_b = peers::load_key(dir_b.path()).unwrap().public();
+        peers::grant_outbound(dir_a.path(), "home", id_b).unwrap();
+
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+        let id_a = net_a.endpoint.id();
+        net_a.set_addr_hint(id_b, ([127, 0, 0, 1], net_b.quic_port()).into());
+
+        let accept_b = tokio::spawn({
+            let net_b = net_b.clone();
+            async move {
+                let mut set = JoinSet::new();
+                while let Some(incoming) = net_b.endpoint.accept().await {
+                    let net_b = net_b.clone();
+                    set.spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            net_b.serve_connection(conn).await;
+                        }
+                    });
+                }
+            }
+        });
+        let worker_a = tokio::spawn(net_a.clone().outbound(id_b));
+
+        // Wait until B has rejected 3 attempts (1s + 2s = ~3s), putting A into a 4s backoff sleep.
+        tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                if net_b.pending().contains(&format!("{id_a} 3 ")) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("expected 3 rejected attempts on B");
+
+        peers::grant_inbound(dir_b.path(), Some("caller"), "caller", id_a).unwrap();
+        net_b.reload().unwrap();
+        net_a.reload().unwrap();
+
+        tokio::time::timeout(Duration::from_millis(800), async {
+            loop {
+                if net_a.status().contains("home out connected ") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("reload should wake sleeping outbound worker immediately without waiting 4s");
+
+        worker_a.abort();
+        accept_b.abort();
+        net_a.endpoint.close().await;
+        net_b.endpoint.close().await;
     }
 }

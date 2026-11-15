@@ -33,20 +33,11 @@ pub fn sh_via_command(exe: &Path, peer: &str) -> String {
     format!("{} via {peer}", sh_quote(&exe_str))
 }
 
-pub fn windows_via_command(exe: &Path, peer: &str) -> String {
-    let exe_str = exe.to_string_lossy();
-    let needs_quotes = exe_str.is_empty()
-        || exe_str
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '"'));
-    if !needs_quotes {
-        return format!("{exe_str} via {peer}");
-    }
-
-    let mut quoted = String::with_capacity(exe_str.len() + 2);
+fn quote_windows_arg(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');
     let mut backslashes = 0usize;
-    for ch in exe_str.chars() {
+    for ch in text.chars() {
         if ch == '\\' {
             backslashes += 1;
         } else if ch == '"' {
@@ -67,7 +58,19 @@ pub fn windows_via_command(exe: &Path, peer: &str) -> String {
         quoted.push('\\');
     }
     quoted.push('"');
-    format!("{quoted} via {peer}")
+    quoted
+}
+
+pub fn windows_via_command(exe: &Path, peer: &str) -> String {
+    let exe_str = exe.to_string_lossy();
+    let needs_quotes = exe_str.is_empty()
+        || exe_str
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"'));
+    if !needs_quotes {
+        return format!("{exe_str} via {peer}");
+    }
+    format!("{} via {peer}", quote_windows_arg(&exe_str))
 }
 
 pub fn via_command_for_current_os(exe: &Path, peer: &str) -> String {
@@ -78,19 +81,36 @@ pub fn via_command_for_current_os(exe: &Path, peer: &str) -> String {
     }
 }
 
-pub fn manual_hc_add_line(exe: &Path, peer: &str) -> String {
-    if cfg!(windows) {
-        let via = windows_via_command(exe, peer);
+pub fn windows_manual_hc_add_line(exe: &Path, peer: &str) -> String {
+    let via = windows_via_command(exe, peer);
+    if !via.contains('"') {
         format!(
             "hc machine add --via '{}' --name {peer}",
             via.replace('\'', "''")
         )
     } else {
-        let via = sh_via_command(exe, peer);
+        let cmd_token = quote_windows_arg(&via);
+        let inner = &cmd_token[1..cmd_token.len() - 1];
         format!(
-            "hc machine add --via '{}' --name {peer}",
-            via.replace('\'', r"'\''")
+            "& {{ $PSNativeCommandArgumentPassing = 'Legacy'; hc machine add --via '{}' --name {peer} }}",
+            inner.replace('\'', "''")
         )
+    }
+}
+
+pub fn sh_manual_hc_add_line(exe: &Path, peer: &str) -> String {
+    let via = sh_via_command(exe, peer);
+    format!(
+        "hc machine add --via '{}' --name {peer}",
+        via.replace('\'', r"'\''")
+    )
+}
+
+pub fn manual_hc_add_line(exe: &Path, peer: &str) -> String {
+    if cfg!(windows) {
+        windows_manual_hc_add_line(exe, peer)
+    } else {
+        sh_manual_hc_add_line(exe, peer)
     }
 }
 
@@ -244,6 +264,201 @@ mod tests {
         );
     }
 
+    // Win32 CommandLineToArgvW parser (post-argv[0] arguments) for cross-platform verification.
+    fn parse_command_line_to_argv_w(cmd_line: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        let mut chars = cmd_line.chars().peekable();
+        // Skip executable token.
+        while chars.peek().is_some_and(|c| !c.is_ascii_whitespace()) {
+            chars.next();
+        }
+        loop {
+            while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+                chars.next();
+            }
+            if chars.peek().is_none() {
+                break;
+            }
+            let mut cur = String::new();
+            let mut in_quotes = false;
+            while let Some(&ch) = chars.peek() {
+                if !in_quotes && ch.is_ascii_whitespace() {
+                    break;
+                }
+                if ch == '\\' {
+                    let mut bs = 0usize;
+                    while chars.peek() == Some(&'\\') {
+                        chars.next();
+                        bs += 1;
+                    }
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        cur.extend(std::iter::repeat_n('\\', bs / 2));
+                        if bs.is_multiple_of(2) {
+                            in_quotes = !in_quotes;
+                        } else {
+                            cur.push('"');
+                        }
+                    } else {
+                        cur.extend(std::iter::repeat_n('\\', bs));
+                    }
+                } else if ch == '"' {
+                    chars.next();
+                    if in_quotes && chars.peek() == Some(&'"') {
+                        chars.next();
+                        cur.push('"');
+                    } else {
+                        in_quotes = !in_quotes;
+                    }
+                } else {
+                    chars.next();
+                    cur.push(ch);
+                }
+            }
+            args.push(cur);
+        }
+        args
+    }
+
+    // Simulates PowerShell 5.1 (default Legacy) or PowerShell 7.3+ (default Standard, honoring
+    // `& { $PSNativeCommandArgumentPassing = 'Legacy'; ... }`) building lpCommandLine for `hc.exe`.
+    fn simulate_powershell_to_cmd_line(line: &str, ps7_default_standard: bool) -> String {
+        let (body, legacy) = if let Some(inner) = line
+            .strip_prefix("& { $PSNativeCommandArgumentPassing = 'Legacy'; ")
+            .and_then(|s| s.strip_suffix(" }"))
+        {
+            (inner, true)
+        } else {
+            (line, !ps7_default_standard)
+        };
+
+        // Tokenize PowerShell argument mode tokens (barewords and single-quoted strings).
+        let mut tokens = Vec::new();
+        let mut chars = body.chars().peekable();
+        while chars.peek().is_some() {
+            while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+                chars.next();
+            }
+            if chars.peek().is_none() {
+                break;
+            }
+            let mut tok = String::new();
+            if chars.peek() == Some(&'\'') {
+                chars.next();
+                loop {
+                    let ch = chars.next().expect("unterminated single quote");
+                    if ch == '\'' {
+                        if chars.peek() == Some(&'\'') {
+                            chars.next();
+                            tok.push('\'');
+                        } else {
+                            break;
+                        }
+                    } else {
+                        tok.push(ch);
+                    }
+                }
+            } else {
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_ascii_whitespace() {
+                        break;
+                    }
+                    chars.next();
+                    tok.push(ch);
+                }
+            }
+            tokens.push(tok);
+        }
+
+        let mut cmd = tokens[0].clone();
+        for arg in &tokens[1..] {
+            cmd.push(' ');
+            if legacy {
+                // PowerShell Legacy NativeCommandParameterBinder: wraps in "..." if unquoted
+                // whitespace exists without escaping inner quotes.
+                let mut quote_count = 0usize;
+                let mut space_outside = false;
+                let bytes = arg.as_bytes();
+                for i in 0..bytes.len() {
+                    if bytes[i] == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
+                        quote_count += 1;
+                    } else if bytes[i].is_ascii_whitespace() && quote_count.is_multiple_of(2) {
+                        space_outside = true;
+                    }
+                }
+                if space_outside && quote_count.is_multiple_of(2) {
+                    cmd.push('"');
+                    cmd.push_str(arg);
+                    cmd.push('"');
+                } else {
+                    cmd.push_str(arg);
+                }
+            } else {
+                // PowerShell 7.3+ Standard passing uses CommandLineToArgvW quoting.
+                if arg.chars().any(|c| c.is_whitespace() || c == '"') {
+                    let via_like = windows_via_command(Path::new(arg), "x");
+                    let _ = via_like;
+                    // Standard CommandLineToArgvW escaping:
+                    cmd.push('"');
+                    let mut bs = 0usize;
+                    for ch in arg.chars() {
+                        if ch == '\\' {
+                            bs += 1;
+                        } else if ch == '"' {
+                            cmd.extend(std::iter::repeat_n('\\', bs * 2 + 1));
+                            cmd.push('"');
+                            bs = 0;
+                        } else {
+                            cmd.extend(std::iter::repeat_n('\\', bs));
+                            bs = 0;
+                            cmd.push(ch);
+                        }
+                    }
+                    cmd.extend(std::iter::repeat_n('\\', bs * 2));
+                    cmd.push('"');
+                } else {
+                    cmd.push_str(arg);
+                }
+            }
+        }
+        cmd
+    }
+
+    #[test]
+    fn windows_manual_hc_add_line_roundtrips_powershell_5_1_and_7_to_command_line_to_argv_w() {
+        let cases = [
+            r"C:\Users\jupi\AppData\Local\Programs\herdvia\herdvia.exe",
+            r"C:\Users\Jane Doe\AppData\Local\Programs\herdvia\herdvia.exe",
+            r"C:\Users\O'Connor\Programs\herdvia\herdvia.exe",
+            r"C:\Users\Jane O'Doe\Programs\herdvia\herdvia.exe",
+            r"C:\dir with space\",
+            r#"C:\weird\"quote\herdvia.exe"#,
+            r"C:\100%PATH%dir with space\herdvia.exe",
+        ];
+        for raw_exe in cases {
+            let exe = Path::new(raw_exe);
+            let expected_via = windows_via_command(exe, "home");
+            let ps_line = windows_manual_hc_add_line(exe, "home");
+
+            for ps7 in [false, true] {
+                let raw_cmd = simulate_powershell_to_cmd_line(&ps_line, ps7);
+                let argv = parse_command_line_to_argv_w(&raw_cmd);
+                assert_eq!(
+                    argv,
+                    vec![
+                        "machine".to_owned(),
+                        "add".to_owned(),
+                        "--via".to_owned(),
+                        expected_via.clone(),
+                        "--name".to_owned(),
+                        "home".to_owned(),
+                    ],
+                    "failed for exe={raw_exe:?} ps7={ps7} line={ps_line}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn manual_hc_add_line_is_pasteable() {
         #[cfg(unix)]
@@ -264,14 +479,71 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            let line = manual_hc_add_line(
-                Path::new(r"C:\Users\Jane Doe\AppData\Local\Programs\herdvia\herdvia.exe"),
-                "home",
-            );
-            assert_eq!(
-                line,
-                r#"hc machine add --via '"C:\Users\Jane Doe\AppData\Local\Programs\herdvia\herdvia.exe" via home' --name home"#
-            );
+            let tmp = tempfile::tempdir().unwrap();
+            let shim_src = tmp.path().join("hc.rs");
+            fs::write(
+                &shim_src,
+                "fn main() { for a in std::env::args().skip(1) { println!(\"{a}\"); } }\n",
+            )
+            .unwrap();
+            let shim_exe = tmp.path().join("hc.exe");
+            let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+            let status = std::process::Command::new(rustc)
+                .arg(&shim_src)
+                .arg("-o")
+                .arg(&shim_exe)
+                .status()
+                .unwrap();
+            assert!(status.success());
+
+            let path_env = {
+                let mut paths = vec![tmp.path().to_path_buf()];
+                if let Some(existing) = env::var_os("PATH") {
+                    paths.extend(env::split_paths(&existing));
+                }
+                env::join_paths(paths).unwrap()
+            };
+
+            for raw_exe in [
+                r"C:\Users\jupi\AppData\Local\Programs\herdvia\herdvia.exe",
+                r"C:\Users\Jane O'Doe\AppData\Local\Programs\herdvia\herdvia.exe",
+                r"C:\dir with space\",
+            ] {
+                let exe = Path::new(raw_exe);
+                let expected_via = windows_via_command(exe, "home");
+                let line = manual_hc_add_line(exe, "home");
+
+                for shell in ["powershell.exe", "pwsh.exe"] {
+                    let Ok(out) = std::process::Command::new(shell)
+                        .args(["-NoProfile", "-NonInteractive", "-Command", &line])
+                        .env("PATH", &path_env)
+                        .output()
+                    else {
+                        if shell == "pwsh.exe" {
+                            continue;
+                        }
+                        panic!("powershell.exe must be available on Windows");
+                    };
+                    assert!(out.status.success(), "{shell} failed on {line}");
+                    let got: Vec<_> = String::from_utf8(out.stdout)
+                        .unwrap()
+                        .lines()
+                        .map(|s| s.trim_end_matches('\r').to_owned())
+                        .collect();
+                    assert_eq!(
+                        got,
+                        vec![
+                            "machine".to_owned(),
+                            "add".to_owned(),
+                            "--via".to_owned(),
+                            expected_via.clone(),
+                            "--name".to_owned(),
+                            "home".to_owned(),
+                        ],
+                        "{shell} argv mismatch for {raw_exe}"
+                    );
+                }
+            }
         }
     }
 }

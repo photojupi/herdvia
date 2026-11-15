@@ -351,3 +351,40 @@ fn invite_token_pairs_two_agents_over_relay() {
     assert_eq!(via_out.code(), Some(0), "via stderr: {}", via_out.err());
     assert_eq!(via_out.stdout, b"paired over relay");
 }
+
+#[test]
+fn connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_contract() {
+    let _guard = LAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut a = Node::new("eof-connect");
+    a.start_agent();
+
+    let proc = Interactive::spawn(&a, &["connect", "nobody"]);
+    let (code, _, err) = proc.finish(Duration::from_secs(10));
+    assert_eq!(code, 1, "connect EOF stderr: {err}");
+    assert!(
+        err.contains("pairing cancelled"),
+        "expected cancellation message, got: {err}"
+    );
+    assert!(a.peers_text().trim().is_empty());
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in [
+        "DESIGN.md",
+        "README.md",
+        "docs/README.ko.md",
+        "docs/README.ja.md",
+        "docs/README.zh-CN.md",
+    ] {
+        let text = fs::read_to_string(root.join(rel)).unwrap();
+        assert!(
+            !text.contains("`-2`, `-3`") && !text.contains("`-2`、`-3`"),
+            "{rel} still documents sequential -2/-3 hostname suffixes instead of EndpointId hex prefix"
+        );
+    }
+    let design = fs::read_to_string(root.join("DESIGN.md")).unwrap();
+    assert!(
+        !design.contains("두 명령 모두 시작할 때 `herdr-core`")
+            && !design.contains("비대화형 표준 입력이면 255"),
+        "DESIGN.md still contains outdated preflight or stdin EOF exit-code description"
+    );
+}

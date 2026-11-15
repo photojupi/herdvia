@@ -158,12 +158,12 @@ pub fn derive_sas(
 
 pub fn sanitize_hostname(raw: &str, fallback: EndpointId) -> String {
     let trimmed = raw.trim().trim_end_matches('.');
-    let stripped =
-        if trimmed.len() >= 6 && trimmed[trimmed.len() - 6..].eq_ignore_ascii_case(".local") {
-            &trimmed[..trimmed.len() - 6]
-        } else {
-            trimmed
-        };
+    let bytes = trimmed.as_bytes();
+    let stripped = if bytes.len() >= 6 && bytes[bytes.len() - 6..].eq_ignore_ascii_case(b".local") {
+        &trimmed[..bytes.len() - 6]
+    } else {
+        trimmed
+    };
 
     let mut out = String::new();
     let mut need_dash = false;
@@ -532,6 +532,22 @@ mod tests {
         assert_eq!(
             read_msg(&mut r).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn sanitize_hostname_handles_multibyte_utf8_without_panicking() {
+        let fallback = SecretKey::from_bytes(&[9u8; 32]).public();
+        assert_eq!(sanitize_hostname("컴퓨터A", fallback), "A");
+        assert_eq!(sanitize_hostname("컴퓨터A.local", fallback), "A");
+        assert_eq!(sanitize_hostname("太郎のMac", fallback), "Mac");
+        assert_eq!(
+            sanitize_hostname("주피의-노트북", fallback),
+            format!("peer-{}", &fallback.to_string()[..8])
+        );
+        assert_eq!(
+            sanitize_hostname("😀😀", fallback),
+            format!("peer-{}", &fallback.to_string()[..8])
         );
     }
 }

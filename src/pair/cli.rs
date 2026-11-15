@@ -253,6 +253,9 @@ async fn handle_listen_outcome<S: tokio::io::AsyncRead + Unpin>(
                 let perm = parts.nth(1).unwrap_or("in");
                 let _ = writeln!(io::stdout(), "Paired with {saved_name} ({perm}).");
                 Ok(0)
+            } else if text.trim() == "TIMEOUT" {
+                let _ = writeln!(io::stderr(), "herdvia: listen timed out after 5 minutes");
+                Ok(1)
             } else {
                 let _ = writeln!(io::stderr(), "herdvia: pairing declined");
                 Ok(1)

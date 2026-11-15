@@ -465,21 +465,21 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 
 ### 흐름과 종료 코드
 
-1. 두 명령 모두 시작할 때 `herdr-core` 설치 여부를 `doctor` 5번과 같은 기준으로 확인해, 없거나 경로·버전이 어긋나면 표준 오류에 `warning: ...`을 먼저 쓴다(실행을 막지는 않는다).
-2. 받는 쪽 B에서 `herdvia listen [<이름>]`을 실행한다. 에이전트가 떠 있어야 하며, 이미 다른 `listen`이 돌고 있으면 거부한다(255).
+1. 받는 쪽 B에서 `herdvia listen [<이름>]`을 실행하면 시작할 때 `herdr-core` 설치 여부를 `doctor` 5번과 같은 기준으로 확인해, 없거나 경로·버전이 어긋나면 표준 오류에 `warning: ...`을 먼저 쓴다(실행을 막지는 않는다).
+2. `herdvia listen [<이름>]`은 에이전트가 떠 있어야 하며, 이미 다른 `listen`이 돌고 있으면 거부한다(255).
    에이전트는 5분짜리 일회용 비밀 두 개(`invite_secret` 16바이트, `listen_id` 16바이트)를 메모리에만 만들고, CLI는 원격 연결용 초대 문자열 `hvi1-<base32>`를 화면에 출력하는 동시에 포그라운드 UDP 소켓으로 같은 LAN에 신호를 보낸다.
-3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 outbound로 등록돼 있거나 다른 키가 쓰고 있으면 다이얼 전에 거부한다(255).
-   - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대면 바로 연결하고, 여러 대면 번호 선택을 묻고, 0대면(터미널일 때) 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(비대화형 표준 입력이면 255로 끝낸다).
+3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 outbound로 등록돼 있거나 다른 키가 쓰고 있으면 다이얼 전에 거부한다(255). 단, 명시적 `<초대>`를 넘겼고 초대의 `EndpointId`가 이미 같은 `<이름>`에 등록된 키와 같으면 재페어링·복구를 허용한다.
+   - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대면 바로 연결하고, 여러 대면 번호 선택을 묻고, 0대면 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(빈 줄이나 EOF로 입력이 끝나면 취소로 보아 1로 끝낸다).
    - `<초대>`를 주면 LAN 탐색 없이 초대에 들어 있는 `EndpointId`로 바로 건다(외부망이면 공개 릴레이·주소 조회 경유).
 4. 두 에이전트는 전용 ALPN `herdvia/pair/1` 위에서 TLS 1.3 exporter에 묶인 commit-reveal로 6자리 확인 번호(`NNN-NNN`, `000-000`~`999-999`)를 계산해 양쪽 화면에 동시에 보여 준다.
-5. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한):
-   - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 `-2`, `-3`…을 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
-   - B가 승인 응답을 보내면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
+5. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한, 전체 `listen` 5분 만료 및 동시 실패 중단도 함께 감시):
+   - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 A의 `EndpointId` 앞부분 16진수 접두사(`-<4~24자>`)를 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
+   - B가 승인 응답을 보내면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(재접속 대기 중이던 기존 outbound 워커도 즉시 깨워 재시도 지연을 초기화하며, LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
    - A의 CLI는 최대 5초 동안 `status`가 연결됨을 보일 때까지 짧게 기다린 뒤, 현재 실행 파일 경로를 OS 규칙(Unix는 `sh` 단일 인용, Windows는 `CommandLineToArgvW` 인용)에 맞게 감싼 `--via` 값으로 `hc machine add --via <...> --name <이름>`을 직접 실행한다(셸을 거치지 않는다).
 6. 종료 코드:
    - `0`: 양쪽 피어 등록(거는 쪽은 `hc machine add`까지) 성공.
-   - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 대기 시간 초과(연결 대기 5분 또는 승인 입력 60초), 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
-   - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 초대 문자열, 프로토콜·인증 실패(잘못된 증명 5회 누적으로 `listen`이 중단된 경우 포함).
+   - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 프롬프트 입력 취소(빈 줄/EOF), 대기 시간 초과(연결 대기 5분 또는 승인 입력 60초), 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
+   - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 메뉴 선택이나 초대 문자열, 프로토콜·인증 실패(잘못된 증명 또는 Challenge 이후 중단 5회 누적으로 `listen`이 중단된 경우 포함).
 
 ### 프로토콜과 보안 경계
 
@@ -488,9 +488,9 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - **일회용 초대 문자열 (`hvi1-...`)**: `target_id(32바이트) || invite_secret(16바이트)` 48바이트를 소문자 무패딩 RFC 4648 Base32(77자)로 인코딩해 `hvi1-` 뒤에 붙인 82자 토큰이다(앞뒤 공백과 대소문자 무시). 별도 랑데부 서버를 두지 않고 공개키와 128비트 일회용 비밀을 함께 옮긴다.
 - **TLS 채널 바인딩과 commit-reveal SAS**:
   - 양쪽 에이전트는 QUIC 연결의 TLS 1.3 exporter(`export_keying_material`, 라벨 `"herdvia-pair-v1"`, 빈 컨텍스트, 32바이트)를 뽑는다. 중간자(MITM)가 양쪽과 각각 다른 TLS 세션을 맺으면 두 exporter 값이 달라진다.
-  - A는 먼저 `auth_proof = BLAKE3_keyed(derive_key("herdvia-pair-invite-v1" | "herdvia-pair-lan-v1", token), exporter)`와 `commit_a = BLAKE3("herdvia-pair-commit-a-v1" || exporter || id_a || id_b || nonce_a)`를 보낸다. B는 `auth_proof`가 현재 활성 `listen`의 `listen_id` 또는 `invite_secret`과 일치하는지 상수 시간에 검증하고, 틀리면 실패 횟수를 올려 5회에 이르면 그 `listen` 세션 전체를 즉시 폐기한다.
+  - A는 먼저 `auth_proof = BLAKE3_keyed(derive_key("herdvia-pair-invite-v1" | "herdvia-pair-lan-v1", token), exporter)`와 `commit_a = BLAKE3("herdvia-pair-commit-a-v1" || exporter || id_a || id_b || nonce_a)`를 보낸다. B는 `auth_proof`가 현재 활성 `listen`의 `listen_id` 또는 `invite_secret`과 일치하는지 상수 시간에 검증하고, 틀리거나 Challenge 발급 뒤 Reveal 누락·커밋 불일치가 발생하면 실패 횟수를 올려 5회에 이르면 그 `listen` 세션 전체를(승인 입력 대기 중이더라도) 즉시 폐기한다.
   - `auth_proof`가 맞으면 B는 프롬프트 잠금(`prompt_lock`)을 잡아 한 번에 한 요청만 진행시키고(그사이 들어오는 다른 요청은 `429 busy`로 거절), `nonce_b`를 보낸다. A가 `nonce_a`를 공개해 `commit_a`와 일치하면 양쪽 모두 `BLAKE3("herdvia-pair-sas-v1" || exporter || id_a || id_b || nonce_a || nonce_b)` XOF 출력에서 `4_294_000_000` 미만인 리틀엔디언 `u32`를 기각 샘플링(`% 1_000_000`)해 편향 없는 6자리 번호를 얻는다.
-  - commit-reveal로 어느 한쪽도 상대 난수를 보고 자기 난수를 고르지 못하며, 사용자가 승인하거나 거절하는 즉시 해당 `listen` 세션이 종료(`completed = true`)되어 재사용할 수 없다.
+  - commit-reveal로 어느 한쪽도 상대 난수를 보고 자기 난수를 고르지 못하며, 사용자가 승인하거나 거절하는 즉시(원자적으로 만료·중단 여부를 재확인한 뒤) 해당 `listen` 세션이 종료(`completed = true`)되어 재사용할 수 없다.
 - **최소 권한 유지**: `listen`은 `--inbound`만, `connect`는 `--outbound`만 부여한다(기존 반대 방향 권한이 이미 있을 때만 `both`가 된다). 자동으로 `--both`를 주지 않는다.
 
 ## 설치 스크립트

@@ -69,7 +69,8 @@ jobs:
             listen_and_connect_fail_without_running_agent \
             connect_refuses_duplicate_peer_name_before_dialing \
             lan_discovery_pairs_two_local_agents_registers_hc_and_passes_traffic \
-            declining_or_eof_on_listen_leaves_peers_empty_and_exits_one
+            declining_or_eof_on_listen_leaves_peers_empty_and_exits_one \
+            connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_contract
 
   windows-cross:
     runs-on: ubuntu-latest

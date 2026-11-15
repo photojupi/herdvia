@@ -163,7 +163,7 @@ herdvia listen
 ```
 
 - `listen` opens a single-use 5-minute pairing window, broadcasts a discovery beacon on your local Wi-Fi/LAN, and also prints a one-time `hvi1-...` invite string for pairing across different networks.
-- By default, Machine B registers Machine A under A's sanitized hostname (adding `-2`, `-3`, … if that name is already taken by another key). Pass `herdvia listen <name>` if you want to choose the local peer name for A yourself.
+- By default, Machine B registers Machine A under A's sanitized hostname (appending a short hex prefix of A's `EndpointId`, such as `-28af`, if that name is already taken by another key). Pass `herdvia listen <name>` if you want to choose the local peer name for A yourself.
 
 ### Step 2. On Machine A (where Herdr runs), connect to B
 

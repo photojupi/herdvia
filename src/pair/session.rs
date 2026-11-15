@@ -285,6 +285,19 @@ fn decode_hex_16(s: &str) -> io::Result<[u8; 16]> {
         .map_err(|_| frame::invalid("invalid pairing token length"))
 }
 
+async fn record_failed_attempt(session: &ListenSession) {
+    let failed = session.failed_attempts.fetch_add(1, Ordering::AcqRel) + 1;
+    if failed >= MAX_FAILED_PROOFS {
+        session.completed.store(true, Ordering::Release);
+        let _ = session
+            .event_tx
+            .send(ListenEvent::Abort(
+                "too many invalid pairing attempts; run herdvia listen again".into(),
+            ))
+            .await;
+    }
+}
+
 pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
     let Some(session) = network.pairing.current_listen() else {
         conn.close(403u32.into(), b"not listening");
@@ -328,7 +341,6 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
         AuthKind::Lan => &session.listen_id,
     };
     if !verify_auth_proof(auth_kind, expected_token, &tls_binding, &recv_proof) {
-        let failed = session.failed_attempts.fetch_add(1, Ordering::AcqRel) + 1;
         log::line(
             Kind::Unauthenticated,
             &format!("invalid pairing proof from {}", conn.remote_id()),
@@ -345,15 +357,7 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
         .await;
         let _ = send.finish();
         let _ = tokio::time::timeout(Duration::from_millis(100), send.stopped()).await;
-        if failed >= MAX_FAILED_PROOFS {
-            session.completed.store(true, Ordering::Release);
-            let _ = session
-                .event_tx
-                .send(ListenEvent::Abort(
-                    "too many invalid pairing attempts; run herdvia listen again".into(),
-                ))
-                .await;
-        }
+        record_failed_attempt(&session).await;
         conn.close(403u32.into(), b"invalid token");
         return;
     }
@@ -381,20 +385,22 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
     }
 
     let nonce_b: [u8; 32] = random_bytes();
-    if tokio::time::timeout(
-        STEP_TIMEOUT,
-        write_msg(
-            &mut send,
-            &PairMsg::Challenge {
-                nonce_b,
-                target_name: session.hostname.clone(),
-            },
-        ),
-    )
-    .await
-    .is_err_and(|_| true)
-    {
-        conn.close(400u32.into(), b"challenge write timeout");
+    if !matches!(
+        tokio::time::timeout(
+            STEP_TIMEOUT,
+            write_msg(
+                &mut send,
+                &PairMsg::Challenge {
+                    nonce_b,
+                    target_name: session.hostname.clone(),
+                },
+            ),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        record_failed_attempt(&session).await;
+        conn.close(400u32.into(), b"challenge write failed");
         return;
     }
 
@@ -405,6 +411,7 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
                 Kind::Unauthenticated,
                 &format!("missing pairing reveal from {}", conn.remote_id()),
             );
+            record_failed_attempt(&session).await;
             conn.close(400u32.into(), b"invalid reveal");
             return;
         }
@@ -417,6 +424,7 @@ pub async fn serve_incoming(network: Arc<Network>, conn: Connection) {
             Kind::Unauthenticated,
             &format!("pairing commit mismatch from {caller_id}"),
         );
+        record_failed_attempt(&session).await;
         conn.close(400u32.into(), b"commit mismatch");
         return;
     }
@@ -519,6 +527,13 @@ pub async fn serve_listen<S>(stream: S, network: Arc<Network>) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    serve_listen_with_ttl(stream, network, LISTEN_TTL).await
+}
+
+async fn serve_listen_with_ttl<S>(stream: S, network: Arc<Network>, ttl: Duration) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let (mut reader, mut writer) = tokio::io::split(stream);
     let cfg_frame = match tokio::time::timeout(STEP_TIMEOUT, frame::read(&mut reader)).await {
         Ok(Ok(Some(f))) if f.tag == STDIN => f,
@@ -564,7 +579,7 @@ where
         listen_id,
         invite_secret,
         hostname: hostname.clone(),
-        expires_at: Instant::now() + LISTEN_TTL,
+        expires_at: Instant::now() + ttl,
         inflight: AtomicUsize::new(0),
         failed_attempts: AtomicUsize::new(0),
         completed: AtomicBool::new(false),
@@ -621,16 +636,75 @@ where
                         );
                         frame::write(&mut writer, STDOUT, prompt_line.as_bytes()).await?;
 
-                        let approved = matches!(
-                            tokio::time::timeout(APPROVAL_TIMEOUT, frame::read(&mut reader)).await,
-                            Ok(Ok(Some(f)))
-                                if f.tag == STDIN
-                                    && std::str::from_utf8(&f.payload).ok().map(str::trim)
-                                        == Some("approve")
-                        );
+                        let approval_deadline = tokio::time::Instant::now() + APPROVAL_TIMEOUT;
+                        let mut event_closed = false;
+                        let approved = loop {
+                            tokio::select! {
+                                biased;
+                                _ = tokio::time::sleep_until(deadline) => {
+                                    session.completed.store(true, Ordering::Release);
+                                    network.pairing.clear_listen(session.id);
+                                    drop(registration);
+                                    frame::write(&mut writer, STDOUT, b"TIMEOUT\n").await?;
+                                    frame::write(&mut writer, EXIT, &1_i32.to_be_bytes()).await?;
+                                    return Ok(());
+                                }
+                                evt = event_rx.recv(), if !event_closed => {
+                                    match evt {
+                                        Some(ListenEvent::Abort(reason)) => {
+                                            session.completed.store(true, Ordering::Release);
+                                            network.pairing.clear_listen(session.id);
+                                            drop(registration);
+                                            let err = io::Error::new(io::ErrorKind::PermissionDenied, reason);
+                                            write_ipc_error(&mut writer, &err).await;
+                                            return Err(err);
+                                        }
+                                        Some(ListenEvent::Prompt(_)) => {}
+                                        None => event_closed = true,
+                                    }
+                                }
+                                _ = tokio::time::sleep_until(approval_deadline) => {
+                                    break false;
+                                }
+                                ipc_in = frame::read(&mut reader) => {
+                                    match ipc_in {
+                                        Ok(None) | Err(_) => {
+                                            drop(registration);
+                                            return Ok(());
+                                        }
+                                        Ok(Some(f)) => {
+                                            break f.tag == STDIN
+                                                && std::str::from_utf8(&f.payload).ok().map(str::trim)
+                                                    == Some("approve");
+                                        }
+                                    }
+                                }
+                            }
+                        };
 
+                        let claimed = Instant::now() < session.expires_at
+                            && session
+                                .completed
+                                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                                .is_ok();
                         session.completed.store(true, Ordering::Release);
                         network.pairing.clear_listen(session.id);
+
+                        if !claimed {
+                            while let Ok(evt) = event_rx.try_recv() {
+                                if let ListenEvent::Abort(reason) = evt {
+                                    drop(registration);
+                                    let err =
+                                        io::Error::new(io::ErrorKind::PermissionDenied, reason);
+                                    write_ipc_error(&mut writer, &err).await;
+                                    return Err(err);
+                                }
+                            }
+                            drop(registration);
+                            frame::write(&mut writer, STDOUT, b"TIMEOUT\n").await?;
+                            frame::write(&mut writer, EXIT, &1_i32.to_be_bytes()).await?;
+                            return Ok(());
+                        }
 
                         if approved {
                             match peers::grant_inbound(
@@ -1117,5 +1191,199 @@ mod tests {
         probe.close().await;
         accept_b.abort();
         net_b.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn repeated_aborts_after_challenge_abort_listen_session() {
+        let dir_b = tempfile::tempdir().unwrap();
+        let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+        let id_b = net_b.endpoint.id();
+        let port_b = net_b.quic_port();
+        let accept_b = spawn_accept_loop(net_b.clone());
+        let addr_b = EndpointAddr::new(id_b).with_ip_addr(([127, 0, 0, 1], port_b).into());
+
+        let (mut cli_b, srv_b) = tokio::io::duplex(4096);
+        let listen_task = tokio::spawn(serve_listen(srv_b, net_b.clone()));
+        frame::write(&mut cli_b, STDIN, b"").await.unwrap();
+        let ready = frame::read(&mut cli_b).await.unwrap().unwrap();
+        let ready_text = String::from_utf8(ready.payload).unwrap();
+        let listen_id = decode_hex_16(ready_text.split_whitespace().nth(3).unwrap()).unwrap();
+
+        for _ in 0..5 {
+            let att_ep = Endpoint::builder(presets::Minimal)
+                .secret_key(SecretKey::generate())
+                .bind()
+                .await
+                .unwrap();
+            let conn = att_ep.connect(addr_b.clone(), PAIR_ALPN).await.unwrap();
+            let tls_binding = export_tls_binding(&conn).unwrap();
+            let (mut send, mut recv) = conn.open_bi().await.unwrap();
+            let nonce_a = [9u8; 32];
+            let commit_a = compute_commit_a(&tls_binding, att_ep.id(), id_b, &nonce_a);
+            let proof = auth_proof(AuthKind::Lan, &listen_id, &tls_binding);
+            write_msg(
+                &mut send,
+                &PairMsg::Hello {
+                    auth_kind: AuthKind::Lan,
+                    auth_proof: proof,
+                    commit_a,
+                    caller_name: "attacker".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let msg = crate::pair::codec::read_msg(&mut recv).await.unwrap();
+            assert!(matches!(msg, PairMsg::Challenge { .. }));
+            conn.close(0u32.into(), b"grind");
+            att_ep.close().await;
+        }
+
+        let aborted = tokio::time::timeout(Duration::from_secs(3), frame::read(&mut cli_b))
+            .await
+            .expect("listen should abort after 5 post-challenge aborts")
+            .unwrap()
+            .unwrap();
+        assert_eq!(aborted.tag, ERROR);
+        assert!(
+            String::from_utf8(aborted.payload)
+                .unwrap()
+                .contains("too many invalid pairing attempts")
+        );
+        let _ = listen_task.await;
+
+        accept_b.abort();
+        net_b.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn approval_after_session_expiry_or_concurrent_abort_never_grants_inbound() {
+        // 1. Concurrent abort (5 wrong proofs) while PROMPT is waiting on user input.
+        {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+            let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+            let id_b = net_b.endpoint.id();
+            let port_b = net_b.quic_port();
+            let accept_b = spawn_accept_loop(net_b.clone());
+            let addr_b = EndpointAddr::new(id_b).with_ip_addr(([127, 0, 0, 1], port_b).into());
+
+            let (mut cli_b, srv_b) = tokio::io::duplex(4096);
+            let listen_task = tokio::spawn(serve_listen(srv_b, net_b.clone()));
+            frame::write(&mut cli_b, STDIN, b"").await.unwrap();
+            let ready = frame::read(&mut cli_b).await.unwrap().unwrap();
+            let ready_text = String::from_utf8(ready.payload).unwrap();
+            let listen_id_hex = ready_text.split_whitespace().nth(3).unwrap().to_owned();
+
+            let (mut cli_a, srv_a) = tokio::io::duplex(4096);
+            let connect_task = tokio::spawn(serve_connect(srv_a, net_a.clone()));
+            let req = format!("home {id_b} lan {listen_id_hex} 127.0.0.1:{port_b}");
+            frame::write(&mut cli_a, STDIN, req.as_bytes())
+                .await
+                .unwrap();
+
+            let prompt_frame = frame::read(&mut cli_b).await.unwrap().unwrap();
+            assert_eq!(prompt_frame.tag, STDOUT);
+            assert!(
+                String::from_utf8(prompt_frame.payload)
+                    .unwrap()
+                    .starts_with("PROMPT ")
+            );
+
+            // While PROMPT is waiting, 5 wrong-proof connections exhaust the session budget.
+            for _ in 0..5 {
+                let att_ep = Endpoint::builder(presets::Minimal)
+                    .secret_key(SecretKey::generate())
+                    .bind()
+                    .await
+                    .unwrap();
+                let conn = att_ep.connect(addr_b.clone(), PAIR_ALPN).await.unwrap();
+                let tls_binding = export_tls_binding(&conn).unwrap();
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                let commit_a = compute_commit_a(&tls_binding, att_ep.id(), id_b, &[7u8; 32]);
+                write_msg(
+                    &mut send,
+                    &PairMsg::Hello {
+                        auth_kind: AuthKind::Invite,
+                        auth_proof: [0xEE; 32],
+                        commit_a,
+                        caller_name: "attacker".into(),
+                    },
+                )
+                .await
+                .unwrap();
+                let _ = crate::pair::codec::read_msg(&mut recv).await;
+                att_ep.close().await;
+            }
+
+            // Even if the user types "approve" right after, the aborted session must NOT save peers.
+            let _ = frame::write(&mut cli_b, STDIN, b"approve").await;
+            let outcome = tokio::time::timeout(Duration::from_secs(2), frame::read(&mut cli_b))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome.tag, ERROR);
+            assert!(peers::load(dir_b.path()).unwrap().is_empty());
+
+            let _ = listen_task.await;
+            drop(cli_a);
+            let _ = connect_task.await;
+            accept_b.abort();
+            net_a.endpoint.close().await;
+            net_b.endpoint.close().await;
+        }
+
+        // 2. Session TTL expiry while PROMPT is waiting on user input.
+        {
+            let dir_a = tempfile::tempdir().unwrap();
+            let dir_b = tempfile::tempdir().unwrap();
+            let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+            let net_b = Network::bind(dir_b.path().to_owned()).await.unwrap();
+            let id_b = net_b.endpoint.id();
+            let port_b = net_b.quic_port();
+            let accept_b = spawn_accept_loop(net_b.clone());
+
+            let (mut cli_b, srv_b) = tokio::io::duplex(4096);
+            let listen_task = tokio::spawn(serve_listen_with_ttl(
+                srv_b,
+                net_b.clone(),
+                Duration::from_millis(600),
+            ));
+            frame::write(&mut cli_b, STDIN, b"").await.unwrap();
+            let ready = frame::read(&mut cli_b).await.unwrap().unwrap();
+            let ready_text = String::from_utf8(ready.payload).unwrap();
+            let listen_id_hex = ready_text.split_whitespace().nth(3).unwrap().to_owned();
+
+            let (mut cli_a, srv_a) = tokio::io::duplex(4096);
+            let connect_task = tokio::spawn(serve_connect(srv_a, net_a.clone()));
+            let req = format!("home {id_b} lan {listen_id_hex} 127.0.0.1:{port_b}");
+            frame::write(&mut cli_a, STDIN, req.as_bytes())
+                .await
+                .unwrap();
+
+            let prompt_frame = frame::read(&mut cli_b).await.unwrap().unwrap();
+            assert_eq!(prompt_frame.tag, STDOUT);
+
+            // Wait past the 600ms session TTL before typing "approve".
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            let _ = frame::write(&mut cli_b, STDIN, b"approve").await;
+
+            let outcome = tokio::time::timeout(Duration::from_secs(2), frame::read(&mut cli_b))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome.tag, STDOUT);
+            assert_eq!(String::from_utf8(outcome.payload).unwrap(), "TIMEOUT\n");
+            assert!(peers::load(dir_b.path()).unwrap().is_empty());
+
+            let _ = listen_task.await;
+            drop(cli_a);
+            let _ = connect_task.await;
+            accept_b.abort();
+            net_a.endpoint.close().await;
+            net_b.endpoint.close().await;
+        }
     }
 }
