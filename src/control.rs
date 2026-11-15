@@ -4,7 +4,23 @@ use crate::{
 };
 use std::{io, path::Path, time::Duration};
 
+/// How long one control request may take, from connecting to the end of the reply.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// One control request. A stuck agent must not hang the command, so the whole exchange has
+/// one deadline.
 pub async fn request(dir: &Path, command: &str) -> io::Result<String> {
+    tokio::time::timeout(REQUEST_TIMEOUT, exchange(dir, command))
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("the agent did not answer the {command} request within 5 seconds"),
+            ))
+        })
+}
+
+async fn exchange(dir: &Path, command: &str) -> io::Result<String> {
     let mut stream = ipc::connect(dir).await?;
     frame::write(&mut stream, CONTROL, command.as_bytes()).await?;
     let mut output = Vec::new();
@@ -29,6 +45,11 @@ pub async fn request(dir: &Path, command: &str) -> io::Result<String> {
 }
 
 pub async fn reload_if_running(dir: &Path) -> io::Result<()> {
+    reload(dir).await.map(|_| ())
+}
+
+/// Asks the agent to re-read `peers`: true once it confirmed, false when no agent is running.
+pub async fn reload(dir: &Path) -> io::Result<bool> {
     // macOS also refuses a connection while a running agent's listen queue is full, the same
     // error as for a socket left by an agent that died. A running agent holds the lock on the
     // data directory, so a refusal without it is no agent; with it, the refusal is retried
@@ -37,11 +58,11 @@ pub async fn reload_if_running(dir: &Path) -> io::Result<()> {
     let mut running = None;
     loop {
         let err = match request(dir, "reload").await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(err) => err,
         };
         match err.kind() {
-            io::ErrorKind::NotFound => return Ok(()),
+            io::ErrorKind::NotFound => return Ok(false),
             io::ErrorKind::ConnectionRefused => {}
             _ => return Err(err),
         }
@@ -49,7 +70,7 @@ pub async fn reload_if_running(dir: &Path) -> io::Result<()> {
             running = Some(agent_running(dir)?);
         }
         if running == Some(false) {
-            return Ok(());
+            return Ok(false);
         }
         if tokio::time::Instant::now() >= deadline {
             return refused_reload();
@@ -76,16 +97,18 @@ fn agent_running(_dir: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+/// The callers say what was saved and how to apply it, so this names only the cause.
 #[cfg(unix)]
-fn refused_reload() -> io::Result<()> {
-    Err(io::Error::other(
-        "the peers file is updated, but the running agent did not take the reload request and still uses the previous peer list; run the same command again, or restart the agent",
-    ))
+fn refused_reload() -> io::Result<bool> {
+    Err(io::Error::other(REFUSED))
 }
 
+#[cfg(unix)]
+const REFUSED: &str = "it refused the reload request for a second";
+
 #[cfg(windows)]
-fn refused_reload() -> io::Result<()> {
-    Ok(())
+fn refused_reload() -> io::Result<bool> {
+    Ok(false)
 }
 
 #[cfg(all(test, unix))]
@@ -110,6 +133,87 @@ mod tests {
         });
         assert_eq!(request(dir.path(), "status").await.unwrap(), "one\ntwo\n");
         remote.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_deadline_covers_a_reply_that_stalls_mid_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(dir.path().join("agent.sock")).unwrap();
+        let remote = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            frame::read(&mut stream).await.unwrap().unwrap();
+            frame::write(&mut stream, STDOUT, b"one\n").await.unwrap();
+            // Half of the next frame's header, then nothing.
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &[STDOUT, 0, 0])
+                .await
+                .unwrap();
+            stream
+        });
+        let started = std::time::Instant::now();
+        let err = request(dir.path(), "status").await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            err.to_string(),
+            "the agent did not answer the status request within 5 seconds"
+        );
+        assert!(started.elapsed() >= REQUEST_TIMEOUT - Duration::from_millis(100));
+        assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(2));
+        drop(remote.await.unwrap());
+    }
+
+    /// An agent that answers each request on the socket with the frames `answer` gives.
+    fn agent_answering(dir: &Path, answer: fn() -> Vec<(u8, Vec<u8>)>) {
+        let listener = UnixListener::bind(dir.join("agent.sock")).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                frame::read(&mut stream).await.unwrap().unwrap();
+                for (tag, payload) in answer() {
+                    frame::write(&mut stream, tag, &payload).await.unwrap();
+                }
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn reload_tells_a_confirmation_from_no_agent_and_from_an_error() {
+        let none = tempfile::tempdir().unwrap();
+        assert!(!reload(none.path()).await.unwrap());
+
+        let confirmed = tempfile::tempdir().unwrap();
+        agent_answering(confirmed.path(), || {
+            vec![(EXIT, 0_i32.to_be_bytes().to_vec())]
+        });
+        assert!(reload(confirmed.path()).await.unwrap());
+
+        let failed = tempfile::tempdir().unwrap();
+        agent_answering(failed.path(), || {
+            vec![(ERROR, b"invalid peers file: line 1".to_vec())]
+        });
+        let err = reload(failed.path()).await.unwrap_err();
+        assert_eq!(err.to_string(), "invalid peers file: line 1");
+        assert!(reload_if_running(failed.path()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reload_gives_up_on_an_agent_that_never_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(dir.path().join("agent.sock")).unwrap();
+        let held = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                held.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let started = std::time::Instant::now();
+        let err = reload(dir.path()).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            err.to_string(),
+            "the agent did not answer the reload request within 5 seconds"
+        );
+        assert!(started.elapsed() < REQUEST_TIMEOUT + Duration::from_secs(2));
+        held.abort();
     }
 
     #[tokio::test]
@@ -164,10 +268,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = reload_if_running(dir.path()).await.unwrap_err();
         assert!(started.elapsed() >= Duration::from_millis(900));
-        assert_eq!(
-            err.to_string(),
-            "the peers file is updated, but the running agent did not take the reload request and still uses the previous peer list; run the same command again, or restart the agent"
-        );
+        assert_eq!(err.to_string(), REFUSED);
         // No reload request was queued behind the connections that fill the queue.
         drop(queued);
         let mut accepted = 0;

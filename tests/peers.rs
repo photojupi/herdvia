@@ -9,7 +9,10 @@ mod common;
 
 use common::*;
 use std::fs;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn chmod(p: &std::path::Path, mode: u32) {
@@ -671,6 +674,193 @@ fn revoke_warns_when_the_endpoint_id_is_still_allowed_under_another_name() {
     let o = n.herdvia(&["revoke", "b"]);
     assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
     assert!(o.err().is_empty(), "stderr: {}", o.err());
+}
+
+// ---------------------------------------------------------------------------
+// 실행 중인 에이전트가 reload 를 확인하지 않을 때
+// ---------------------------------------------------------------------------
+
+const STDOUT: u8 = 3;
+const EXIT: u8 = 5;
+const ERROR: u8 = 6;
+
+fn frame(tag: u8, payload: &[u8]) -> Vec<u8> {
+    let mut f = vec![tag];
+    f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    f.extend_from_slice(payload);
+    f
+}
+
+/// 노드의 소켓에서 듣는 가짜 에이전트. `reply` 가 제어 요청마다 보낼 바이트를 고르고,
+/// None 이면 답하지 않고 연결을 테스트 프로세스가 끝날 때까지 붙잡는다.
+fn fake_agent(n: &Node, reply: impl Fn(&str) -> Option<Vec<u8>> + Send + 'static) {
+    let listener = UnixListener::bind(n.sock()).unwrap();
+    thread::spawn(move || {
+        let mut held: Vec<UnixStream> = Vec::new();
+        for s in listener.incoming() {
+            let mut s = s.unwrap();
+            let mut head = [0; 5];
+            s.read_exact(&mut head).unwrap();
+            let mut payload = vec![0; u32::from_be_bytes(head[1..].try_into().unwrap()) as usize];
+            s.read_exact(&mut payload).unwrap();
+            match reply(std::str::from_utf8(&payload).unwrap()) {
+                Some(bytes) => {
+                    let _ = s.write_all(&bytes);
+                }
+                None => held.push(s),
+            }
+        }
+    });
+}
+
+fn reload_error(_: &str) -> Option<Vec<u8>> {
+    Some(frame(ERROR, b"invalid peers file"))
+}
+
+const AFTER: &str = "; run herdvia agent reload, and if that fails, restart the agent (herdvia agent install, or restart herdvia agent)\n";
+
+#[test]
+fn revoke_fails_when_the_running_agent_never_answers_the_reload() {
+    let n = Node::new("A");
+    let x = Node::new("X").id().0;
+    n.allow("x", &x, "--both");
+    fake_agent(&n, |_| None);
+    let t = Instant::now();
+    let o = n.herdvia(&["revoke", "x"]);
+    let took = t.elapsed();
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(8),
+        "{took:?} 걸림"
+    );
+    assert!(
+        o.stdout.is_empty(),
+        "확인되지 않았는데 성공 줄을 냄: {}",
+        o.out()
+    );
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: revoked x in the peers file, but the running agent did not confirm it (the agent did not answer the reload request within 5 seconds), so it may still admit x until it reloads{AFTER}"
+        )
+    );
+    assert!(
+        !has_peer_name(&n.peers_text(), "x"),
+        "파일에서 지워지지 않음"
+    );
+}
+
+#[test]
+fn revoke_keeps_the_duplicate_key_warning_when_the_agent_answers_an_error() {
+    let n = Node::new("A");
+    let x = Node::new("X").id().0;
+    fs::write(n.peers_file(), format!("a {x} both\nb {x} in\n")).unwrap();
+    chmod(&n.peers_file(), 0o600);
+    fake_agent(&n, reload_error);
+    let o = n.herdvia(&["revoke", "a"]);
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    let err = o.err();
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 2, "stderr: {err}");
+    assert!(
+        lines[0].starts_with("herdvia: warning: ") && lines[0].contains("still allowed as peer b;"),
+        "stderr: {err}"
+    );
+    assert_eq!(
+        format!("{}\n", lines[1]),
+        format!(
+            "herdvia: revoked a in the peers file, but the running agent did not confirm it (invalid peers file), so it may still admit a until it reloads{AFTER}"
+        )
+    );
+    let peers = n.peers_text();
+    assert!(!has_peer_name(&peers, "a"), "peers:\n{peers}");
+    assert!(has_peer_line(&peers, "b", &x, "in"), "peers:\n{peers}");
+}
+
+#[test]
+fn allow_and_accept_fail_when_the_agent_answers_an_error() {
+    let n = Node::new("A");
+    let x = Node::new("X").id().0;
+    let y = Node::new("Y").id().0;
+    let attempt = format!(
+        "fingerprint id attempts last-seen\n{} {y} 1 0s\n",
+        fingerprint_of(&y)
+    );
+    fake_agent(&n, move |request| match request {
+        "pending" => {
+            let mut bytes = frame(STDOUT, attempt.as_bytes());
+            bytes.extend(frame(EXIT, &0_i32.to_be_bytes()));
+            Some(bytes)
+        }
+        _ => reload_error(request),
+    });
+    let o = n.herdvia(&["allow", "x", &x, "--outbound"]);
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: saved x in the peers file, but the running agent did not confirm it (invalid peers file){AFTER}"
+        )
+    );
+    assert!(has_peer_line(&n.peers_text(), "x", &x, "out"));
+
+    let o = n.herdvia(&["accept", "y", &fingerprint_of(&y), "--inbound"]);
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    assert_eq!(
+        o.err(),
+        format!(
+            "herdvia: saved y in the peers file, but the running agent did not confirm it (invalid peers file){AFTER}"
+        )
+    );
+    assert!(has_peer_line(&n.peers_text(), "y", &y, "in"));
+}
+
+#[test]
+fn agent_reload_reports_a_confirmed_reload() {
+    let n = Node::new("A");
+    fake_agent(&n, |request| {
+        assert_eq!(request, "reload");
+        Some(frame(EXIT, &0_i32.to_be_bytes()))
+    });
+    let o = n.herdvia(&["agent", "reload"]);
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(
+        o.out(),
+        "reloaded: peers re-read; waiting connections retry now\n"
+    );
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
+}
+
+#[test]
+fn agent_reload_without_an_agent_is_255_and_creates_nothing() {
+    let n = Node::new("A");
+    let missing = n.root.join("none");
+    for dir in [&n.herdvia_dir, &missing] {
+        let mut c = n.cmd(&["agent", "reload"]);
+        c.env("HERDVIA_DIR", dir);
+        let o = try_run(c, Duration::from_secs(10)).expect("agent reload 가 10초 안에 끝나지 않음");
+        assert_eq!(
+            o.code(),
+            Some(255),
+            "[{}] stdout: {}",
+            dir.display(),
+            o.out()
+        );
+        assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+        assert_eq!(
+            o.err(),
+            "herdvia: agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)\n"
+        );
+    }
+    assert!(!missing.exists(), "agent reload 가 데이터 폴더를 만듦");
+    assert_eq!(
+        fs::read_dir(&n.herdvia_dir).unwrap().count(),
+        0,
+        "agent reload 가 데이터 폴더에 파일을 만듦"
+    );
 }
 
 // ---------------------------------------------------------------------------

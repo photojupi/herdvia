@@ -11,6 +11,7 @@ enum Command {
     AgentLog,
     AgentInstall,
     AgentUninstall,
+    AgentReload,
     Via {
         peer: String,
         line: String,
@@ -42,6 +43,7 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd, flag] if cmd == "agent" && flag == "--log" => Ok(Command::AgentLog),
         [cmd, action] if cmd == "agent" && action == "install" => Ok(Command::AgentInstall),
         [cmd, action] if cmd == "agent" && action == "uninstall" => Ok(Command::AgentUninstall),
+        [cmd, action] if cmd == "agent" && action == "reload" => Ok(Command::AgentReload),
         [cmd] if cmd == "id" => Ok(Command::Id),
         [cmd] if cmd == "listen" => Ok(Command::Listen(None)),
         [cmd, name] if cmd == "listen" && peers::valid_name(name) => {
@@ -109,9 +111,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             } else {
-                "usage: herdvia agent [install|uninstall] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             },
         )),
     }
@@ -175,15 +177,28 @@ async fn manage(command: Command) -> io::Result<()> {
             let id = peers::load_key(&dir)?.public();
             println!("{id}\n{}", peers::fingerprint(id));
         }
+        Command::AgentReload => {
+            if !control::reload(&dir).await? {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)",
+                ));
+            }
+            println!("reloaded: peers re-read; waiting connections retry now");
+        }
         Command::Allow(peer) => {
             peers::allow(&dir, peer.clone())?;
-            control::reload_if_running(&dir).await?;
+            control::reload_if_running(&dir)
+                .await
+                .map_err(|err| not_confirmed("saved", &peer.name, &err, ""))?;
             println!("{} {} {}", peer.name, peer.id, peer.permission.as_str());
         }
         Command::Revoke(name) => {
             let (peer, others) = peers::revoke(&dir, &name)?;
-            control::reload_if_running(&dir).await?;
-            println!("revoked {name} {}", peer.id);
+            let reloaded = control::reload_if_running(&dir).await;
+            if reloaded.is_ok() {
+                println!("revoked {name} {}", peer.id);
+            }
             if !others.is_empty() {
                 eprintln!(
                     "herdvia: warning: {} is still allowed as peer {}; revoke each of those names to remove it",
@@ -191,6 +206,10 @@ async fn manage(command: Command) -> io::Result<()> {
                     others.join(", ")
                 );
             }
+            reloaded.map_err(|err| {
+                let risk = format!(", so it may still admit {name} until it reloads");
+                not_confirmed("revoked", &name, &err, &risk)
+            })?;
         }
         Command::Status => {
             let status = control::request(&dir, "status").await?;
@@ -216,12 +235,21 @@ async fn manage(command: Command) -> io::Result<()> {
                     permission,
                 },
             )?;
-            control::reload_if_running(&dir).await?;
+            control::reload_if_running(&dir)
+                .await
+                .map_err(|err| not_confirmed("saved", &name, &err, ""))?;
             println!("{name} {id} {}", permission.as_str());
         }
         _ => unreachable!("agent, via and version are handled separately"),
     }
     Ok(())
+}
+
+/// The error for a `peers` change that a running agent did not confirm reloading.
+fn not_confirmed(done: &str, name: &str, cause: &io::Error, risk: &str) -> io::Error {
+    io::Error::other(format!(
+        "{done} {name} in the peers file, but the running agent did not confirm it ({cause}){risk}; run herdvia agent reload, and if that fails, restart the agent (herdvia agent install, or restart herdvia agent)"
+    ))
 }
 
 /// Whether a `status` response shows a peer connected through a relay.
@@ -306,6 +334,10 @@ mod tests {
             parse(vec!["agent".into(), "uninstall".into()]).unwrap(),
             Command::AgentUninstall
         ));
+        assert!(matches!(
+            parse(vec!["agent".into(), "reload".into()]).unwrap(),
+            Command::AgentReload
+        ));
         match parse(vec!["via".into(), "peer".into(), "one entire line".into()]).unwrap() {
             Command::Via { peer, line } => {
                 assert_eq!(peer, "peer");
@@ -319,6 +351,7 @@ mod tests {
             vec!["agent", "unknown"],
             vec!["agent", "install", "extra"],
             vec!["agent", "uninstall", "extra"],
+            vec!["agent", "reload", "extra"],
             vec!["via", "peer"],
             vec!["via", "p", "l", "extra"],
         ] {
