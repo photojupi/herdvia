@@ -380,6 +380,16 @@ fn connect_with_eof_stdin_when_no_lan_peer_cancels_with_exit_one_and_docs_match_
             !text.contains("`-2`, `-3`") && !text.contains("`-2`、`-3`"),
             "{rel} still documents sequential -2/-3 hostname suffixes instead of EndpointId hex prefix"
         );
+        for chunk in text.split("```mermaid\n").skip(1) {
+            if let Some((diagram, _)) = chunk.split_once("```")
+                && diagram.trim_start().starts_with("sequenceDiagram")
+            {
+                assert!(
+                    !diagram.contains(';') && !diagram.contains('#'),
+                    "{rel} sequenceDiagram contains ';' or '#', which breaks GitHub Mermaid parsing"
+                );
+            }
+        }
     }
     let design = fs::read_to_string(root.join("DESIGN.md")).unwrap();
     assert!(

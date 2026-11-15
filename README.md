@@ -152,11 +152,11 @@ sequenceDiagram
     participant B as Machine B (Remote PC)
 
     Note over A,B: Both have herdvia + herdr-core installed & agent running
-    B->>B: herdvia listen (waits up to 5 min; advertises on LAN + prints hvi1-... invite)
+    B->>B: herdvia listen (waits up to 5 min, advertises on LAN & prints hvi1-... invite)
     A->>B: herdvia connect B (discovers B on LAN, or dials hvi1-... invite across networks)
     Note over A,B: Both screens display the same 6-digit code (e.g. 482-917)
     B->>B: Confirm code matches and type y at Allow? [y/N]:
-    B-->>A: Saves A (--inbound); A saves B (--outbound) & connects immediately
+    B-->>A: Saves A (--inbound), A saves B (--outbound) & connects immediately
     A->>A: Automatically runs hc machine add --via '... via B' --name B
 ```
 
