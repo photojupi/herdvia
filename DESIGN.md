@@ -115,7 +115,9 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 | `herdvia id` | 내 EndpointId 전체와 확인용 지문을 표준 출력에 쓴다. 키가 없으면 만든다 |
 | `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 등록하거나 권한을 바꾼다 |
 | `herdvia revoke <이름>` | 피어를 지우고, 그 피어와의 연결을 즉시 끊는다 |
-| `herdvia status` | 피어별 이름, 권한, 연결 여부, 직접/중계, 왕복 시간을 쓴다 |
+| `herdvia peers` | 저장된 피어의 이름, 권한, 지문을 쓴다. 에이전트가 없어도 된다 |
+| `herdvia status` | 피어별 이름, 권한, 연결 여부, 직접/중계, 왕복 시간을 쓰고, 연결되지 않은 피어마다 이유를 한 줄씩 덧붙인다 |
+| `herdvia agent reload` | 떠 있는 에이전트에 `peers`를 다시 읽게 하고, 재시도를 기다리는 연결을 바로 다시 걸게 한다 |
 
 - 지문은 EndpointId 문자열의 앞 16자를 4자씩 `-`로 묶은 것이다. `herdvia id`의 첫 줄은 EndpointId, 둘째 줄은 지문이다.
 - 이름은 `[A-Za-z0-9._-]{1,32}`다.
@@ -123,11 +125,32 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - `allow`, `revoke`는 에이전트가 떠 있으면 즉시 반영되고, 떠 있지 않아도 파일에는 반영된다.
   소켓이 없으면 바로 에이전트가 없다고 본다. 소켓이 연결을 거부하면 Unix에서는 데이터 폴더의 잠금(에이전트가 사는 동안 쥐는 `flock`)을 비차단으로 잡아 본다(`accept`의 reload도 같다).
   잡히면 곧바로 풀고 에이전트가 없다고 보아 기다리지 않고 성공한다. 잡히지 않으면 에이전트가 살아 있으므로 1초 동안 다시 시도하고, 그래도 거부되면
-  `the peers file is updated, but the running agent did not take the reload request and still uses the previous peer list; run the same command again, or restart the agent`로 실패한다(종료 코드 255, 성공 줄은 쓰지 않는다).
+  reload가 확인되지 않은 것으로 보고 실패한다(원인 문구 `it refused the reload request for a second`. 아래 "확인되지 않은 reload").
   macOS는 살아 있는 에이전트의 listen 대기열이 가득 찬 순간에도 죽은 에이전트가 남긴 소켓과 같은 `ECONNREFUSED`로 거부하므로(실측: 대기열 128개), 거부만 보고 포기하면 reload가 조용히 빠져 revoke한 피어가 계속 허용될 수 있기 때문이다.
   잠금을 잠깐 잡는 그 순간에 시작하던 에이전트는 드물게 `agent is already running`으로 실패할 수 있다. Windows는 이 잠금을 보지 않고 예전처럼 1초 동안 거부가 이어지면 에이전트가 없다고 본다.
+- 단발 CONTROL 요청(`reload`, `status`, `status-detail`, `pending`)은 요청 하나마다 연결, 요청 쓰기, 응답 끝까지를 묶어 5초 안에 끝나야 한다.
+  넘으면 TimedOut `the agent did not answer the <요청> request within 5 seconds`다. 멈춘 에이전트 때문에 명령이 끝나지 않으면 안 되기 때문이다.
+  이 제한은 위의 1초 재시도 안에서 요청마다 걸린다. doctor는 자기 3초 제한을 쓴다(아래 "점검: doctor"). `listen`, `connect`, `via`의 연결에는 제한이 없다.
+- 확인되지 않은 reload: `allow`, `revoke`, `accept`가 파일을 바꾼 뒤 reload가 "에이전트 없음"이 아닌 다른 이유(5초 시간 초과, 1초 동안 이어진 거부,
+  프로토콜 오류, `peers`를 읽지 못한 에이전트의 ERROR 등)로 실패하면 성공 줄을 쓰지 않고 한 줄을 stderr에 쓰고 255로 끝낸다.
+  - `allow`, `accept`: `saved <이름> in the peers file, but the running agent did not confirm it (<원인>); run herdvia agent reload, and if that fails, restart the agent (herdvia agent install, or restart herdvia agent)`
+  - `revoke`: `revoked <이름> in the peers file, but the running agent did not confirm it (<원인>), so it may still admit <이름> until it reloads; run herdvia agent reload, and if that fails, restart the agent (herdvia agent install, or restart herdvia agent)`
+
+  원인은 에이전트가 보낸 ERROR 글, 또는 위의 시간 초과·거부 문구다. 파일은 이미 바뀌었고, 같은 `revoke`를 다시 실행하면 에이전트에 닿기 전에 `no peer named <이름>`으로 실패한다.
+  그래서 파일을 그대로 다시 적용하는 `herdvia agent reload`를 안내한다. 예전에는 reload가 멈추면 명령도 멈췄고, 실패해도 에이전트가 revoke한 피어를 계속 허용하는지 알 수 없었다.
+  저장된 파일을 설명하는 경고(`allow`의 키 변경 경고, `revoke`의 중복 키 경고)는 이 줄보다 먼저 그대로 쓰고, `revoke`의 정리 안내(아래)는 쓰지 않는다.
+- `herdvia agent reload`는 CONTROL `reload`를 보낸다. 에이전트가 확인하면 표준 출력에 `reloaded: peers re-read; waiting connections retry now`를 쓰고 0으로 끝난다.
+  reload는 `peers`를 다시 읽고, 재시도를 기다리던 거는 쪽 연결을 모두 지연 없이 다시 걸게 하므로 "지금 다시 시도"에도 쓴다. 요청은 예전부터 있던 것이라 이전 에이전트에도 통한다.
+  에이전트가 없으면 `allow`와 달리 `agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)`로 실패한다(255). 에이전트에 닿으라고 직접 요청한 명령이기 때문이다.
+  1초 재시도와 5초 제한은 위와 같고, 실패하면 그 원인을 그대로 쓴다(255). 데이터 폴더와 키를 만들지 않는다.
 - 성공하면 `allow`는 `<이름> <EndpointId> <in|out|both>`(accept와 같은 형식), `revoke`는 `revoked <이름> <EndpointId>` 한 줄을 표준 출력에 쓴다.
   에이전트 reload까지 성공한 뒤에 쓴다. 무엇이 바뀌었는지 눈으로 확인하게 하려는 것이다.
+- `allow`가 이미 있는 이름의 EndpointId를 바꾸면 표준 출력 줄 뒤에 stderr로 `herdvia: warning: <이름> now points to a different key (fingerprint <옛 지문> -> <새 지문>)`를 쓴다.
+  같은 키의 권한만 바꾸면 더 쓰지 않는다. 동작과 종료 코드는 그대로다. 잘못 붙여 넣은 ID가 기존 피어를 조용히 바꾸지 않게, 키가 바뀐 것을 보이게 하려는 것이다.
+- `revoke`가 성공하면 표준 출력 줄과 아래의 중복 키 경고 다음에 stderr로 안내를 쓴다. outbound 권한(`out`, `both`)이 있던 피어면
+  `herdvia: note: Herdr may still list <이름>; remove it with: hc machine rm <이름>`, 그리고 언제나 `herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)`다.
+  revoke는 이 PC의 `peers`만 바꾸고 Herdr의 머신 등록과 상대 PC의 항목은 남기기 때문이다. `hc machine rm`을 대신 실행하지는 않는다.
+  그래서 성공한 `revoke`도 stderr에 쓴다(종료 코드와 표준 출력은 그대로다).
 - 없는 이름을 `revoke`하면 `no peer named <이름>`으로 실패하고 파일을 건드리지 않는다. 오타로 아무것도 지우지 않았는데 성공으로 보이면 안 되기 때문이다.
 - EndpointId 하나에는 이름 하나만 둔다. `allow`와 `accept`는 다른 이름에 이미 있는 EndpointId를
   `EndpointId <id> is already registered as peer <이름>; revoke it first or use that name`으로 거부한다.
@@ -136,7 +159,11 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
   이전 버전이 쓴 중복 파일도 그대로 읽는다. 그중 한 이름을 revoke하면 성공하되 표준 오류에
   `warning: <EndpointId> is still allowed as peer <남은 이름들>; revoke each of those names to remove it`을 쓴다.
   그런 파일에서 중복된 이름 하나의 권한만 바꾸는 `allow`·`accept`도 거부되므로, 먼저 revoke로 정리해야 한다.
-- `status`는 에이전트가 떠 있어야 한다. 없으면 한 줄을 stderr에 쓰고 255로 끝낸다.
+- `peers`는 `peers` 파일만 읽는다. 머리 줄 `name permission fingerprint`, 피어마다 `<이름> <in|out|both> <지문>`(전체 EndpointId는 쓰지 않는다),
+  마지막 줄 `in = may open sessions on this PC; out = this PC may connect to it`를 표준 출력에 쓴다. 피어가 없거나 파일이나 데이터 폴더가 없으면 `no peers registered`다.
+  에이전트 없이 동작하고 실시간 연결은 말하지 않는다(그것은 `status`). 데이터 폴더와 키를 만들지 않고 권한도 고치지 않는다.
+  파일은 에이전트와 같은 검사로 읽으므로, 에이전트가 거부하는 파일은 같은 문구로 거부한다(255).
+- `status`는 에이전트가 떠 있어야 한다. 없으면 한 줄을 stderr에 쓰고 255로 끝낸다. 표 아래의 이유 줄은 아래 "끊긴 이유: status-detail"에 적는다.
 
 ### 파일 (데이터 폴더 안)
 
@@ -226,7 +253,7 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
   connect가 성공할 때마다 되돌리면 거부당하는 동안 약 1초 간격으로 끝없이 다시 걸게 된다.
   그렇게 곧바로 거부당하는 연결도 잠깐은 연결 목록에 들어가므로, 거는 쪽 `status`는 그동안 `connected`를 잠깐 보일 수 있다.
   연결 확인은 받는 쪽 `status`로 하는 편이 확실하다.
-  via 요청 때 연결이 없으면 최대 5초 기다리고, 안 되면 ERROR를 돌려준다.
+  via 요청 때 연결이 없으면 최대 5초 기다리고, 안 되면 ERROR를 돌려준다. 그 피어의 끊긴 이유 기록이 있으면 문구에 덧붙인다(아래 "끊긴 이유: status-detail").
   연결, open_bi, OPEN 쓰기, 5초 제한 중 하나로 실패해 보내는 ERROR에는 iroh 오류 문구(상대가 정한 종료 사유가 들어갈 수 있다)가 들어가므로,
   로그 줄과 같은 정화(제어 문자 이스케이프, 300자 제한)를 거친다. via는 이 문구를 표준 오류에 쓴다.
   연결되면 스트림을 열어 OPEN(줄)을 쓰고, 이후 프레임은 양방향으로 그대로 옮긴다.
@@ -281,9 +308,57 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 
 ### 로컬 통신 추가
 
-tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `pending`, `doctor`, `listen`, `connect` 중 하나다(`pending`, `doctor`, `listen`, `connect`는 나중에 추가).
-그 밖의 payload는 프레임을 읽는 단계에서 프로토콜 오류로 보고 연결을 끊는다.
-단발 요청(`reload`, `status`, `pending`, `doctor`)에 에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. `listen`과 `connect`는 뒤이어 STDIN·STDOUT·ERROR·EXIT 프레임으로 대화한다(아래 "대화형 페어링: listen / connect"). 네트워크 스트림에서는 CONTROL을 받지 않는다.
+tag 7 CONTROL을 추가한다. 첫 프레임으로만 올 수 있고 payload는 `reload`, `status`, `status-detail`, `pending`, `doctor`, `listen`, `connect` 중 하나다(`status-detail`, `pending`, `doctor`, `listen`, `connect`는 나중에 추가).
+프레임 계층은 CONTROL payload가 1~64바이트의 UTF-8인지만 보고, 어긋나면 프레임을 읽는 단계에서 프로토콜 오류로 보고 연결을 끊는다.
+어떤 요청이 있는지는 에이전트가 판단한다. 모르는 요청은 끝까지 읽은 뒤 ERROR `unknown control request`로 답하고, 그 문구를 로그에도 한 줄 남긴다.
+나중의 CLI가 새 요청을 보냈을 때 응답으로 "이 에이전트는 모른다"를 알 수 있게 하려는 것이다. 연결이 그냥 끊기면 고장과 구별하기 어렵다.
+v0.1.4 이하의 에이전트는 프레임 계층에서 길이(6~7바이트)와 요청 목록을 검사했으므로, 모르는 요청에는 답 없이 연결을 끊는다.
+클라이언트에는 `agent closed without EXIT`, 연결 재설정이나 중단, 끊긴 파이프, 예상하지 못한 EOF로 보인다. 새 요청을 쓰는 CLI는 이것도 "모르는 요청"으로 다룬다(`status`의 대체 동작은 아래).
+단발 요청(`reload`, `status`, `status-detail`, `pending`, `doctor`)에 에이전트는 결과 글을 STDOUT 프레임으로, 끝을 EXIT 0으로 답한다. CLI는 요청마다 5초를 기다린다(위 "명령"). `listen`과 `connect`는 뒤이어 STDIN·STDOUT·ERROR·EXIT 프레임으로 대화한다(아래 "대화형 페어링: listen / connect"). 네트워크 스트림에서는 CONTROL을 받지 않는다.
+
+### 끊긴 이유: status-detail
+
+`status`의 `disconnected`만으로는 상대가 거부했는지, 닿지 않는지, 상대가 걸어 오기를 기다리는지 알 수 없다. 그래서 거는 쪽 에이전트가 이유를 기록하고, `status`, doctor, via 오류가 그것을 보여 준다.
+
+- 기록은 메모리에만 둔다. 파일에 저장하지 않으므로 에이전트를 다시 시작하면 비어 있다. 피어(EndpointId)마다 마지막 실패와 다음 재시도 시각을 둔다.
+- 이 PC가 건 방향만 기록한다. `endpoint.connect`가 실패했을 때와, 이 PC가 건(클라이언트 쪽) 연결이 끝났을 때 쓴다. 들어온 연결이 끝나는 것은 기록을 건드리지 않는다.
+  그래야 `both` 피어의 거부 이유가 반대 방향 연결이 닫힌 것으로 덮이지 않는다. inbound만 허용한 피어에는 기록이 없다.
+- 분류: 원격이 코드 403으로 닫은 애플리케이션 종료만 `rejected`이고, 이유 글은 `403 <원격의 사유>`(사유가 비면 `403`)다. connect의 오류로 드러나든 핸드셰이크 뒤의 종료 사유로 드러나든 같다.
+  그런 종료가 없는 다이얼 실패는 `unreachable`, 이 PC가 건 연결이 다른 이유로 끝난 것은 `closed`이고, 이유 글은 iroh 오류 문구다(예: `timed out`, `closed by peer: session closed (code 0)`).
+  원격 에이전트가 멈추거나 다시 시작할 때는 코드 0으로 닫으므로 `rejected`가 아니라 `closed`다. 403만 상대가 이 PC를 받지 않는다는 확실한 사실이고, 시간 초과를 "PC가 꺼졌다"로 단정하지 않는다.
+- 이유 글에는 원격이 정한 사유가 들어가므로 저장하기 전에 로그 줄과 같은 정화(제어 문자 이스케이프, 300자 제한)를 거친다.
+- 기록은 그 ID에 outbound 권한이 있는 동안에만 쓴다(기록 잠금 안에서 확인한다). 이 PC가 건 연결이 등록되면 지우고, reload 때 outbound 권한이 없어진 ID의 기록은 버린다.
+  잠금은 `connections` 다음에 기록 순서로만 잡는다.
+- 거는 쪽 워커는 잠들기 전에 다음 시도 시각을 기록하고 다시 걸 때 지운다. 남은 시간은 올림한 초로 쓴다. 재시도가 남았는데 0초로 보이지 않게 하려는 것이다.
+- 한계: 거부당하는 연결은 connect가 성공으로 돌아온 뒤 원격이 닫으므로, 그 짧은 사이에는 등록 때 지운 이유가 아직 다시 쓰이지 않아 이유가 보이지 않는다.
+  꺼진 PC로 거는 시도는 QUIC 유휴 제한(약 30초)이 지나야 실패하므로, 그때까지는 새 이유가 없고 이전 이유나 이유 없음이 보인다.
+- CONTROL `status-detail`의 답은 첫 줄 `herdvia-status-detail 1`과 피어마다 한 줄이다.
+  ```
+  <이름> <in|out|both> <connected|disconnected|waiting> <경로> <rtt> <-|rejected|unreachable|closed> <-|재시도까지 남은 초> <이유 글>
+  ```
+  앞 일곱 칸에는 공백이 없고, 이유 글은 줄의 나머지 전부다. 이유 글이 비면 줄은 재시도 칸에서 끝난다. `waiting`은 연결되지 않은 inbound 전용 피어다(이 PC가 걸지 않으므로 실패도 없다).
+  경로와 rtt는 `status`와 같다. 첫 줄이 다르거나 읽을 수 없는 줄이 있으면 CLI는 그 답을 쓰지 않는다. 모르는 이유 종류는 안내 없이 글만 보여 준다.
+- `status`의 5칸 답은 그대로다(`waiting`은 `disconnected`로 쓴다). 이전 doctor는 5칸이 아닌 줄을 경고하므로, 칸을 늘리지 않고 요청을 따로 둔다.
+- `herdvia status`는 먼저 `status-detail`을 요청해 그 답으로 `status`와 같은 표를 그린다. 연결되지 않은 피어가 있으면 빈 줄 하나와 그런 피어마다 한 줄을 표준 출력에 쓴다.
+  - `<이름>: rejected by the peer (<이유 글>)`. 이유 글이 `403 peer not allowed`면 `; on <이름> run herdvia pending, then herdvia accept`를,
+    `403 inbound permission required`면 `; on <이름> allow this PC with --inbound or --both (herdvia pending, then herdvia accept)`를,
+    `403 peer permissions changed`면 `; <이름> changed this PC's permissions (it may have revoked this PC); check herdvia peers on <이름>`을 붙인다. 그 밖의 403에는 붙이지 않는다.
+  - `<이름>: could not reach it (<이유 글>); its agent may be off or offline`
+  - `<이름>: the connection closed (<이유 글>)`
+  - `<이름>: waiting for <이름> to connect (this PC only accepts it)`
+  - 기록이 없으면 `<이름>: not connected yet`, 모르는 종류면 `<이름>: not connected (<이유 글>)`. 보지 않은 원인을 짐작해 쓰지 않는다.
+
+  줄마다 `.`으로 끝나고, 재시도를 기다리면 ` Retrying in <n>s.`를 붙인다. 이유 글이 없으면 괄호를 뺀다. 그런 줄 가운데 하나라도 재시도를 기다리면 마지막에 `Run herdvia agent reload to retry now.`를 쓴다.
+  예: `win1: rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s.`
+  연결된 피어에는 줄을 쓰지 않는다. `both` 피어가 들어온 연결로 연결돼 있으면 거는 쪽 기록이 남아 있어도 줄이 없다. macOS의 중계 안내(stderr)는 같은 표로 판단한다.
+- 에이전트가 `status-detail`을 모르면(ERROR `unknown control request`, 또는 위 "로컬 통신 추가"의 답 없는 끊김. Windows는 파이프 오류 코드
+  `ERROR_BROKEN_PIPE`, `ERROR_NO_DATA`, `ERROR_PIPE_NOT_CONNECTED`도 끊김으로 본다) `status`를 다시 요청해 표만 쓰고, stderr에
+  `herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected`를 쓴다. 종료 코드는 0이다.
+  이 배치의 에이전트가 답하는 도중 죽어도(연결 재설정, EOF) 같은 대체 동작과 안내가 나온다. 그때도 다시 시작하라는 안내가 맞다.
+  첫 줄의 판이 다르면(더 새 에이전트) 다시 시작해도 소용없으므로 안내 없이 `status`의 표만 쓴다. 그 밖의 오류(시간 초과, 에이전트 없음, 다른 ERROR)는 지금처럼 명령의 오류다(255).
+- via 오류: 5초를 기다려도 연결이 없을 때 그 피어에 기록이 있으면 `peer did not connect within 5 seconds: <짧은 이유>`다.
+  짧은 이유는 위 줄에서 이름, 안내, 재시도를 뺀 것이다(예: `rejected by the peer (403 peer not allowed)`, `could not reach it (timed out)`). 기록이 없으면 예전처럼 `peer did not connect within 5 seconds`다.
+  Herdr의 머신 목록에서 원인이 보이게 하려는 것이다. 전체를 300자 안에 맞추므로(넘으면 297자에서 자르고 `...`를 붙인다) via ERROR의 정화를 거쳐도 이중으로 이스케이프되지 않는다.
 
 ### M3에 넣지 않는 것
 
@@ -558,6 +633,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   - 0개: 오류. 상대가 이 PC를 `--outbound`로 allow하고 에이전트를 띄웠는지 확인하라고, 또는 전체 EndpointId로 `allow`하라고 안내한다.
   - 2개 이상: 오류. 전체 EndpointId로 `herdvia allow`를 쓰라고 안내한다.
   - 1개: 그 전체 EndpointId를 `allow`와 같은 경로(`peers` 파일 갱신 후 reload)로 등록하고 `<이름> <EndpointId> <in|both>` 한 줄을 쓴다.
+    reload가 확인되지 않으면 이 줄 대신 `allow`와 같은 `saved <이름> in the peers file, but the running agent did not confirm it (...)` 실패다(M3의 "확인되지 않은 reload").
 - 이름 충돌: 그 이름이 이미 다른 EndpointId로 등록돼 있으면 등록하지 않고 오류를 낸다(먼저 revoke하거나 다른 이름을 쓰라고 안내한다).
   `allow`는 같은 이름이면 항목을 바꾸지만, accept가 사람이 64자를 직접 보지 않은 ID로 기존 피어를 조용히 바꾸면 안 되기 때문이다.
   같은 이름에 같은 EndpointId면 `allow`처럼 그 항목(권한)을 바꾼다. 같은 EndpointId가 다른 이름으로 있으면 `allow`처럼 거부한다(M3의 명령).
@@ -579,6 +655,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 |---|---|
 | `herdvia listen [<이름>]` | 연결될 대상 PC(받는 쪽)에서 5분 동안 페어링 요청을 기다리고, 6자리 확인 번호를 대조해 `--inbound` 승인 여부를 묻는다 |
 | `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC(거는 쪽)에서 LAN 자동 발견 또는 일회용 초대 문자열로 대상 PC와 페어링하고, 6자리 확인 번호가 같은지 이쪽에서도 확인받은 뒤 `--outbound` 등록과 `hc machine add`까지 수행한다 |
+| `herdvia register <이름>` | 이미 페어링한 outbound 피어의 Herdr 등록(`hc machine add`)만 다시 한다 |
 
 기존 `id`, `allow`, `pending`, `accept`는 비대화형·수동 등록용으로 그대로 둔다. `listen`과 `connect`는 처음 설치한 사용자가 긴 EndpointId 복사, 방향 플래그(`--inbound`/`--outbound`) 판단, 최대 30초 재시도 대기, `hc machine add --via ...` 따옴표 처리를 직접 하지 않게 하려는 것이다.
 
@@ -588,7 +665,8 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 2. `herdvia listen [<이름>]`은 에이전트가 떠 있어야 하며, 이미 다른 `listen`이 돌고 있으면 거부한다(255).
    에이전트는 5분짜리 일회용 비밀 두 개(`invite_secret` 16바이트, `listen_id` 16바이트)를 메모리에만 만들고, CLI는 원격 연결용 초대 문자열 `hvi1-<base32>`와 이 PC의 지문(`This PC's fingerprint: ...`, `herdvia id` 둘째 줄과 같은 값)을 화면에 출력하는 동시에 포그라운드 UDP 소켓으로 같은 LAN에 신호를 보낸다.
    지문은 거는 쪽이 LAN 후보 가운데 이 PC를 고를 때 대조할 기준이다.
-3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 outbound로 등록돼 있거나 다른 키가 쓰고 있으면 다이얼 전에 거부한다(255). 단, 명시적 `<초대>`를 넘겼고 초대의 `EndpointId`가 이미 같은 `<이름>`에 등록된 키와 같으면 재페어링·복구를 허용한다.
+3. 거는 쪽 A에서 `herdvia connect <이름> [<초대>]`를 실행한다. `<이름>`이 이미 outbound로 등록돼 있거나 다른 키가 쓰고 있으면 다이얼 전에 거부한다(255).
+   이미 outbound로 등록된 이름의 거부 문구는 `peer <이름> is already registered; revoke it first or choose another name; to re-run only the Herdr registration, run herdvia register <이름>`이다. 페어링은 됐는데 Herdr 등록만 실패한 경우 좋은 페어링을 버리지 않고 되돌아갈 길을 알려 주려는 것이다(아래 "Herdr 등록만 다시: register"). 단, 명시적 `<초대>`를 넘겼고 초대의 `EndpointId`가 이미 같은 `<이름>`에 등록된 키와 같으면 재페어링·복구를 허용한다.
    - `<초대>`를 주지 않으면 포그라운드 UDP 소켓으로 2초 동안 같은 LAN의 `listen` 중인 PC를 찾는다. 1대 이상이면 대수와 관계없이 호스트명과 지문을 번호 메뉴로 보여 주고, 대상 PC의 `listen` 화면에 나온 지문과 같은 항목을 고르라고 안내한다(`0`은 초대 붙여 넣기). 비콘은 인증되지 않아 같은 LAN의 누구나 자기 키로 후보를 만들 수 있으므로, 1대여도 자동으로 고르지 않는다.
      0대면 화면의 `hvi1-...` 초대를 붙여 넣으라고 묻는다(메뉴나 초대 입력이 빈 줄이나 EOF로 끝나면 취소로 보아 1로 끝낸다).
    - `<초대>`를 주면 LAN 탐색 없이 초대에 들어 있는 `EndpointId`로 바로 건다(외부망이면 공개 릴레이·주소 조회 경유).
@@ -602,6 +680,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
      확인을 먼저 보내면 구버전 에이전트는 그 프레임을 예상하지 못해 저장 없이 오류로 끝나고, CLI는 에이전트를 다시 시작하라고 안내한다.
 6. 받는 쪽 B의 사용자가 두 화면의 6자리 번호가 같음을 확인하고 `Allow? [y/N]: `에 `y`(`yes`)를 입력하면(프롬프트 표시 후 60초 제한, 전체 `listen` 5분 만료 및 동시 실패 중단도 함께 감시):
    - B는 A를 `--inbound`로 `peers`에 저장하고 즉시 reload한다(기존 outbound 권한이 이미 있던 피어면 `both`로 승격한다). `<이름>`을 생략했으면 A가 보낸 정화된 호스트명을 기본 이름으로 쓰되, 다른 키가 이미 쓰는 이름이면 A의 `EndpointId` 앞부분 16진수 접두사(`-<4~24자>`)를 붙인다. 이미 같은 키가 등록돼 있으면 기존 이름을 유지한다.
+     호스트명이 `--help`나 `-h`면 쓰는 키가 없어도 같은 접미사를 붙인다. 그 이름으로 저장하면 `herdvia revoke --help`가 도움말이 되어 지울 수 없기 때문이다(아래 "도움말: --help").
      B의 승인과 A의 확인은 서로를 기다리지 않는다. 그래서 B가 승인하고 A가 거절하면(순서와 관계없이. A가 먼저 거절해 연결을 닫은 뒤에 B가 `y`를 눌러도 B는 저장한다) B에는 A가 inbound로 남지만, A가 B를 outbound로 저장하지 않았으므로 연결은 생기지 않는다. 필요하면 B에서 `herdvia revoke`로 지운다.
    - B가 승인 응답을 보내고 A의 사용자도 확인했으면 A는 B를 `<이름>`으로 `--outbound` 저장하고 즉시 reload한다(재접속 대기 중이던 기존 outbound 워커도 즉시 깨워 재시도 지연을 초기화하며, LAN 발견으로 연결했으면 발견된 소켓 주소를 에이전트 `addr_hints`에 넣어 릴레이 없이 바로 직접 연결한다).
    - A의 CLI는 최대 5초 동안 `status`가 연결됨을 보일 때까지 짧게 기다린 뒤, 현재 실행 파일 경로를 OS 규칙(Unix는 `sh` 단일 인용, Windows는 `CommandLineToArgvW` 인용)에 맞게 감싼 `--via` 값으로 `hc machine add --via <...> --name <이름>`을 직접 실행한다(셸을 거치지 않는다).
@@ -610,6 +689,30 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
    - `1`: 받는 쪽 거부(`n`/빈 줄/EOF), 거는 쪽 확인 거부(`n`/빈 줄/EOF), 프롬프트 입력 취소(빈 줄/EOF), 대기 시간 초과(연결 대기 5분 또는 받는 쪽 승인 입력 60초), 또는 피어 등록은 됐으나 마지막 `hc machine add`가 없거나 실패함(이 경우 복사해 실행할 `hc machine add ...` 줄을 표준 오류에 안내한다).
    - `255`: 인자 오류, 에이전트 미실행, 이름·키 충돌, 잘못된 메뉴 선택이나 초대 문자열, 프로토콜·인증 실패(잘못된 증명 또는 Challenge 이후 중단 5회 누적으로 `listen`이 중단된 경우 포함),
      거는 쪽 확인 입력 60초 초과(에이전트가 오류로 끝내므로 확인 프롬프트가 없는 구버전 CLI도 이유를 보여 준다), 확인 없이 승인한 구버전 에이전트.
+
+### Herdr 등록만 다시: register
+
+`connect`가 페어링은 했는데 `hc machine add`가 없거나 실패하면, `connect`를 다시 실행해도 이미 등록된 이름이라 거부된다. `herdvia register <이름>`은 키, 권한, 에이전트를 건드리지 않고 Herdr 등록만 다시 한다.
+에이전트가 떠 있지 않아도 되고, `connect`와 달리 `status`로 연결을 기다리지 않는다.
+
+1. `peers`를 읽는다(키를 만들지 않는다). 그 이름의 피어가 없거나 outbound 권한이 없으면 `no outbound peer named <이름>; pair it with herdvia connect first`로 실패한다(255).
+2. `hc`를 `connect`와 같은 방법으로 찾고, 있으면 `hc machine ls --json`(15초 제한)을 실행해 그 이름의 머신을 본다. 의존성을 늘리지 않으려고 JSON은 작은 전용 읽기 함수로 `machines` 배열 항목의 `name`, `target`, `via`만 읽는다.
+   - `via`가 true이고 `target`이 이 실행 파일로 `connect`가 만들 `--via` 값(현재 실행 파일 경로와 ` via <이름>`, OS 규칙대로 인용)과 정확히 같으면 표준 출력에 `<이름> is already registered in Herdr`를 쓰고 0으로 끝난다. `hc machine add`는 실행하지 않는다.
+   - `via`가 true이고 `target`이 ` via <이름>`으로 끝나며 그 앞 프로그램의 파일 이름이 `herdvia`나 `herdvia.exe`이지만 경로가 다르면(옮긴 설치, 빌드 폴더의 실행 파일)
+     `Herdr's <이름> uses another herdvia executable (<hc가 보여 준 프로그램>); remove it with hc machine rm <이름>, then run herdvia register <이름>`으로 1로 끝난다.
+     옛 경로를 건강한 등록으로 보이면 안 되고, `hc machine rm`을 대신 실행하지는 않는다.
+   - 그 밖(`via`가 false이거나 다른 피어나 다른 프로그램을 거치는 머신)이면
+     `Herdr already has a machine named <이름> that does not go through herdvia to peer <이름>; rename or remove it (hc machine rename / hc machine rm), then run herdvia register <이름>`으로 1로 끝난다.
+   - `hc machine ls`가 실패하거나, 15초를 넘기거나, 출력을 읽을 수 없거나, 그 이름이 없거나, `via`나 `target`이 없으면 이 확인을 건너뛰고 다음으로 간다. 읽지 못한 것을 "이미 등록됨"으로 보지 않는다.
+3. `connect`와 같은 `hc machine add --via <...> --name <이름>`을 15초 제한으로 실행한다.
+   - 성공: 표준 출력에 `Registered machine '<이름>' in Herdr.`, 0.
+   - `hc`가 없음: `'hc' was not found, so '<이름>' was not added to Herdr. After installing Herdr, run:`과 들여 쓴 수동 `hc machine add ...` 줄(`connect`가 쓰는 줄과 같다), 1.
+   - 실패: `failed to register '<이름>' in Herdr (<hc가 쓴 첫 줄>). To register manually, run:`과 들여 쓴 수동 줄, 1.
+   - 시간 초과: `hc machine add did not finish within 15 seconds, so whether Herdr registered '<이름>' is unknown; check hc machine ls, and if '<이름>' is missing, run:`과 들여 쓴 수동 줄, 1.
+     죽이기 전에 등록이 끝났을 수 있으므로 "등록되지 않았다"고 하지 않는다.
+
+이 절의 오류 줄은 모두 `herdvia: `로 시작하고 stderr에 쓴다. 종료 코드 1은 `connect`처럼 Herdr 등록의 결과이고, 255는 인자 오류와 피어 조회 실패다.
+이미 등록됐는지는 문자열이 정확히 같은지로만 본다. 같은 실행 파일을 심볼릭 링크나 다른 경로 표기로 실행하면 다른 실행 파일로 보고 `hc machine rm` 안내를 낸다(아무것도 바꾸지 않고 1로 끝난다).
 
 ### 프로토콜과 보안 경계
 
@@ -699,11 +802,12 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
      Windows에서 3과 같은 조건의 열린 DACL은 `warn peers: <2와 같은 안내>`이고 개수는 쓰지 않는다. 이때도 내용을 검사해, 형식 오류면 평소의 fail 줄을 낸다.
      다음 실행의 제한은 내용을 고치지 않으므로, warn만 보고 넘어가면 그 실행이 형식 오류로 실패하기 때문이다.
      2~4의 이 warn은 데이터 폴더를 준비하는 명령(`prepare_dir`를 거치는 `herdvia id`, `allow`, `accept`, `revoke`, 에이전트 시작)이 제한할 때까지 남는다.
-     doctor와 `status`, `pending`, `via`는 아무것도 바꾸지 않는다. v0.1.2는 Windows에서 DACL을 건드리지 않았으므로, v0.1.2에서 올린 PC는 새 버전으로 그런 명령을 처음 실행하기 전까지
+     doctor와 `status`, `pending`, `via`, `peers`, `register`, `agent reload`는 아무것도 바꾸지 않는다. v0.1.2는 Windows에서 DACL을 건드리지 않았으므로, v0.1.2에서 올린 PC는 새 버전으로 그런 명령을 처음 실행하기 전까지
      2~4 모두 warn일 수 있다(실측: v0.1.2가 설치된 Windows 11 PC 두 대에서 data directory, secret.key, peers 세 줄 모두 warn).
      그 명령 뒤에는 ok다. 폴더에는 보호 DACL이 걸려 세 신뢰 계정의 항목만 남고, 두 파일도 세 계정의 항목만 남는다(임시 폴더로 모사해 확인). 설치 스크립트(`install.ps1`)는 `herdvia id`를 실행한다.
      3, 4의 거부에 붙이는 일반 안내는 거부 문구에 해법이 없을 때만 붙인다. 해법이 이미 있는 문구에 다른 해법을 덧붙이면 무엇을 해야 할지 흐려지기 때문이다.
-     이 규칙은 권한 거부(PermissionDenied)로 끝난 경우에만 쓴다. 그 밖의 오류는 `secret.key`면 백업에서 되살리라는 안내, `peers`면 형식 오류는 그 줄을 고치라는 안내, 나머지는 `it must be a regular file that this user can read`다.
+     이 규칙은 권한 거부(PermissionDenied)로 끝난 경우에만 쓴다. 그 밖의 오류는 `secret.key`면 `fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)`
+     (README의 보안 모델과 같이, 백업에서 되살리지 말고 새 신원을 만들라는 안내다. 32바이트가 아닌 키도 같다), `peers`면 형식 오류는 그 줄을 고치라는 안내, 나머지는 `it must be a regular file that this user can read`다.
      Unix는 `make this user its owner and run chmod 600 on it`이고, 소유자·0600 거부와 권한 거부 OS 오류(EACCES)에는 붙이고 macOS ACL 거부(`chmod -N`이 든 문구)에는 붙이지 않는다.
      Windows는 `check that it is a regular file, not a link, that this user can read`이고, 권한 거부 OS 오류(예: Access is denied)에만 붙이며 herdvia 자신의 종류·소유자·DACL 거부에는 붙이지 않는다.
   5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
@@ -713,12 +817,16 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   6. 자동 시작. macOS는 plist의 `ProgramArguments` 첫 값, Windows는 Run 값을 읽기만 한다(`launchctl`은 부르지 않는다).
      등록이 없거나 다른 실행 파일을 가리키면 warn(`agent install`을 다시 실행). Windows는 Run 값을 `install`이 쓸 명령과 ASCII 대소문자를 무시하고 비교한다. Linux는 지원하지 않는다는 warn. Windows에서 관리자 권한으로 돌고 있으면 `agent install`이 거부된다는 warn을 한 줄 더 쓴다.
   7. 에이전트. 제어 요청 `doctor`를 보낸다. 응답이 없으면 fail. 버전이나 실행 파일 경로가 이 실행 파일과 다르면 warn(업그레이드 뒤 다시 시작하지 않은 경우).
-     doctor가 보내는 제어 요청(`doctor`, 구버전 확인용 `status`, 8의 `status`, 9의 `pending`)은 요청마다 연결부터 응답 끝까지 3초(상수 `AGENT_TIMEOUT`)만 기다린다.
-     `doctor`나 구버전 확인용 `status`가 시간을 넘기면 "실행 중일 수 있으나 3초 안에 답하지 않았다"는 fail이고 뒤 요청은 보내지 않는다. 8의 `status`가 넘기면 warn이고 9는 묻지 않는다. 9가 넘기면 warn이다.
+     doctor가 보내는 제어 요청(`doctor`, 구버전 확인용 `status`, 8의 `status`와 `status-detail`, 9의 `pending`)은 요청마다 연결부터 응답 끝까지 3초(상수 `AGENT_TIMEOUT`)만 기다린다.
+     `doctor`나 구버전 확인용 `status`가 시간을 넘기면 "실행 중일 수 있으나 3초 안에 답하지 않았다"는 fail이고 뒤 요청은 보내지 않는다. 8의 `status`가 넘기면 warn이고 9는 묻지 않는다.
+     8의 `status`에는 답하고 `status-detail`이 넘기면 피어 줄은 예전 문구로 쓰고 `warn peer details: the agent did not answer within 3 seconds; restart it: <시작 명령>`을 더하며 9는 묻지 않는다. 9가 넘기면 warn이다.
      그래서 멈춘 에이전트를 기다리는 시간은 한 번의 제한 시간 정도다. 연결이 끊기는 것(구버전)과 시간 초과는 구별한다.
      홈 릴레이에 연결되어 있지 않으면 relay 줄이 warn이다(외부 HTTPS 연결과 프록시 환경을 확인하라. herdvia는 프록시 환경 변수를 쓰지 않는다).
   8. 피어별 상태. 기존 `status` 응답에서 피어마다 한 줄. connected는 ok이고, macOS에서 relay면 로컬 네트워크 허용 안내를 덧붙인다.
      disconnected는 warn이고, out/both면 상대 에이전트가 꺼졌거나 상대가 이 PC를 허용하지 않았다고, in이면 상대가 걸어 와야 연결된다고 안내한다. 피어가 0개면 warn 한 줄.
+     표는 여전히 `status` 답으로 판단하고, `status-detail`을 따로 요청한다. 답을 해석할 수 있으면 연결되지 않은 피어의 warn 줄은 `herdvia status`의 이유 줄에서 앞의 이름을 뺀 문구를 쓴다
+     (`warn peer <이름> (<in|out|both>): <이유 줄>`, 예: `warn peer win1 (out): rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s.`).
+     `status-detail`을 모르는 에이전트이거나 두 요청 사이에 목록이 바뀌어 그 피어가 답에 없으면 위의 예전 문구다.
   9. 대기 중인 접속 시도. `pending` 응답의 항목 수를 ok 한 줄로 쓰고, 1개 이상이면 `pending`으로 확인하고 `accept`로 수락하라고 안내한다.
 
   relay 줄과 8, 9는 에이전트가 응답할 때만 쓴다(relay 줄은 `doctor`에 답하는 에이전트일 때만).
@@ -734,6 +842,25 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 - 구버전 에이전트(0.1.1 이하)는 `doctor`를 모르므로 프로토콜 오류로 연결을 끊고 로그에 `unknown CONTROL request` 한 줄을 남긴다.
   doctor는 그 경우 `status`를 다시 요청해, 답이 오면 "에이전트가 이 실행 파일보다 오래되었다. 다시 시작하라"는 warn을 쓰고 8, 9를 이어 한다. `status`도 실패하면 fail이다.
 - 판정과 줄 생성은 파일 시스템·네트워크 없이 단위 테스트할 수 있는 순수 함수로 두고, 사실을 모으는 부분과 나눈다.
+
+## 도움말: --help
+
+- `herdvia --help`, `herdvia -h`, `herdvia help`는 표준 출력에 짧은 설명 문단, `usage: herdvia <command> [<arguments>]`, `commands:` 아래 명령마다 한 줄,
+  `Run herdvia <command> --help for a command's usage and an example.`을 쓰고 0으로 끝난다.
+- `herdvia <명령> --help`(또는 `-h`)는 공개 명령(`agent`, `listen`, `connect`, `register`, `peers`, `id`, `allow`, `revoke`, `status`, `pending`, `accept`, `doctor`)마다
+  `usage: herdvia ...` 줄, 짧은 설명, `example: herdvia ...` 줄을 표준 출력에 쓰고 0으로 끝난다. usage 줄은 인자 오류 때 쓰는 usage 줄의 해당 부분과 같다.
+  `agent`의 usage는 macOS·Linux에서 `agent [install|uninstall|reload]`, Windows에서 `agent [install|uninstall|reload|--log]`이고, Windows 도움말만 `--log`를 설명한다.
+  `via --help`는 `Internal: hc runs this for machines added with --via. It is not meant to be run by hand.`만 쓴다.
+- 고정된 글만 쓰므로 데이터 폴더, `secret.key`, 에이전트 어느 것도 건드리지 않고, `HERDVIA_DIR`이 없는 폴더를 가리켜도 아무것도 만들지 않는다. root 거부는 도움말보다 먼저다.
+- 도움말 형태는 인자 해석에서 가장 먼저 본다. `--help`와 `-h`는 이름 규칙(`[A-Za-z0-9._-]{1,32}`)에 맞는 피어 이름이기도 해서, 예전에는 `listen --help`가 `--help`라는 이름으로 5분 동안 기다렸다.
+  도움말로 보는 것은 인자가 하나뿐일 때(`--help`, `-h`, `help`)와, 알려진 명령 바로 뒤에 `--help`나 `-h` 하나만 올 때다.
+  그 밖의 자리는 도움말이 아니다. `connect <이름> --help`는 초대 문자열이 `--help`인 `connect`이고, `revoke home --help`, `agent install --help`, `help listen`은 인자 오류다.
+- 그래서 `revoke --help`, `register --help`는 도움말이 되어, `--help`나 `-h`라는 이름의 피어는 지우거나 등록할 수 없다. 피어를 저장하는 명령은 이 둘을 이름으로 받지 않는다.
+  `connect --help <초대>`, `allow --help <EndpointId> ...`, `accept --help <지문> ...`(`-h`도 같다)은 `--help and -h cannot be peer names`로 거부한다(255).
+  `listen`이 상대 호스트명을 기본 이름으로 쓸 때는 접미사를 붙인다(위 "흐름과 종료 코드" 6).
+- 인자 오류는 예전처럼 usage 줄을 stderr에 쓰고 255로 끝난다. 그 줄은 새 명령을 넣어
+  `usage: herdvia agent [install|uninstall|reload] | listen [<name>] | connect <name> [<invite>] | register <name> | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | peers | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version | --help`이다
+  (Windows는 `agent [install|uninstall|reload|--log]`).
 
 ## 단계
 
