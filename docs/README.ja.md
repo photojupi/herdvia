@@ -563,7 +563,7 @@ ok   pending: no rejected connection attempts
   4. `herdvia id` を実行して新しい ID を作成します。
   5. `herdvia agent install` を実行します（または `herdvia agent` を起動し直します）。
   6. すべてのピアと改めてペアリングします。
-- **対話型ペアリング (`listen` / `connect`):** ペアリングはリモートコマンドを一切実行せず `pending` にも記録されない専用 ALPN（`herdvia/pair/1`）上で動作し、`herdvia listen` が待機中のときのみハンドシェイクを受け付けます。各 `listen` セッションは 5 分で失効する 128 ビットの 1 回限りトークンを生成し、最初の有効なハンドシェイク証明で即座に消費されるため、同一セッションに対する繰り返し推測はできません。双方は QUIC TLS 1.3 exporter（`herdvia-pair-v1`）と commit-reveal 乱数交換から 6 桁の確認コード（`NNN-NNN`、約 20 ビット）を導出し、接続先 PC で人間が両画面の一致を確認して `y` を入力しない限り `peers` は一切変更されません。付与される権限も接続先 PC では `--inbound` のみ、操作側 PC では `--outbound` のみです（自動で `--both` にはなりません）。
+- **対話型ペアリング (`listen` / `connect`):** ペアリングはリモートコマンドを一切実行せず `pending` にも記録されない専用 ALPN（`herdvia/pair/1`）上で動作し、`herdvia listen` が待機中のときのみハンドシェイクを受け付けます。各 `listen` セッションは 5 分で失効する 128 ビットの 1 回限りトークンを生成し、無効なハンドシェイク証明が 5 回続くとセッションを終了し、同時に 1 件の確認のみを受け付けて承認または拒否の直後に閉じます。双方は QUIC TLS 1.3 exporter（`herdvia-pair-v1`）と commit-reveal 乱数交換から 6 桁の確認コード（`NNN-NNN`、約 20 ビット）を導出し、接続先 PC で人間が両画面の一致を確認して `y` を入力しない限り `peers` は一切変更されません。付与される権限も接続先 PC では `--inbound` のみ、操作側 PC では `--outbound` のみです（自動で `--both` にはなりません）。
 - **フィンガープリントと `pending` / `accept`:** フィンガープリントは目視照合のために 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）のみを表示したもので、`herdvia` が保存・検証するのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了したピアのみをメモリ上に最大 16 件・10 分間保持し、`accept` は接頭辞の重複で候補が複数ある場合や、リストが満杯の場合（この PC の `EndpointId` を知る誰もが埋められるため）をいずれも拒否します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
 
 **脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
