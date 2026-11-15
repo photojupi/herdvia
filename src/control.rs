@@ -104,7 +104,7 @@ fn refused_reload() -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-const REFUSED: &str = "it refused the reload request for a second";
+const REFUSED: &str = "the running agent refused the reload request for a second";
 
 #[cfg(windows)]
 fn refused_reload() -> io::Result<bool> {
@@ -268,7 +268,10 @@ mod tests {
         let started = std::time::Instant::now();
         let err = reload_if_running(dir.path()).await.unwrap_err();
         assert!(started.elapsed() >= Duration::from_millis(900));
-        assert_eq!(err.to_string(), REFUSED);
+        assert_eq!(
+            err.to_string(),
+            "the running agent refused the reload request for a second"
+        );
         // No reload request was queued behind the connections that fill the queue.
         drop(queued);
         let mut accepted = 0;

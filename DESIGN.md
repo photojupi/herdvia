@@ -125,7 +125,7 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
 - `allow`, `revoke`는 에이전트가 떠 있으면 즉시 반영되고, 떠 있지 않아도 파일에는 반영된다.
   소켓이 없으면 바로 에이전트가 없다고 본다. 소켓이 연결을 거부하면 Unix에서는 데이터 폴더의 잠금(에이전트가 사는 동안 쥐는 `flock`)을 비차단으로 잡아 본다(`accept`의 reload도 같다).
   잡히면 곧바로 풀고 에이전트가 없다고 보아 기다리지 않고 성공한다. 잡히지 않으면 에이전트가 살아 있으므로 1초 동안 다시 시도하고, 그래도 거부되면
-  reload가 확인되지 않은 것으로 보고 실패한다(원인 문구 `it refused the reload request for a second`. 아래 "확인되지 않은 reload").
+  reload가 확인되지 않은 것으로 보고 실패한다(원인 문구 `the running agent refused the reload request for a second`. 아래 "확인되지 않은 reload").
   macOS는 살아 있는 에이전트의 listen 대기열이 가득 찬 순간에도 죽은 에이전트가 남긴 소켓과 같은 `ECONNREFUSED`로 거부하므로(실측: 대기열 128개), 거부만 보고 포기하면 reload가 조용히 빠져 revoke한 피어가 계속 허용될 수 있기 때문이다.
   잠금을 잠깐 잡는 그 순간에 시작하던 에이전트는 드물게 `agent is already running`으로 실패할 수 있다. Windows는 이 잠금을 보지 않고 예전처럼 1초 동안 거부가 이어지면 에이전트가 없다고 본다.
 - 단발 CONTROL 요청(`reload`, `status`, `status-detail`, `pending`)은 요청 하나마다 연결, 요청 쓰기, 응답 끝까지를 묶어 5초 안에 끝나야 한다.
