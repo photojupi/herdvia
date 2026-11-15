@@ -287,13 +287,35 @@ fn classify(machines: &[Machine], peer: &str, expected: &str) -> Option<Listed> 
     }
     // The program part, as hc prints it: quoted when the path needs it.
     let program = target.strip_suffix(&format!(" via {peer}"));
-    let file = program.and_then(|p| p.trim_matches(['\'', '"']).rsplit(['/', '\\']).next());
+    let file = program
+        .and_then(program_word)
+        .and_then(|p| p.rsplit(['/', '\\']).next());
     match (program, file) {
-        (Some(program), Some("herdvia" | "herdvia.exe")) => {
+        // Windows file names ignore case.
+        (Some(program), Some(file))
+            if file == "herdvia" || file.eq_ignore_ascii_case("herdvia.exe") =>
+        {
             Some(Listed::OtherHerdvia(log::sanitize(program)))
         }
         _ => Some(Listed::Foreign),
     }
+}
+
+/// The program of a `--via` value without its quotes, when it is a single word: unquoted
+/// without ASCII whitespace, or one quoted string, in which `'\''` stands for a single quote
+/// as `sh_quote` writes it. None for anything else, such as a command with arguments.
+fn program_word(program: &str) -> Option<&str> {
+    let Some(quote) = program.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+        let word = !program.is_empty() && !program.contains(|c: char| c.is_ascii_whitespace());
+        return word.then_some(program);
+    };
+    let inner = program.strip_prefix(quote)?.strip_suffix(quote)?;
+    let rest = if quote == '\'' {
+        inner.replace(r"'\''", "")
+    } else {
+        inner.to_owned()
+    };
+    (!rest.contains(quote)).then_some(inner)
 }
 
 /// The `machines` of `hc machine ls --json`. None for anything else, including a truncated or
@@ -717,6 +739,18 @@ mod tests {
                 r#""C:\Program Files\herdvia\herdvia.exe""#,
             ),
             (r"C:\h\herdvia.exe via home", r"C:\h\herdvia.exe"),
+            // Windows file names ignore case; the Unix name does not.
+            (r"C:\Tools\HERDVIA.EXE via home", r"C:\Tools\HERDVIA.EXE"),
+            (r"C:\Tools\Herdvia.exe via home", r"C:\Tools\Herdvia.exe"),
+            (
+                r#""C:\My Tools\HerdVia.EXE" via home"#,
+                r#""C:\My Tools\HerdVia.EXE""#,
+            ),
+            // A single word, however it is quoted.
+            (
+                r"'/tmp/it'\''s home/herdvia' via home",
+                r"'/tmp/it'\''s home/herdvia'",
+            ),
         ] {
             assert_eq!(
                 check(Some(target), Some(true)),
@@ -731,6 +765,21 @@ mod tests {
             (Some("/bin/herdvia via other"), Some(true)),
             (Some("/bin/not-herdvia via home"), Some(true)),
             (Some("/bin/herdvia2 via home"), Some(true)),
+            (Some("/bin/HERDVIA via home"), Some(true)),
+            // A command with arguments whose last one names herdvia is not a herdvia executable.
+            (
+                Some("ssh jumpbox /usr/local/bin/herdvia via home"),
+                Some(true),
+            ),
+            (Some(r"ssh jumpbox C:\h\herdvia.exe via home"), Some(true)),
+            (
+                Some("ssh jumpbox '/usr/local/bin/herdvia' via home"),
+                Some(true),
+            ),
+            (Some("'ssh' 'jumpbox' '/opt/herdvia' via home"), Some(true)),
+            (Some(r#""ssh" "C:\h\herdvia.exe" via home"#), Some(true)),
+            (Some("/opt/my\therdvia via home"), Some(true)),
+            (Some("' via home"), Some(true)),
         ] {
             assert_eq!(check(target, via), Some(Listed::Foreign), "{target:?}");
         }

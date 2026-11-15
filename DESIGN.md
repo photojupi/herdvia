@@ -704,9 +704,11 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
 1. `peers`를 읽는다(키를 만들지 않는다). 그 이름의 피어가 없거나 outbound 권한이 없으면 `no outbound peer named <이름>; pair it with herdvia connect first`로 실패한다(255).
 2. `hc`를 `connect`와 같은 방법으로 찾고, 있으면 `hc machine ls --json`(15초 제한)을 실행해 그 이름의 머신을 본다. 의존성을 늘리지 않으려고 JSON은 작은 전용 읽기 함수로 `machines` 배열 항목의 `name`, `target`, `via`만 읽는다.
    - `via`가 true이고 `target`이 이 실행 파일로 `connect`가 만들 `--via` 값(현재 실행 파일 경로와 ` via <이름>`, OS 규칙대로 인용)과 정확히 같으면 표준 출력에 `<이름> is already registered in Herdr`를 쓰고 0으로 끝난다. `hc machine add`는 실행하지 않는다.
-   - `via`가 true이고 `target`이 ` via <이름>`으로 끝나며 그 앞 프로그램의 파일 이름이 `herdvia`나 `herdvia.exe`이지만 경로가 다르면(옮긴 설치, 빌드 폴더의 실행 파일)
+   - `via`가 true이고 `target`이 ` via <이름>`으로 끝나며 그 앞 프로그램의 파일 이름이 `herdvia`나 `herdvia.exe`(이것만 ASCII 대소문자 무시. Windows 파일 이름 규칙)이지만 경로가 다르면(옮긴 설치, 빌드 폴더의 실행 파일)
      `Herdr's <이름> uses another herdvia executable (<hc가 보여 준 프로그램>); remove it with hc machine rm <이름>, then run herdvia register <이름>`으로 1로 끝난다.
      옛 경로를 건강한 등록으로 보이면 안 되고, `hc machine rm`을 대신 실행하지는 않는다.
+     프로그램은 한 단어여야 한다. 인용하지 않았으면 ASCII 공백이 없고, 인용했으면 따옴표 한 쌍으로 감싼 문자열 하나다(작은따옴표 안의 `'\''`는 `sh_quote`가 쓰는 대로 따옴표 하나로 본다).
+     `ssh jumpbox /usr/local/bin/herdvia`처럼 인수가 있는 명령은 마지막 인수가 herdvia여도 다른 프로그램으로 본다.
    - 그 밖(`via`가 false이거나 다른 피어나 다른 프로그램을 거치는 머신)이면
      `Herdr already has a machine named <이름> that does not go through herdvia to peer <이름>; rename or remove it (hc machine rename / hc machine rm), then run herdvia register <이름>`으로 1로 끝난다.
    - `hc machine ls`가 실패하거나, 15초를 넘기거나, 출력을 읽을 수 없거나, 그 이름이 없거나, `via`나 `target`이 없으면 이 확인을 건너뛰고 다음으로 간다. 읽지 못한 것을 "이미 등록됨"으로 보지 않는다.
