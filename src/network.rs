@@ -14,7 +14,8 @@ use iroh::{
 use std::{
     collections::{HashMap, HashSet},
     io,
-    path::PathBuf,
+    net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -120,10 +121,24 @@ fn retry_delay(previous: u64, connected_for: Duration) -> u64 {
 struct Policy {
     peers: watch::Receiver<Vec<Peer>>,
     attempts: Arc<Mutex<Attempts>>,
+    pairing: Arc<crate::pair::session::PairingGate>,
 }
 
 impl EndpointHooks for Policy {
     async fn after_handshake<'a>(&'a self, conn: &'a Connection) -> AfterHandshakeOutcome {
+        if conn.alpn() == crate::pair::codec::PAIR_ALPN {
+            if self.pairing.allow_handshake(conn.side(), conn.remote_id()) {
+                return AfterHandshakeOutcome::Accept;
+            }
+            log::line(
+                Kind::Unauthenticated,
+                &format!("rejected pairing connection {}", conn.remote_id()),
+            );
+            return AfterHandshakeOutcome::Reject {
+                error_code: 403u32.into(),
+                reason: b"not listening for pairing".to_vec(),
+            };
+        }
         let server = conn.side() == Side::Server;
         if conn.alpn() == ALPN && permitted(&self.peers.borrow(), conn.remote_id(), server) {
             AfterHandshakeOutcome::Accept
@@ -164,6 +179,8 @@ pub struct Network {
     peers: watch::Sender<Vec<Peer>>,
     connections: Mutex<HashMap<usize, Connection>>,
     attempts: Arc<Mutex<Attempts>>,
+    addr_hints: Mutex<HashMap<EndpointId, SocketAddr>>,
+    pub(crate) pairing: Arc<crate::pair::session::PairingGate>,
     changed: watch::Sender<u64>,
     stopping: AtomicBool,
     /// Stream tasks whose `SessionEnd` has not been dropped yet.
@@ -175,13 +192,15 @@ impl Network {
         let key = peers::load_key(&dir)?;
         let (peers, policy) = watch::channel(peers::load(&dir)?);
         let attempts = Arc::new(Mutex::new(Attempts::default()));
+        let pairing = Arc::new(crate::pair::session::PairingGate::default());
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(key)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), crate::pair::codec::PAIR_ALPN.to_vec()])
             .transport_config(transport_config())
             .hooks(Policy {
                 peers: policy,
                 attempts: attempts.clone(),
+                pairing: pairing.clone(),
             })
             .bind()
             .await
@@ -193,10 +212,32 @@ impl Network {
             peers,
             connections: Mutex::new(HashMap::new()),
             attempts,
+            addr_hints: Mutex::new(HashMap::new()),
+            pairing,
             changed: watch::channel(0).0,
             stopping: AtomicBool::new(false),
             streams: watch::channel(0).0,
         }))
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn quic_port(&self) -> u16 {
+        let sockets = self.endpoint.bound_sockets();
+        sockets
+            .iter()
+            .find(|a| a.is_ipv4())
+            .or_else(|| sockets.first())
+            .map_or(0, SocketAddr::port)
+    }
+
+    pub fn set_addr_hint(&self, id: EndpointId, addr: SocketAddr) {
+        self.addr_hints
+            .lock()
+            .expect("addr_hints poisoned")
+            .insert(id, addr);
     }
 
     /// Called before the agent aborts its tasks, so that sessions cut short say why.
@@ -303,7 +344,17 @@ impl Network {
     pub async fn outbound(self: Arc<Self>, id: EndpointId) {
         let mut delay = 0;
         loop {
-            let connected_for = match self.endpoint.connect(id, ALPN).await {
+            let addr = match self
+                .addr_hints
+                .lock()
+                .expect("addr_hints poisoned")
+                .get(&id)
+                .copied()
+            {
+                Some(sock_addr) => iroh::EndpointAddr::new(id).with_ip_addr(sock_addr),
+                None => iroh::EndpointAddr::new(id),
+            };
+            let connected_for = match self.endpoint.connect(addr, ALPN).await {
                 Ok(conn) => {
                     let connected = Instant::now();
                     self.clone().serve_connection(conn).await;
@@ -320,6 +371,10 @@ impl Network {
     }
 
     pub async fn serve_connection(self: Arc<Self>, conn: Connection) {
+        if conn.alpn() != ALPN {
+            conn.close(403u32.into(), b"invalid alpn");
+            return;
+        }
         let id = conn.remote_id();
         {
             let mut connections = self.connections.lock().expect("connections poisoned");

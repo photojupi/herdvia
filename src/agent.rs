@@ -43,7 +43,13 @@ pub async fn run(log_file: Option<PathBuf>) -> io::Result<()> {
                 let network = network.clone();
                 sessions.spawn(async move {
                     match incoming.await {
-                        Ok(conn) => network.serve_connection(conn).await,
+                        Ok(conn) => {
+                            if conn.alpn() == crate::pair::codec::PAIR_ALPN {
+                                crate::pair::session::serve_incoming(network, conn).await;
+                            } else {
+                                network.serve_connection(conn).await;
+                            }
+                        }
                         // The hook has already logged the peer it rejected.
                         Err(ConnectingError::LocallyRejected { .. }) => {}
                         Err(err) => log::line(
@@ -141,6 +147,19 @@ async fn connection(mut stream: ipc::ServerStream, network: Arc<Network>) -> io:
         .await?
         .ok_or_else(|| frame::invalid("missing first frame"))?;
     match request(first)? {
+        Request::Control(command) if matches!(command.as_str(), "listen" | "connect") => {
+            let watcher = ipc::watch_disconnect(&stream)?;
+            tokio::select! {
+                result = async {
+                    if command == "listen" {
+                        crate::pair::session::serve_listen(stream, network).await
+                    } else {
+                        crate::pair::session::serve_connect(stream, network).await
+                    }
+                } => result,
+                err = ipc::disconnected(watcher) => Err(err),
+            }
+        }
         Request::Control(command) => {
             let result = match command.as_str() {
                 "reload" => network.reload().map(|()| "reloaded\n".to_owned()),
