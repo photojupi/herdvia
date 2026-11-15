@@ -236,6 +236,30 @@ fn json_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// This executable's path as it reports it itself (doctor's first line), which is what
+/// register quotes: on Linux, for example, with symbolic links resolved.
+fn reported_exe(node: &Node) -> std::path::PathBuf {
+    let o = node.herdvia(&["doctor"]);
+    let prefix = format!("executable: herdvia {} at ", env!("CARGO_PKG_VERSION"));
+    let line = o.out().lines().next().unwrap_or_default().to_owned();
+    let (_, rest) = line
+        .split_once(&prefix)
+        .unwrap_or_else(|| panic!("doctor's first line: {line}"));
+    let path = rest
+        .split_once(", a temporary or build (target) directory")
+        .map_or(rest, |(path, _)| path);
+    std::path::PathBuf::from(path)
+}
+
+/// The `--via` value and the manual `hc machine add` line that register gives for `home`.
+fn register_strings(node: &Node) -> (String, String) {
+    let exe = reported_exe(node);
+    (
+        herdvia::pair::hc::via_command_for_current_os(&exe, "home"),
+        herdvia::pair::hc::manual_hc_add_line(&exe, "home"),
+    )
+}
+
 /// A node with `home` paired outbound; no agent runs.
 fn register_node(label: &str) -> Node {
     let node = Node::new(label);
@@ -253,6 +277,7 @@ fn register_adds_the_machine_when_hc_does_not_list_it() {
         Some(r#"{"machines":[{"name":"home","target":"/x/herdvia via home""#),
     ] {
         let node = register_node("reg-add");
+        let (via, _) = register_strings(&node);
         let record = install_register_hc(&node, ls, 0);
         let o = node.herdvia(&["register", "home"]);
         assert_eq!(o.code(), Some(0), "{ls:?} stderr: {}", o.err());
@@ -262,11 +287,7 @@ fn register_adds_the_machine_when_hc_does_not_list_it() {
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert_eq!(calls[0], ["machine", "ls", "--json"]);
         assert_eq!(calls[1][..3], ["machine", "add", "--via"]);
-        assert_eq!(
-            calls[1][3],
-            format!("{} via home", common::HERDVIA),
-            "{calls:?}"
-        );
+        assert_eq!(calls[1][3], via, "{calls:?}");
         assert_eq!(calls[1][4..], ["--name", "home"]);
     }
 }
@@ -323,14 +344,12 @@ fn register_refuses_a_machine_that_uses_another_executable_or_no_herdvia() {
 #[test]
 fn register_prints_the_manual_command_when_hc_fails_or_is_missing() {
     let node = register_node("reg-fail");
+    let (_, manual) = register_strings(&node);
+    let manual = format!("  {manual}\n");
     let record = install_register_hc(&node, Some(r#"{"machines":[]}"#), 2);
     let o = node.herdvia(&["register", "home"]);
     assert_eq!(o.code(), Some(1), "stderr: {}", o.err());
     assert_eq!(o.out(), "");
-    let manual = format!(
-        "  hc machine add --via '{} via home' --name home\n",
-        common::HERDVIA
-    );
     assert_eq!(
         o.err(),
         format!(
@@ -361,6 +380,7 @@ fn register_prints_the_manual_command_when_hc_fails_or_is_missing() {
 #[test]
 fn register_says_the_outcome_is_unknown_when_hc_machine_add_times_out() {
     let node = register_node("reg-slow");
+    let (_, manual) = register_strings(&node);
     let script = "#!/bin/sh\ncase \"$1 $2 $3\" in\n  'machine ls --json') printf '%s' '{\"machines\":[]}'; exit 0 ;;\n  'machine add --via') exec sleep 60 ;;\nesac\nexit 64\n";
     let hc_path = node.bin.join("hc");
     fs::write(&hc_path, script).unwrap();
@@ -378,8 +398,7 @@ fn register_says_the_outcome_is_unknown_when_hc_machine_add_times_out() {
     assert_eq!(
         o.err(),
         format!(
-            "herdvia: hc machine add did not finish within 15 seconds, so whether Herdr registered 'home' is unknown; check hc machine ls, and if 'home' is missing, run:\n  hc machine add --via '{} via home' --name home\n",
-            common::HERDVIA
+            "herdvia: hc machine add did not finish within 15 seconds, so whether Herdr registered 'home' is unknown; check hc machine ls, and if 'home' is missing, run:\n  {manual}\n"
         )
     );
 }
