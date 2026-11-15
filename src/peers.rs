@@ -81,7 +81,18 @@ pub fn load_key(dir: &Path) -> io::Result<SecretKey> {
 }
 
 pub fn load(dir: &Path) -> io::Result<Vec<Peer>> {
-    match ipc::private_file(&dir.join("peers")) {
+    read_opened(ipc::private_file(&dir.join("peers")))
+}
+
+/// `load` for a read-only command that does not run `ipc::prepare_dir` first. On Windows, a
+/// DACL that `prepare_dir` would restrict is refused with advice to let herdvia restrict it.
+pub fn load_unprepared(dir: &Path) -> io::Result<Vec<Peer>> {
+    read_opened(ipc::unprepared_private_file(&dir.join("peers")))
+}
+
+/// The peers in the file that `load` opened, or none when it does not exist.
+fn read_opened(opened: io::Result<File>) -> io::Result<Vec<Peer>> {
+    match opened {
         Ok(file) => read(file),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(err) => Err(err),

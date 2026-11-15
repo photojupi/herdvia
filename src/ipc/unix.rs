@@ -68,6 +68,12 @@ impl Shutdown {
     }
 }
 
+/// `private_file`: `prepare_dir` changes nothing about the files on Unix, so a command that
+/// does not run it refuses them with the same advice.
+pub(crate) fn unprepared_private_file(path: &Path) -> io::Result<File> {
+    private_file(path)
+}
+
 pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     if let Some(dir) = path.parent() {
         check_parents(dir)?;

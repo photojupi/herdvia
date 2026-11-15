@@ -545,7 +545,7 @@ pub async fn run_connect(name: String, invite: Option<String>) -> io::Result<i32
 /// the agent.
 pub async fn run_register(name: String) -> io::Result<i32> {
     let dir = ipc::data_dir()?;
-    if !peers::load(&dir)?
+    if !peers::load_unprepared(&dir)?
         .iter()
         .any(|p| p.name == name && p.permission.outbound())
     {

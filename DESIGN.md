@@ -163,6 +163,7 @@ README에서 EndpointId를 공개 게시하지 말라고 안내한다.
   마지막 줄 `in = may open sessions on this PC; out = this PC may connect to it`를 표준 출력에 쓴다. 피어가 없거나 파일이나 데이터 폴더가 없으면 `no peers registered`다.
   에이전트 없이 동작하고 실시간 연결은 말하지 않는다(그것은 `status`). 데이터 폴더와 키를 만들지 않고 권한도 고치지 않는다.
   파일은 에이전트와 같은 검사로 읽으므로, 에이전트가 거부하는 파일은 같은 문구로 거부한다(255).
+  다만 Windows에서 DACL이 열렸어도 이 사용자가 바꿀 수 있는 파일은, 에이전트라면 시작할 때 제한하고 읽지만 이 명령은 제한하지 않으므로 거부하되 다른 문구를 쓴다(아래 "M5a 설계"의 `secret.key`와 `peers` 거부 문구).
 - `status`는 에이전트가 떠 있어야 한다. 없으면 한 줄을 stderr에 쓰고 255로 끝낸다. 표 아래의 이유 줄은 아래 "끊긴 이유: status-detail"에 적는다.
 
 ### 파일 (데이터 폴더 안)
@@ -477,6 +478,10 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   위의 수리 뒤에도 DACL이 열려 있으면 `<경로> allows access to accounts other than this user, SYSTEM, and Administrators, and herdvia cannot restrict it; in an administrator terminal run icacls "<경로>" /grant "*<사용자 SID>:F" and run herdvia again`으로 거부한다.
   이 사용자에게 그 파일의 모든 권한을 주면 다시 실행할 때 herdvia가 파일 자체의 DACL로 제한한다. 이 명령도 PowerShell과 cmd에 그대로 붙여 넣을 수 있다.
   에이전트, CLI, 실행 중의 `peers` 다시 읽기, doctor가 같은 문구를 쓴다. 파일이 없을 때의 동작(키 생성, 빈 목록)은 그대로다.
+  예외: `prepare_dir`를 거치지 않고 `peers`만 읽는 `herdvia peers`와 `herdvia register`는, 열린 DACL을 이 사용자가 바꿀 수 있으면(doctor의 warn과 같은 판정)
+  고치지 않고 `<경로> allows access to accounts other than this user, SYSTEM, and Administrators, and this command does not restrict it; run herdvia id in a normal terminal (or start the agent), which restricts it, and run this command again`으로 거부한다(`ipc::unprepared_private_file`).
+  이 경우 위 `icacls` 명령은 소용이 없다. 허용 항목을 하나 더할 뿐 다른 계정의 항목을 지우지 않고, 이 명령들은 제한을 걸지 않기 때문이다. 바꿀 수 없으면 위 문구 그대로다.
+  같은 프로세스에서 `prepare_dir` 뒤에 읽는 곳(에이전트, `allow` 등)은 위 문구를 그대로 쓴다.
 - 상위 폴더 검사: 위 검사는 데이터 폴더와 두 파일만 본다. 상위 폴더를 다른 계정이 바꿀 수 있으면 검사가 끝난 뒤 데이터 폴더 경로를 정션이나 다른 폴더로 바꿔
   `secret.key`, `peers`, `agent.lock`을 읽고 쓰는 위치를 돌릴 수 있었다. 그래서 `HERDVIA_DIR`로 고른 위치에서는 신뢰할 수 있는 상위 경로만 받는다.
   - 기본 데이터 폴더(`%APPDATA%\herdvia`)에는 이 검사를 걸지 않는다. `check_ancestors`는 맨 앞에서, 넘어온 폴더가 `data_dir`이 `HERDVIA_DIR` 없이 계산하는 그 경로

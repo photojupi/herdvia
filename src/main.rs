@@ -267,7 +267,7 @@ async fn manage(command: Command) -> io::Result<()> {
                 "herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)"
             );
         }
-        Command::Peers => print!("{}", peer_list(&peers::load(&dir)?)),
+        Command::Peers => print!("{}", peer_list(&peers::load_unprepared(&dir)?)),
         Command::Status => {
             let mut old_agent = false;
             let (status, reasons) = match control::request(&dir, "status-detail").await {

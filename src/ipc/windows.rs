@@ -423,6 +423,23 @@ pub(crate) fn inspect_file(path: &Path) -> io::Result<(File, Option<String>)> {
     }
 }
 
+/// `private_file` for a command that reads the file without running `prepare_dir` first
+/// (`herdvia peers`, `herdvia register`): a DACL that lets other accounts in is still
+/// refused, but when `prepare_dir` would restrict it, the refusal says to let herdvia do so.
+pub(crate) fn unprepared_private_file(path: &Path) -> io::Result<File> {
+    let sid = current_sid()?;
+    let file = open_file(path, &sid)?;
+    if read_dacl(&file, &sid)?.private {
+        return Ok(file);
+    }
+    // The same test as inspect_file.
+    if writable(&file, path)? {
+        Err(unrestricted_file(path))
+    } else {
+        Err(loose_file(path, &sid))
+    }
+}
+
 /// Opens the key or peers after `check_ancestors` accepts the folders above the data
 /// directory that holds it.
 fn open_file(path: &Path, sid: &str) -> io::Result<File> {
@@ -468,6 +485,17 @@ fn loose_file(path: &Path, sid: &str) -> io::Error {
         format!(
             "{} allows access to accounts other than this user, SYSTEM, and Administrators, and herdvia cannot restrict it; in an administrator terminal run icacls \"{}\" /grant \"*{sid}:F\" and run herdvia again",
             path.display(),
+            path.display()
+        ),
+    )
+}
+
+/// A file that `prepare_dir` would restrict, refused by a command that does not run it.
+fn unrestricted_file(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} allows access to accounts other than this user, SYSTEM, and Administrators, and this command does not restrict it; run herdvia id in a normal terminal (or start the agent), which restricts it, and run this command again",
             path.display()
         ),
     )
@@ -1524,6 +1552,54 @@ mod tests {
     }
 
     #[test]
+    fn a_command_that_does_not_restrict_says_what_does() {
+        let temp = test_temp();
+        let dir = temp.path().join("herdvia");
+        let key = crate::peers::load_key(&dir).unwrap();
+        crate::peers::allow(
+            &dir,
+            crate::peers::Peer {
+                name: "work".into(),
+                id: key.public(),
+                permission: crate::peers::Permission::Out,
+            },
+        )
+        .unwrap();
+        let sid = current_sid().unwrap();
+        let peers = dir.join("peers");
+        // As after an upgrade from v0.1.2: open, and this user may change its DACL.
+        icacls(&peers, &["/grant", "*S-1-5-32-545:R"]);
+        let before = dacl(&peers);
+        let advice = "and this command does not restrict it; run herdvia id in a normal terminal (or start the agent), which restricts it, and run this command again";
+        for err in [
+            unprepared_private_file(&peers).unwrap_err(),
+            crate::peers::load_unprepared(&dir).unwrap_err(),
+        ] {
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "{} allows access to accounts other than this user, SYSTEM, and Administrators, {advice}",
+                    peers.display()
+                )
+            );
+        }
+        // What runs after prepare_dir keeps the administrator command.
+        for err in [
+            private_file(&peers).unwrap_err(),
+            crate::peers::load(&dir).unwrap_err(),
+        ] {
+            assert!(err.to_string().ends_with(&file_fix(&peers, &sid)), "{err}");
+        }
+        // Refusing changed nothing.
+        assert_eq!(dacl(&peers), before);
+        // herdvia id restricts it, and the command reads it then.
+        crate::peers::load_key(&dir).unwrap();
+        assert_restricted(&peers, &sid);
+        assert_eq!(crate::peers::load_unprepared(&dir).unwrap().len(), 1);
+    }
+
+    #[test]
     fn leaves_a_protected_directory_alone() {
         let temp = test_temp();
         let dir = temp.path().join("herdvia");
@@ -1810,6 +1886,8 @@ mod tests {
             crate::peers::load_key(&dir).unwrap_err(),
             private_file(&secret).unwrap_err(),
             inspect_file(&secret).unwrap_err(),
+            // Without prepare_dir, which could not restrict it either.
+            unprepared_private_file(&secret).unwrap_err(),
         ] {
             assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
             assert!(err.to_string().ends_with(&expected), "{err}");
