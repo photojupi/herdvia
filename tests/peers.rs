@@ -963,6 +963,100 @@ fn agent_reload_without_an_agent_is_255_and_creates_nothing() {
 }
 
 // ---------------------------------------------------------------------------
+// status 의 연결 안 된 이유
+// ---------------------------------------------------------------------------
+
+/// 표 아래 이유 줄의 바탕: 연결된 피어, 거부, 닿지 않음, 기다림.
+const DETAIL: &str = "herdvia-status-detail 1\nhome both connected direct 1.25ms - -\nwin1 out disconnected - - rejected 12 403 peer not allowed\nwin2 both disconnected - - unreachable 18 timed out\nlaptop in waiting - - - -\n";
+const TABLE: &str = "name permission connection path rtt\nhome both connected direct 1.25ms\nwin1 out disconnected - -\nwin2 both disconnected - -\nlaptop in disconnected - -\n";
+const OLD_AGENT_NOTE: &str =
+    "herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected\n";
+
+fn answer(text: &str) -> Option<Vec<u8>> {
+    let mut bytes = frame(STDOUT, text.as_bytes());
+    bytes.extend(frame(EXIT, &0_i32.to_be_bytes()));
+    Some(bytes)
+}
+
+#[test]
+fn status_explains_why_peers_are_not_connected() {
+    let n = Node::new("A");
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = asked.clone();
+    fake_agent(&n, move |request| {
+        log.lock().unwrap().push(request.to_owned());
+        match request {
+            "status-detail" => answer(DETAIL),
+            _ => answer(TABLE),
+        }
+    });
+    let o = n.status();
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(
+        o.out(),
+        format!(
+            "{TABLE}\nwin1: rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s.\nwin2: could not reach it (timed out); its agent may be off or offline. Retrying in 18s.\nlaptop: waiting for laptop to connect (this PC only accepts it).\nRun herdvia agent reload to retry now.\n"
+        )
+    );
+    assert!(o.err().is_empty(), "stderr: {}", o.err());
+    // 표도 status-detail 한 번으로 만든다.
+    assert_eq!(*asked.lock().unwrap(), ["status-detail"]);
+}
+
+#[test]
+fn status_falls_back_to_the_table_when_the_agent_does_not_know_status_detail() {
+    let n = Node::new("A");
+    fake_agent(&n, |request| match request {
+        "status" => answer(TABLE),
+        _ => Some(frame(ERROR, b"unknown control request")),
+    });
+    let o = n.status();
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), TABLE);
+    assert_eq!(o.err(), OLD_AGENT_NOTE);
+}
+
+#[test]
+fn status_falls_back_to_the_table_on_an_agent_that_drops_status_detail() {
+    // v0.1.4 까지의 에이전트: 프레임 머리 5바이트만 읽고, 길이가 6이나 7이 아닌 CONTROL 요청이면
+    // 답 없이 끊는다. 13바이트짜리 status-detail 의 나머지는 읽지 않은 채 남는다.
+    let n = Node::new("A");
+    let listener = UnixListener::bind(n.sock()).unwrap();
+    thread::spawn(move || {
+        for s in listener.incoming() {
+            let mut s = s.unwrap();
+            let mut head = [0; 5];
+            s.read_exact(&mut head).unwrap();
+            let len = u32::from_be_bytes(head[1..].try_into().unwrap()) as usize;
+            if !(6..=7).contains(&len) {
+                continue;
+            }
+            let mut payload = vec![0; len];
+            s.read_exact(&mut payload).unwrap();
+            assert_eq!(payload, b"status");
+            let _ = s.write_all(&answer(TABLE).unwrap());
+        }
+    });
+    let o = n.status();
+    assert_eq!(o.code(), Some(0), "stderr: {}", o.err());
+    assert_eq!(o.out(), TABLE);
+    assert_eq!(o.err(), OLD_AGENT_NOTE);
+}
+
+#[test]
+fn status_fails_when_the_agent_answers_status_detail_with_another_error() {
+    let n = Node::new("A");
+    fake_agent(&n, |request| match request {
+        "status" => answer(TABLE),
+        _ => Some(frame(ERROR, b"invalid peers file")),
+    });
+    let o = n.status();
+    assert_eq!(o.code(), Some(255), "stdout: {}", o.out());
+    assert!(o.stdout.is_empty(), "stdout: {}", o.out());
+    assert_eq!(o.err(), "herdvia: invalid peers file\n");
+}
+
+// ---------------------------------------------------------------------------
 // 받는 쪽 PC 가 꺼져 있을 때
 // ---------------------------------------------------------------------------
 

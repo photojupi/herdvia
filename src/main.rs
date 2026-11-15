@@ -1,6 +1,7 @@
 use herdvia::{
     control, ipc, network,
     peers::{self, Peer, Permission},
+    status,
 };
 use iroh::EndpointId;
 use std::io::{self, Write};
@@ -233,8 +234,25 @@ async fn manage(command: Command) -> io::Result<()> {
         }
         Command::Peers => print!("{}", peer_list(&peers::load(&dir)?)),
         Command::Status => {
-            let status = control::request(&dir, "status").await?;
-            print!("{status}");
+            let mut old_agent = false;
+            let (status, reasons) = match control::request(&dir, "status-detail").await {
+                Ok(reply) => match status::parse(&reply) {
+                    Some(rows) => (status::table(&rows), status_reasons(&rows)),
+                    // A newer agent's format: restarting it would not help.
+                    None => (control::request(&dir, "status").await?, String::new()),
+                },
+                Err(err) if rejects_status_detail(&err) => {
+                    old_agent = true;
+                    (control::request(&dir, "status").await?, String::new())
+                }
+                Err(err) => return Err(err),
+            };
+            print!("{status}{reasons}");
+            if old_agent {
+                eprintln!(
+                    "herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected"
+                );
+            }
             if cfg!(target_os = "macos") && on_relay(&status) {
                 eprintln!(
                     "herdvia: note: a peer is connected through a relay. If it stays that way and the peer is on the same local network as this Mac, allow herdvia under System Settings > Privacy & Security > Local Network."
@@ -288,6 +306,50 @@ fn peer_list(list: &[Peer]) -> String {
         );
     }
     text + "in = may open sessions on this PC; out = this PC may connect to it\n"
+}
+
+/// What `herdvia status` prints below the table: a line for each peer that is not connected.
+fn status_reasons(rows: &[status::Row]) -> String {
+    let lines: Vec<String> = rows.iter().filter_map(status::human).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut text = format!("\n{}\n", lines.join("\n"));
+    if rows
+        .iter()
+        .any(|row| row.state != status::State::Connected && row.retry_secs.is_some())
+    {
+        text.push_str("Run herdvia agent reload to retry now.\n");
+    }
+    text
+}
+
+/// Whether the agent turned `status-detail` down because it predates it. This and later agents
+/// answer ERROR `unknown control request`; v0.1.4 and earlier drop the connection without a reply
+/// when the frame layer sees a CONTROL request it does not know.
+fn rejects_status_detail(err: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    // On Windows the old agent closes its end of the pipe: reading it is end of file (agent
+    // closed without EXIT), and writing to it fails with a pipe error, checked by code because
+    // std does not promise to map each of them to BrokenPipe.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{
+            ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
+        };
+        if [ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED]
+            .iter()
+            .any(|&code| err.raw_os_error() == Some(code as i32))
+        {
+            return true;
+        }
+    }
+    match err.kind() {
+        ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof => true,
+        InvalidData => err.to_string() == "agent closed without EXIT",
+        Other => err.to_string() == "unknown control request",
+        _ => false,
+    }
 }
 
 /// Whether a `status` response shows a peer connected through a relay.
@@ -546,6 +608,58 @@ mod tests {
         // A peer may be named "relay" or "connected"; only the state columns count.
         assert!(!on_relay(&format!(
             "{header}relay out connected direct 4.12ms\nconnected in disconnected - -\n"
+        )));
+    }
+
+    #[test]
+    fn status_reasons_follow_the_table_only_for_peers_that_are_not_connected() {
+        let rows = |detail: &str| status::parse(&format!("{}\n{detail}", status::HEADER)).unwrap();
+        assert_eq!(
+            status_reasons(&rows("home both connected direct 1.25ms - -\n")),
+            ""
+        );
+        assert_eq!(
+            status_reasons(&rows(
+                "home both connected direct 1.25ms - -\nwin1 out disconnected - - closed - reset\nlaptop in waiting - - - -\n"
+            )),
+            "\nwin1: the connection closed (reset).\nlaptop: waiting for laptop to connect (this PC only accepts it).\n"
+        );
+        assert_eq!(
+            status_reasons(&rows(
+                "win1 out disconnected - - rejected 12 403 peer not allowed\nnew both disconnected - - - 1\n"
+            )),
+            "\nwin1: rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s.\nnew: not connected yet. Retrying in 1s.\nRun herdvia agent reload to retry now.\n"
+        );
+    }
+
+    #[test]
+    fn status_detail_counts_as_rejected_only_when_the_agent_does_not_know_it() {
+        use io::ErrorKind::*;
+        for err in [
+            io::Error::other("unknown control request"),
+            io::Error::new(InvalidData, "agent closed without EXIT"),
+            io::Error::from(ConnectionReset),
+            io::Error::from(ConnectionAborted),
+            io::Error::from(BrokenPipe),
+            io::Error::from(UnexpectedEof),
+        ] {
+            assert!(rejects_status_detail(&err), "{err:?}");
+        }
+        for err in [
+            io::Error::new(
+                TimedOut,
+                "the agent did not answer the status-detail request within 5 seconds",
+            ),
+            io::Error::from(NotFound),
+            io::Error::from(ConnectionRefused),
+            io::Error::other("invalid peers file"),
+            io::Error::new(InvalidData, "unexpected control response"),
+        ] {
+            assert!(!rejects_status_detail(&err), "{err:?}");
+        }
+        #[cfg(windows)]
+        assert!(rejects_status_detail(&io::Error::from_raw_os_error(
+            windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED as i32
         )));
     }
 

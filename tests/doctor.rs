@@ -267,6 +267,8 @@ enum Act {
     Partial,
     /// 연결을 끊는다(doctor 를 모르는 구버전 에이전트처럼).
     Drop,
+    /// 이 글을 답한다.
+    Reply(&'static str),
 }
 
 /// 노드의 소켓에서 듣는 가짜 에이전트. `act` 가 요청마다 할 일을 고른다.
@@ -301,6 +303,10 @@ fn fake_agent(n: &Node, act: fn(&str) -> Act) {
                     held.push(s);
                 }
                 Act::Drop => {}
+                Act::Reply(text) => {
+                    let _ = s.write_all(&frame(STDOUT, text.as_bytes()));
+                    let _ = s.write_all(&frame(EXIT, &0_i32.to_be_bytes()));
+                }
             }
         }
     });
@@ -427,6 +433,69 @@ fn an_old_agent_is_told_apart_from_a_stuck_one() {
     assert_eq!(o.code(), Some(1), "stdout:\n{}", o.out());
     let l = lines(&o);
     assert!(find(&l, "fail agent: ").contains(NO_ANSWER), "{l:?}");
+    assert_one_timeout(took, &o);
+}
+
+#[test]
+fn says_why_each_peer_is_not_connected() {
+    let n = Node::new("X");
+    fake_agent(&n, |r| match r {
+        "status" => Act::Reply(
+            "name permission connection path rtt\nwin1 out disconnected - -\nwin2 both disconnected - -\nlaptop in disconnected - -\n",
+        ),
+        "status-detail" => Act::Reply(
+            "herdvia-status-detail 1\nwin1 out disconnected - - rejected 12 403 peer not allowed\nwin2 both disconnected - - unreachable 18 timed out\nlaptop in waiting - - - -\n",
+        ),
+        _ => Act::Answer,
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    assert_eq!(
+        find(&l, "warn peer win1 "),
+        "warn peer win1 (out): rejected by the peer (403 peer not allowed); on win1 run herdvia pending, then herdvia accept. Retrying in 12s."
+    );
+    assert_eq!(
+        find(&l, "warn peer win2 "),
+        "warn peer win2 (both): could not reach it (timed out); its agent may be off or offline. Retrying in 18s."
+    );
+    assert_eq!(
+        find(&l, "warn peer laptop "),
+        "warn peer laptop (in): waiting for laptop to connect (this PC only accepts it)."
+    );
+    find(&l, "ok   pending: no rejected connection attempts");
+    assert!(took < AGENT_TIMEOUT, "{took:?} 걸림");
+
+    // status-detail 을 모르는 에이전트(끊는다)에게는 지금 문구 그대로다.
+    let n = Node::new("X");
+    fake_agent(&n, |r| match r {
+        "status" => Act::Reply("name permission connection path rtt\nwin1 out disconnected - -\n"),
+        "status-detail" => Act::Drop,
+        _ => Act::Answer,
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    assert_eq!(
+        find(&l, "warn peer win1 "),
+        "warn peer win1 (out): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)"
+    );
+    find(&l, "ok   pending: no rejected connection attempts");
+    assert!(took < AGENT_TIMEOUT, "{took:?} 걸림");
+
+    // status-detail 에서 멈추면 한 번만 기다리고 pending 은 묻지 않는다.
+    let n = Node::new("X");
+    fake_agent(&n, |r| match r {
+        "status" => Act::Reply("name permission connection path rtt\nwin1 out disconnected - -\n"),
+        "status-detail" => Act::Hang,
+        _ => Act::Answer,
+    });
+    let (o, took) = timed_doctor(&n);
+    let l = lines(&o);
+    find(&l, "warn peer win1 (out): not connected; ");
+    assert!(
+        find(&l, "warn peer details: ").contains(&format!("the agent {NO_ANSWER}")),
+        "{l:?}"
+    );
+    assert!(!l.iter().any(|l| l[5..].starts_with("pending:")), "{l:?}");
     assert_one_timeout(took, &o);
 }
 

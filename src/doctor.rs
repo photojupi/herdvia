@@ -8,6 +8,7 @@
 use crate::{
     control, ipc,
     peers::{self, Peer, Permission},
+    status,
 };
 use iroh::{EndpointId, SecretKey, Watcher};
 use std::{
@@ -495,8 +496,9 @@ fn relay_check(info: &AgentInfo) -> Option<Check> {
     })
 }
 
-/// One line per peer of a `status` reply.
-fn peer_checks(status: &str, macos: bool) -> Vec<Check> {
+/// One line per peer of a `status` reply. `detail`, from an agent that answers `status-detail`,
+/// says why a peer is not connected.
+fn peer_checks(status: &str, detail: Option<&[status::Row]>, macos: bool) -> Vec<Check> {
     let mut checks = Vec::new();
     for row in status.lines().skip(1).filter(|l| !l.trim().is_empty()) {
         let fields: Vec<_> = row.split_whitespace().collect();
@@ -508,6 +510,15 @@ fn peer_checks(status: &str, macos: bool) -> Vec<Check> {
             continue;
         };
         let peer = format!("peer {name} ({permission})");
+        if state != "connected"
+            && let Some(line) = detail
+                .and_then(|rows| rows.iter().find(|r| r.name == name))
+                .and_then(status::human)
+        {
+            let reason = line.strip_prefix(&format!("{name}: ")).unwrap_or(&line);
+            checks.push(check(Level::Warn, format!("{peer}: {reason}")));
+            continue;
+        }
         checks.push(match (state, path) {
             ("connected", "direct") => check(Level::Ok, format!("{peer}: connected directly, {rtt}")),
             ("connected", "relay") => {
@@ -688,11 +699,23 @@ pub async fn run() -> io::Result<i32> {
                 Some(status) => Some(Ok(status)),
                 None => ask(&dir, "status").await,
             };
-            let stuck = status.is_none();
+            let mut stuck = status.is_none();
             match status {
                 Some(Ok(status)) => {
-                    for c in peer_checks(&status, cfg!(target_os = "macos")) {
+                    // Without it, as from an agent that predates it, the lines say less.
+                    let detail = match ask(&dir, "status-detail").await {
+                        Some(Ok(reply)) => status::parse(&reply),
+                        Some(Err(_)) => None,
+                        None => {
+                            stuck = true;
+                            None
+                        }
+                    };
+                    for c in peer_checks(&status, detail.as_deref(), cfg!(target_os = "macos")) {
                         report.add(c);
+                    }
+                    if stuck {
+                        report.add(check(Level::Warn, format!("peer details: {no_answer}")));
                     }
                 }
                 Some(Err(err)) => report.add(check(
@@ -1667,12 +1690,12 @@ mod tests {
     #[test]
     fn peers_status_hints_depend_on_path_and_direction() {
         let header = "name permission connection path rtt\n";
-        assert_eq!(peer_checks(header, false).len(), 1);
-        assert_eq!(peer_checks(header, false)[0].level, Level::Warn);
+        assert_eq!(peer_checks(header, None, false).len(), 1);
+        assert_eq!(peer_checks(header, None, false)[0].level, Level::Warn);
         let status = format!(
             "{header}a out connected direct 4.12ms\nb both connected relay 238.82ms\nc out disconnected - -\nd in disconnected - -\ne both disconnected - -\nf in connected unknown -\nbroken line\n"
         );
-        let checks = peer_checks(&status, true);
+        let checks = peer_checks(&status, None, true);
         let levels: Vec<_> = checks.iter().map(level).collect();
         assert_eq!(
             levels,
@@ -1693,7 +1716,7 @@ mod tests {
             checks[1].text
         );
         assert!(
-            !peer_checks(&status, false)[1]
+            !peer_checks(&status, None, false)[1]
                 .text
                 .contains("Local Network")
         );
@@ -1705,6 +1728,31 @@ mod tests {
             );
         }
         assert!(checks[3].text.contains("--outbound"), "{}", checks[3].text);
+    }
+
+    #[test]
+    fn peer_reasons_come_from_status_detail_when_the_agent_gives_it() {
+        let status = "name permission connection path rtt\na out connected direct 4.12ms\nb out disconnected - -\nc in disconnected - -\nd both disconnected - -\ne out disconnected - -\n";
+        let detail = status::parse(&format!(
+            "{}\na out connected direct 4.12ms - -\nb out disconnected - - rejected 12 403 peer not allowed\nc in waiting - - - -\nd both disconnected - - unreachable 3 timed out\n",
+            status::HEADER
+        ))
+        .unwrap();
+        let texts: Vec<_> = peer_checks(status, Some(&detail), false)
+            .into_iter()
+            .map(|c| line(&c))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "ok   peer a (out): connected directly, 4.12ms",
+                "warn peer b (out): rejected by the peer (403 peer not allowed); on b run herdvia pending, then herdvia accept. Retrying in 12s.",
+                "warn peer c (in): waiting for c to connect (this PC only accepts it).",
+                "warn peer d (both): could not reach it (timed out); its agent may be off or offline. Retrying in 3s.",
+                // Not in the detail (the list changed between the two requests): today's wording.
+                "warn peer e (out): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)",
+            ]
+        );
     }
 
     #[test]

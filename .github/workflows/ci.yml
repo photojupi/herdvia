@@ -50,7 +50,8 @@ jobs:
             fails_on_a_data_directory_this_user_cannot_open \
             does_not_run_a_core_found_only_through_a_relative_or_empty_path_entry \
             fails_on_a_missing_data_directory_below_a_directory_others_can_write \
-            fails_on_dot_dot_after_a_missing_directory_and_creates_nothing
+            fails_on_dot_dot_after_a_missing_directory_and_creates_nothing \
+            says_why_each_peer_is_not_connected
           cargo test --locked --test peers -- --exact \
             wide_secret_key_permission_refuses_start \
             wide_peers_permission_refuses_start \
@@ -68,7 +69,11 @@ jobs:
             agent_reload_reports_a_confirmed_reload \
             agent_reload_without_an_agent_is_255_and_creates_nothing \
             peers_lists_saved_peers_without_an_agent_and_creates_nothing \
-            allow_warns_when_a_name_moves_to_another_key
+            allow_warns_when_a_name_moves_to_another_key \
+            status_explains_why_peers_are_not_connected \
+            status_falls_back_to_the_table_when_the_agent_does_not_know_status_detail \
+            status_falls_back_to_the_table_on_an_agent_that_drops_status_detail \
+            status_fails_when_the_agent_answers_status_detail_with_another_error
           cargo test --locked --test pending -- --exact \
             accept_refuses_a_full_pending_list
           cargo test --locked --test transport -- --exact \
