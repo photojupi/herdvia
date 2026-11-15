@@ -25,6 +25,11 @@ enum Command {
         fingerprint: String,
         permission: Permission,
     },
+    Listen(Option<String>),
+    Connect {
+        name: String,
+        invite: Option<String>,
+    },
     Version,
     Doctor,
 }
@@ -38,6 +43,20 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         [cmd, action] if cmd == "agent" && action == "install" => Ok(Command::AgentInstall),
         [cmd, action] if cmd == "agent" && action == "uninstall" => Ok(Command::AgentUninstall),
         [cmd] if cmd == "id" => Ok(Command::Id),
+        [cmd] if cmd == "listen" => Ok(Command::Listen(None)),
+        [cmd, name] if cmd == "listen" && peers::valid_name(name) => {
+            Ok(Command::Listen(Some(name.clone())))
+        }
+        [cmd, name] if cmd == "connect" && peers::valid_name(name) => Ok(Command::Connect {
+            name: name.clone(),
+            invite: None,
+        }),
+        [cmd, name, invite] if cmd == "connect" && peers::valid_name(name) => {
+            Ok(Command::Connect {
+                name: name.clone(),
+                invite: Some(invite.clone()),
+            })
+        }
         [cmd] if cmd == "status" => Ok(Command::Status),
         [cmd] if cmd == "pending" => Ok(Command::Pending),
         [cmd] if cmd == "doctor" => Ok(Command::Doctor),
@@ -90,9 +109,9 @@ fn parse(args: Vec<String>) -> io::Result<Command> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             if cfg!(windows) {
-                "usage: herdvia agent [install|uninstall|--log] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall|--log] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             } else {
-                "usage: herdvia agent [install|uninstall] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
+                "usage: herdvia agent [install|uninstall] | listen [<name>] | connect <name> [<invite>] | via <peer> <line> | id | allow <name> <EndpointId> (--inbound|--outbound|--both) | revoke <name> | status | pending | accept <name> <fingerprint> (--inbound|--both) | doctor | --version"
             },
         )),
     }
@@ -125,6 +144,10 @@ async fn main() {
         #[cfg(windows)]
         Ok(Command::AgentUninstall) => herdvia::launchd::uninstall().await.map(|()| 0),
         Ok(Command::Via { peer, line }) => herdvia::via::run(&peer, &line).await,
+        Ok(Command::Listen(name)) => herdvia::pair::cli::run_listen(name).await,
+        Ok(Command::Connect { name, invite }) => {
+            herdvia::pair::cli::run_connect(name, invite).await
+        }
         Ok(Command::Doctor) => herdvia::doctor::run().await,
         Ok(Command::Version) => {
             println!("herdvia {}", env!("CARGO_PKG_VERSION"));
@@ -462,6 +485,43 @@ mod tests {
             let err = pending_match(&full, fingerprint).unwrap_err();
             assert!(err.to_string().contains("is full"), "{err}");
             assert!(err.to_string().contains("herdvia allow"), "{err}");
+        }
+    }
+
+    #[test]
+    fn parses_listen_and_connect_commands() {
+        match parse(args(&["listen"])).unwrap() {
+            Command::Listen(None) => {}
+            _ => panic!("expected listen without name"),
+        }
+        match parse(args(&["listen", "laptop"])).unwrap() {
+            Command::Listen(Some(name)) => assert_eq!(name, "laptop"),
+            _ => panic!("expected listen with name"),
+        }
+        for bad in [&["listen", "bad/name"][..], &["listen", "a", "b"]] {
+            assert!(parse(args(bad)).is_err(), "{bad:?}");
+        }
+
+        match parse(args(&["connect", "home"])).unwrap() {
+            Command::Connect { name, invite } => {
+                assert_eq!(name, "home");
+                assert_eq!(invite, None);
+            }
+            _ => panic!("expected connect without invite"),
+        }
+        match parse(args(&["connect", "home", "hvi1-abc"])).unwrap() {
+            Command::Connect { name, invite } => {
+                assert_eq!(name, "home");
+                assert_eq!(invite.as_deref(), Some("hvi1-abc"));
+            }
+            _ => panic!("expected connect with invite"),
+        }
+        for bad in [
+            &["connect"][..],
+            &["connect", "bad/name"],
+            &["connect", "a", "b", "c"],
+        ] {
+            assert!(parse(args(bad)).is_err(), "{bad:?}");
         }
     }
 }
