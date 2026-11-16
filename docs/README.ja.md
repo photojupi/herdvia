@@ -95,13 +95,17 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
   ```sh
   curl -fsSL https://releases.herdr.dev/core/install.sh | sh
   ```
-  `~/.local/bin/herdr-core`（および未作成なら同じ場所に `hc` リンク）を配置します。`PATH` は変更せず、`~/.local/bin` が `PATH` になければ案内を表示します。
 
 - **Windows（通常の PowerShell — 管理者権限不要）:**
   ```powershell
   powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
   ```
-  `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（および未作成なら `hc.exe`）をインストールし、ユーザー `PATH` に自動で追加します。
+
+<details>
+<summary>インストール先、バージョンの固定、<code>herdvia</code> が <code>herdr-core</code> を探す場所</summary>
+
+- **macOS / Linux:** `~/.local/bin/herdr-core`（および未作成なら同じ場所に `hc` リンク）を配置します。`PATH` は変更せず、`~/.local/bin` が `PATH` になければ案内を表示します。
+- **Windows:** `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（および未作成なら `hc.exe`）をインストールし、ユーザー `PATH` に自動で追加します。
 
 `herdvia` で動作確認済みのバージョン **`0.1.21`** を指定して入れる場合：
 
@@ -117,12 +121,13 @@ $env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/i
 
 *（macOS では、すでにより新しい `herdr-core` が入っているとダウングレードせず停止し、`hc update --from ... --force` を使うよう案内されます。）*
 
-> [!IMPORTANT]
-> **`herdr-core` に関する重要な注意点 2 つ:**
-> 1. **リモートインストール・更新コマンドの制限（`hc 0.1.21` 基準）:** `herdvia` は `hc` が送る `herdr-core connect` 行と完全一致するコマンド以外はすべて拒否するため、`hc machine add --install` や `hc machine update` でリモート側の `herdr-core` を導入・更新することはできません。また将来 `hc` 側の接続コマンドが変わった場合、`herdvia` が対応するまで拒否されます。
-> 2. **マシン B で `herdr-core` を探すパス:**
->    - **macOS / Unix:** `~/.local/bin/herdr-core` またはエージェントの `PATH` 上。特に macOS で `herdvia agent install` により自動起動されたエージェントの `PATH` は `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` のみのため、Homebrew 等の別パスに入れた場合は `~/.local/bin/herdr-core` にシンボリックリンクを作成してください。
->    - **Windows:** `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`。
+**`herdr-core` に関する重要な注意点 2 つ:**
+1. **リモートインストール・更新コマンドの制限（`hc 0.1.21` 基準）:** `herdvia` は `hc` が送る `herdr-core connect` 行と完全一致するコマンド以外はすべて拒否するため、`hc machine add --install` や `hc machine update` でリモート側の `herdr-core` を導入・更新することはできません。また将来 `hc` 側の接続コマンドが変わった場合、`herdvia` が対応するまで拒否されます。
+2. **マシン B で `herdr-core` を探すパス:**
+   - **macOS / Unix:** `~/.local/bin/herdr-core` またはエージェントの `PATH` 上。特に macOS で `herdvia agent install` により自動起動されたエージェントの `PATH` は `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` のみのため、Homebrew 等の別パスに入れた場合は `~/.local/bin/herdr-core` にシンボリックリンクを作成してください。
+   - **Windows:** `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`。
+
+</details>
 
 ---
 
@@ -172,7 +177,13 @@ herdvia listen
 ```
 
 - `listen` は 5 分間有効な 1 回限りのペアリング窓口を開き、この PC のフィンガープリント（`This PC's fingerprint: xxxx-xxxx-xxxx-xxxx`）を表示し、同一 LAN / Wi-Fi 上へ検出ビーコンを送ると同時に、別ネットワーク間で使える 1 回限りの `hvi1-...` 招待文字列も表示します。
-- 既定では、マシン B はマシン A のサニタイズ済みホスト名で登録します（別の鍵がすでに使っている名前、または `--help` や `-h` の場合は `-28af` のように A の `EndpointId` の短い16進プレフィックスを付与）。A のローカル名を指定したい場合は `herdvia listen <名前>` を実行します。
+
+<details>
+<summary>マシン B がマシン A に付ける名前</summary>
+
+既定では、マシン B はマシン A のサニタイズ済みホスト名で登録します（別の鍵がすでに使っている名前、または `--help` や `-h` の場合は `-28af` のように A の `EndpointId` の短い16進プレフィックスを付与）。A のローカル名を指定したい場合は `herdvia listen <名前>` を実行します。
+
+</details>
 
 ### 手順 2. Herdr を操作するマシン A から接続する
 
@@ -180,7 +191,7 @@ herdvia listen
   ```sh
   herdvia connect B
   ```
-  約 2 秒間ローカルネットワークをスキャンし、見つかった待機中の PC を 1 台だけでもフィンガープリント付きの番号リスト（`0) Paste an invite token instead` を含む）で表示します。B の `listen` 画面に表示されたフィンガープリントと同じ項目を選んでください。LAN 検出には認証がないため、`connect` が自分で PC を選ぶことはありません（[セキュリティモデル](#security-model)を参照）。1 台も見つからない場合（ゲスト Wi-Fi 分離などで検出パケットが届かない場合など）は B の `hvi1-...` 招待の貼り付けを求めます。番号リストまたは招待の入力プロンプトで空行を入力するか入力を閉じる（EOF）と取り消されて終了コード `1` で終わり、リストにない番号を入力すると終了コード `255` で終了します。
+  約 2 秒間ローカルネットワークをスキャンし、見つかった待機中の PC を 1 台だけでもフィンガープリント付きの番号リスト（`0) Paste an invite token instead` を含む）で表示します。B の `listen` 画面に表示されたフィンガープリントと同じ項目を選んでください。1 台も見つからない場合（ゲスト Wi-Fi 分離などで検出パケットが届かない場合など）は B の `hvi1-...` 招待の貼り付けを求めます。
 
 - **別々のネットワーク（自宅 ↔ 職場・カフェなど）の場合:**
   ```sh
@@ -189,6 +200,13 @@ herdvia listen
 
 `B`（`home-pc`、`office` など）は `herdvia` と Herdr の両方で使うピア名です（`--help` と `-h` を除く `A-Z a-z 0-9 . _ -` の 1〜32 文字）。
 
+<details>
+<summary>フィンガープリントで選ぶ理由と取り消し</summary>
+
+LAN 検出には認証がないため、`connect` が自分で PC を選ぶことはありません（[セキュリティモデル](#security-model)を参照）。番号リストまたは招待の入力プロンプトで空行を入力するか入力を閉じる（EOF）と取り消されて終了コード `1` で終わり、リストにない番号を入力すると終了コード `255` で終了します。
+
+</details>
+
 ### 手順 3. 6 桁のコードを確認して両方のマシンで承認する
 
 両方のターミナルに 6 桁の確認コード（例：`482-917`）が表示されます：
@@ -196,12 +214,19 @@ herdvia listen
 1. **両方の画面にまったく同じ 6 桁のコードが表示されていること**を目視で確認します。コードが異なる場合は `n` を入力してください。別の PC に接続している可能性があります。
 2. **マシン A** の `Same code on both PCs? [y/N]:` と **マシン B** の `Allow? [y/N]:` にそれぞれ `y` を入力します（順序は問いません）。
 
-マシン A で `n` を入力するか、空行を入力するか、入力を閉じる（EOF）とペアリングは取り消され終了コード `1` で終わります。A の回答が 60 秒以内に届かない場合、`connect` は終了コード `255` で失敗します。A で取り消した場合でも、B のユーザーが `y` を入力すると（取り消しの前後を問わず）、B は A を `--inbound` ピアとして保存しますが、A は何も保存していないため接続は確立されません。必要なら B で `herdvia revoke <名前>` を実行して削除してください。
-
 両方が `y` を入力すると：
 - **マシン B** はマシン A を `--inbound` で（B が承認した時点で）保存し、**マシン A** はマシン B を `--outbound` で保存します。
 - 再試行の待ち時間なしで即座に暗号化トンネルが確立します。
-- **マシン A** で `hc machine add` が自動実行され、Herdr に `B` がそのまま追加されます。*（`PATH` に `hc` がない場合などもペアリング自体は完了し、手動で貼り付けられる `hc machine add --via ... --name B` コマンドを表示して終了コード `1` で終了します — または Herdr のインストール後に `herdvia register B` を実行することもできます。）*
+- **マシン A** で `hc machine add` が自動実行され、Herdr に `B` がそのまま追加されます。
+
+<details>
+<summary>取り消し、タイムアウト、Herdr 登録の失敗</summary>
+
+マシン A で `n` を入力するか、空行を入力するか、入力を閉じる（EOF）とペアリングは取り消され終了コード `1` で終わります。A の回答が 60 秒以内に届かない場合、`connect` は終了コード `255` で失敗します。A で取り消した場合でも、B のユーザーが `y` を入力すると（取り消しの前後を問わず）、B は A を `--inbound` ピアとして保存しますが、A は何も保存していないため接続は確立されません。必要なら B で `herdvia revoke <名前>` を実行して削除してください。
+
+`PATH` に `hc` がない場合などもペアリング自体は完了し、手動で貼り付けられる `hc machine add --via ... --name B` コマンドを表示して終了コード `1` で終了します — または Herdr のインストール後に `herdvia register B` を実行することもできます。
+
+</details>
 
 ### 手順 4. 接続状態を確認する
 
@@ -225,6 +250,9 @@ B out connected direct 4.12ms
 
 対話型ターミナルを使わずにスクリプトで設定する場合や、`listen` / `connect` を使わず直接鍵を交換したい場合は、`id`、`allow`、`pending`、`accept` で手動ペアリングできます：
 
+<details>
+<summary>手動ペアリングの手順</summary>
+
 1. **ID とフィンガープリントの確認 (`herdvia id`):** 1 行目に 64 文字の `EndpointId`、2 行目に 16 文字のフィンガープリント（例：`28af-63b6-258e-859d`）を表示します（初回実行時に `secret.key` を自動生成）。
 2. **マシン A でマシン B を許可 (`--outbound`):**
    ```sh
@@ -241,6 +269,8 @@ B out connected direct 4.12ms
    hc machine add --via 'herdvia via B' --name B
    ```
    `hc` が `PATH` 上で `herdvia` を見つけられない場合は、実行ファイルのフルパスを指定する（空白を含む場合はクォートします。macOS は `sh` 規則、Windows は `CommandLineToArgvW` のダブルクォート — Windows ではユーザー `PATH` に `herdvia` を入れて Herdr を再起動するのが最も簡単です）か、`herdvia register B` を実行してください。
+
+</details>
 
 ---
 
@@ -262,6 +292,11 @@ curl -fsSL https://github.com/photojupi/herdvia/releases/latest/download/install
 powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download/install.ps1 | iex"
 ```
 
+*（スクリプトを再実行するとアップグレードになります。[アップグレード](#upgrading)を参照してください。）*
+
+<details>
+<summary>スクリプトの処理内容と動作条件</summary>
+
 スクリプトが行う 6 つの処理：
 
 1. **ダウンロードと検証:** 一時フォルダにリリースアーカイブと `SHA256SUMS` を取得し、SHA-256 チェックサムを検証します。失敗した場合は何も変更せず終了します。
@@ -274,6 +309,11 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 **スクリプトの動作条件:**
 - **macOS:** Apple Silicon 専用（`root` 実行は拒否。Intel Mac や Linux では何も変更せず[ソースコードからビルド](#from-source)を案内）。
 - **Windows:** x64 専用、`System32\curl.exe` が必要（Windows 10 1803 以降に標準搭載）。
+
+</details>
+
+<details>
+<summary>スクリプトのオプション、特定バージョンのインストール、実行前の確認</summary>
 
 **環境変数オプション（スイッチ類は値が `1` のときのみ有効）:**
 
@@ -310,7 +350,7 @@ notepad install.ps1
 Get-Content -Raw .\install.ps1 | Invoke-Expression
 ```
 
-*（スクリプトを再実行するとアップグレードになります。[アップグレード](#upgrading)を参照してください。）*
+</details>
 
 <a id="manual-install"></a>
 ### 手動インストール
@@ -322,6 +362,9 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 - `install.sh` および `install.ps1`
 - `SHA256SUMS`（アーカイブおよびスクリプトの SHA-256 チェックサム）
 
+<details>
+<summary>実行ファイルの配置場所とダウンロードの検証</summary>
+
 各アーカイブには親フォルダなしで実行ファイル、`README.md`、`LICENSE-MIT`、`LICENSE-APACHE`、`THIRD-PARTY-LICENSES.html` が入っています。自動起動登録では実行時のファイルパスがそのまま記録されるため、ダウンロードフォルダや一時フォルダからは実行せず、固定の場所（macOS は `~/.local/bin/herdvia`、Windows は `%LOCALAPPDATA%\Programs\herdvia\herdvia.exe`）に配置してください。
 
 バイナリには署名・公証（notarization）はありません。Intel Mac 用のビルド済みバイナリはないため、[ソースコードからビルド](#from-source)してください。
@@ -330,8 +373,13 @@ Get-Content -Raw .\install.ps1 | Invoke-Expression
 
 来歴証明はファイルがどこでビルドされたかを示すものであり、安全性を保証するものではありません。メンテナーのアカウントを乗っ取った者がプッシュしたタグからビルドされたリリースも検証を通過します。同様に、`SHA256SUMS` も同じリリースから取得されるため、ダウンロード中の破損は検出できますが、リリース自体の差し替えは検出できません。
 
+</details>
+
 <a id="macos-apple-silicon"></a>
 #### macOS (Apple Silicon)
+
+<details>
+<summary>macOS の手順</summary>
 
 ```sh
 mkdir -p ~/.local/bin
@@ -352,8 +400,13 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
   xattr -d com.apple.quarantine ~/.local/bin/herdvia
   ```
 
+</details>
+
 <a id="windows-x64"></a>
 #### Windows (x64)
+
+<details>
+<summary>Windows の手順</summary>
 
 管理者ではない**通常の PowerShell ウィンドウ**で 1 つずつ確認しながら実行してください（エラーが出たらそこで中断します）：
 
@@ -381,24 +434,52 @@ if (@(Get-Content SHA256SUMS) -contains "$hash  herdvia-windows-x64.zip") {
 
 `herdvia` を名前だけで実行できるよう、`%LOCALAPPDATA%\Programs\herdvia` を**ユーザー環境変数 `Path`**（*スタートメニュー → 「アカウントの環境変数を編集」 → ユーザー環境変数 → `Path` → 編集 → 新規*）に追加してから、新しい PowerShell ウィンドウを開き（Herdr が起動中なら再起動）、`herdvia id` で確認してください。初回実行時に Windows SmartScreen の確認画面が表示されることがあります。
 
+</details>
+
 <a id="from-source"></a>
 ### ソースコードからビルド
 
 `iroh` の要件により **Rust 1.91 以降**が必要です。
 
-- **macOS:** Xcode Command Line Tools（`xcode-select --install`）と [rustup](https://rustup.rs) による Rust
-- **Windows:** [rustup](https://rustup.rs) と Visual Studio Build Tools（「C++ によるデスクトップ開発」）。*（注：公式リリースバイナリは Linux 上で MinGW `x86_64-pc-windows-gnu` によりクロスコンパイルされており、CI では MSVC で単体テストのみを実行します。）*
-
 ```sh
 cargo install --locked --git https://github.com/photojupi/herdvia
 ```
 
+<details>
+<summary>ビルドツールとオプション</summary>
+
+- **macOS:** Xcode Command Line Tools（`xcode-select --install`）と [rustup](https://rustup.rs) による Rust
+- **Windows:** [rustup](https://rustup.rs) と Visual Studio Build Tools（「C++ によるデスクトップ開発」）。*（注：公式リリースバイナリは Linux 上で MinGW `x86_64-pc-windows-gnu` によりクロスコンパイルされており、CI では MSVC で単体テストのみを実行します。）*
+
 デフォルトで `main` ブランチをビルドし、`~/.cargo/bin`（Windows は `%USERPROFILE%\.cargo\bin`）に配置します。特定のリリースをビルドするには `--tag v<バージョン>` を追加してください。
+
+</details>
 
 ---
 
 <a id="commands"></a>
 ## コマンド一覧
+
+| コマンド | 内容 |
+|---|---|
+| `herdvia listen [<name>]` | 接続先 PC でペアリング要求を待機し、承認します。 |
+| `herdvia connect <name> [<invite>]` | Herdr を動かす PC で、待機中の PC とペアリングして Herdr に登録します。 |
+| `herdvia register <name>` | ペアリング済みのピアについて、Herdr への登録だけを再実行します。 |
+| `herdvia id` | この PC の `EndpointId` とフィンガープリントを表示します。 |
+| `herdvia allow <name> <EndpointId> (--inbound \| --outbound \| --both)` | `EndpointId` を指定してピアを追加または更新します。 |
+| `herdvia accept <name> <fingerprint> (--inbound \| --both)` | `pending` リストにある PC をフィンガープリントで許可します。 |
+| `herdvia revoke <name>` | ピアを削除し、その接続を閉じます。 |
+| `herdvia peers` | 保存済みのピアを一覧表示します。 |
+| `herdvia status` | 各ピアの接続状態と、未接続の理由を表示します。 |
+| `herdvia pending` | 接続試行が拒否された PC を一覧表示します。 |
+| `herdvia doctor` | この PC の設定状態を点検し、対処法を表示します。 |
+| `herdvia agent` | エージェントをフォアグラウンドで実行します。 |
+| `herdvia agent install` / `herdvia agent uninstall` | 自動起動を登録または解除します。 |
+| `herdvia agent reload` | 稼働中のエージェントに `peers` を再読み込みさせ、接続を今すぐ再試行させます。 |
+| `herdvia --help` / `herdvia --version` | 使い方またはバージョンを表示します。 |
+
+<details>
+<summary>全コマンドの詳細（出力、終了コード、制限）</summary>
 
 | コマンド | 説明 |
 |---|---|
@@ -423,6 +504,8 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 エラー時、`herdvia` は標準エラー出力（`stderr`）に `herdvia:` で始まる 1 行を出力し、終了コード **`255`** で終了します。`--help` と `-h` はピア名には使えず（`herdvia: --help and -h cannot be peer names`）、エージェントが 5 秒以内に応答しない場合、`status`、`pending`、`accept`、`agent reload` は `herdvia: the agent did not answer the <request> request within 5 seconds` を出力して停止します（`status` の `<request>` は `status-detail`）。
 
+</details>
+
 ---
 
 <a id="automatic-startup"></a>
@@ -433,21 +516,32 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 `herdvia agent install` はユーザー単位の LaunchAgent（`~/Library/LaunchAgents/io.github.photojupi.herdvia.agent.plist`）を作成し、`launchctl bootstrap` で起動します。ログイン時に自動起動し、終了しても `launchd` が再起動します。ログは `~/Library/Logs/herdvia.log` に出力され、エージェントが 180 日を過ぎた行を削除し、ファイルが 10 MiB を超えると切り詰めます（[設定とファイルの保存場所](#configuration-and-files)を参照）。
 
+> [!IMPORTANT]
+> **macOS 15 以降のローカルネットワーク権限:** macOS 15（Sequoia）以降では、自動起動されたエージェントが同一 LAN 上のアドレスへ直接通信するには許可が必要です。macOS の確認ダイアログで**許可**を選ぶか、**システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` をオンにしてください。許可するまでは同一 LAN 内のピアとも `direct` ではなく `relay` 経由になります（別ネットワークのピアや、ターミナルから `herdvia agent` で手動起動した場合は影響ありません）。
+
+<details>
+<summary><code>agent install</code> が拒否または警告する場合</summary>
+
 - `HERDVIA_DIR` が設定されている場合（自動起動は常にデフォルトのデータフォルダを使用します）や、フォアグラウンドのエージェントが動作中の場合はインストールを拒否します。
 - 再度 `herdvia agent install` を実行すると、現在の実行ファイルパスで登録を更新しエージェントを再起動します。
 - 一時フォルダや Cargo の `target` ディレクトリから実行した場合は警告を表示しつつ登録します。
 
-> [!IMPORTANT]
-> **macOS 15 以降のローカルネットワーク権限:** macOS 15（Sequoia）以降では、自動起動されたエージェントが同一 LAN 上のアドレスへ直接通信するには許可が必要です。macOS の確認ダイアログで**許可**を選ぶか、**システム設定 > プライバシーとセキュリティ > ローカルネットワーク** で `herdvia` をオンにしてください。許可するまでは同一 LAN 内のピアとも `direct` ではなく `relay` 経由になります（別ネットワークのピアや、ターミナルから `herdvia agent` で手動起動した場合は影響ありません）。
+</details>
 
 ### Windows
 
 `herdvia agent install` は現在のユーザーの `Run` レジストリキー（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）に `conhost.exe --headless "<herdvia.exe のパス>" agent --log` を登録し、コンソールウィンドウなしで即座に起動します。管理者権限、サービス、タスクスケジューラは一切使用しません。
 
 - **必ず通常の（管理者ではない）PowerShell ウィンドウから実行してください。** 管理者 PowerShell では拒否され、エージェント自体も「管理者として実行」したウィンドウからは起動を拒否します（[セキュリティモデル](#security-model)を参照）。
+
+<details>
+<summary>その他の条件とログファイル</summary>
+
 - `HERDVIA_DIR` が設定されている場合や、自動起動が未登録の状態でフォアグラウンドのエージェントが動作中の場合は拒否します（一度自動起動を登録した後は、再実行すると稼働中のデフォルトフォルダのエージェントを停止して新しいエージェントを起動します）。
 - 実行ファイルのパスに `%` を含めることはできず、登録コマンドライン全体が 259 UTF-16 コード単位以内に収まる必要があります。
 - ログは `%LOCALAPPDATA%\herdvia\herdvia.log` に出力されます（180 日を過ぎた行は削除され、ファイルが 10 MiB を超えると切り詰められます）。エージェントが途中で終了した場合、Windows は自動再起動せず次回サインイン時に起動します。
+
+</details>
 
 ### Linux
 
@@ -460,26 +554,6 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 <a id="run-herdvia-doctor"></a>
 ### `herdvia doctor` を実行する
-
-`herdvia doctor` は以下の項目を順番に点検します：
-
-1. **この実行ファイル:** バージョンとパス（`agent install` がそのパスを記録するため、一時フォルダや Cargo の `target` ディレクトリから実行されている場合は警告）。
-2. **データフォルダ:** パス（`HERDVIA_DIR` による指定かどうかも含む。`HERDVIA_DIR` は絶対パスである必要あり）、存在するか、実際のディレクトリであるか（シンボリックリンク不可、Windows ではジャンクションも不可）、そして現在のユーザーが開けるか（macOS/Unix では所有者も確認し、開けない場合は `fail` となり macOS/Unix では `chmod 700` を案内）。`HERDVIA_DIR`（Linux では `XDG_DATA_HOME` も）で指定したフォルダは、他のアカウントが親フォルダのいずれかを変更できる場合、フォルダがまだ存在しなくても `fail` となります（[セキュリティモデル](#security-model)を参照）。
-   - **macOS / Unix:** macOS ではフォルダにアクセスを許可する ACL（アクセス制御リスト）エントリがある場合も `fail` となり `chmod -N` を案内します。また macOS/Unix では、エージェントのソケットパスが Unix ソケット長の上限に収まるかも確認します。
-   - **Windows:** 他の種類の再解析ポイント（reparse point）である場合、所有者が現在のユーザー・Administrators・SYSTEM 以外の場合、または他のアカウントにアクセス権が付与されており現在のユーザーがその権限を変更できない場合に `fail` となります（最後の場合は管理者ターミナルで実行する `icacls … /grant` コマンドを案内）。これら 3 アカウント以外にアクセス権が付与されていても、現在のユーザーが権限を変更できるフォルダは、herdvia が次回実行時に権限を制限するため `warn` となります。
-3. **`secret.key`:** 存在するか、およびエージェントと同じ検査に通るか（macOS/Unix：現在のユーザーの所有で権限が `0600` 以下であり、macOS ではアクセスを許可する ACL エントリがないこと。Windows：リンクではない通常のファイルで、所有者が現在のユーザー・Administrators・SYSTEM のいずれかであり、他のアカウントにアクセス権が付与されていないこと）。Windows で他のアカウントにアクセス権が付与されているファイルは、現在のユーザーが権限を変更できる場合は herdvia が次回実行時に制限するため `warn`、変更できない場合は `icacls … /grant` コマンドを案内する `fail` となります。`secret.key` がちょうど 32 バイトでない場合や、権限による拒否以外の理由で読み取りに失敗した場合は `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)` を出力します。再ペアリングの前に、すべてのピアでこの PC について `herdvia revoke <名前>` を実行してください（[セキュリティモデル](#security-model)を参照）。出力にはフィンガープリントのみが表示されます。
-4. **`peers`:** 読み取り可能か（`secret.key` と同じ検査）・解析可能か、および方向ごとの登録ピア数。Windows で herdvia が次回実行時に権限を制限する予定のファイルはピア数のない `warn` 行になりますが、ファイルの内容自体は検査され、形式エラーがあれば（権限を制限しても不正な内容は直らないため）通常の `fail` 行になります。
-5. **`herdr-core`:** エージェントが探す場所（macOS では自動起動エージェントの `PATH`）にあるか、また `herdr-core --version` が検証済みの `0.1.21` を返すか。空または相対パスの `PATH` エントリ（`.` など）は無視されるため、それらを通じてのみ到達できる `herdr-core` は見つからないものとして報告されます。
-6. **自動起動:** 登録されているか（macOS の LaunchAgent plist、Windows の `Run` レジストリ値）、かつこの実行ファイルを指しているか。Windows で管理者として実行されている場合も警告します。
-7. **エージェント:** このデータフォルダのエージェントが応答するか、そのバージョンと実行ファイル、およびホームリレーに接続されているか。
-8. **ピア:** `herdvia status` に基づき、登録されたピアごとに接続状態と経路を 1 行ずつ表示し、未接続のピアは切断理由と再試行までの秒数を含む `warn peer <name> (<in|out|both>): ...` を表示（ピアが未登録の場合は `warn` を 1 行表示）。
-9. **保留中の試行（`pending`）:** `herdvia pending` に表示される拒否された着信試行の件数。
-
-標準出力（`stdout`）に書き出される各行は `ok`、`warn`、`fail` のいずれかで始まり、`warn` と `fail` の行には同じ行内に対処法が示されます。ピア接続はピアごとに 1 行出力され、前の段階が失敗した場合はそれに依存する後続の点検が省略されます：データフォルダの点検が `fail` になるとエージェント点検とそれ以降の行はすべて省略され（Unix ソケットパス長の上限超過のみが原因である場合を除き、`secret.key` と `peers` も省略）、エージェントが応答しない場合は `relay`、ピア、`pending` の行が省略されます。失敗（`fail`）が 1 つもなければ終了コード `0`（警告のみでも `0`）、1 つでも失敗があれば `1` で終了します。引数エラーなどは他のコマンドと同様に `herdvia:` の 1 行を出力して `255` で終了します。
-
-- **読み取り専用の動作:** `doctor` はデータフォルダ、`secret.key`、`peers`、自動起動の登録、エージェントの状態を作成・変更しません。そのため Windows で他のアカウントにアクセス権が付与されているデータフォルダ、`secret.key`、`peers` は、データフォルダを準備するコマンドが権限を制限するまで `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`）のままになります — 該当するコマンドは `herdvia id`、`listen`（承認時）、`connect`（承認時）、`allow`、`accept`、`revoke`、およびエージェントの起動であり、`peers`、`status`、`pending`、`register`、`agent reload`、`doctor`、`--help` は何も変更せず、権限が制限されるまでは `peers` と `register` もそのような `peers` ファイルを拒否して `herdvia id` の実行またはエージェントの起動を案内します。Windows 版の `v0.1.2` 以前はデータフォルダと内部ファイルの権限を変更せず、ユーザープロファイルから継承された既定の権限（他のアカウントに読み取りを許可している場合がある）をそのまま使っていたため、`v0.1.2` 以前からアップグレードした PC では、新しいバージョンで上記コマンドのいずれかを実行するまで 3 項目すべてで警告が表示されることがあります（インストールスクリプトは `herdvia id` を実行します）。実行後はフォルダと 2 つのファイルが現在のユーザー・SYSTEM・Administrators のみにアクセスを許可する状態となり、3 行とも `ok` になります。
-- **タイムアウト:** 実行する外部プログラムは `herdr-core --version`（2 秒制限）のみです。エージェントへの各リクエストには 3 秒の制限があり、エージェントが稼働中でも 3 秒以内に応答しない場合は `fail agent: it may be running, but it did not answer within 3 seconds; …` を出力して残りのエージェント点検を省略します。後続のピア状態または `pending` のリクエストが 3 秒を超えた場合はその行が `warn` になります。ピア詳細のリクエストが 3 秒を超えた場合は、ピアの行に汎用的な案内が表示され、その後に `warn peer details: the agent did not answer within 3 seconds; …` が続きます（`status` またはピア詳細がタイムアウトした場合は `pending` を省略）。
-- **古いバージョンのエージェント:** `herdvia doctor` は `v0.1.2` で追加されました。それより前のバージョンのエージェントは `doctor` リクエストを認識しないため、`doctor` は稼働中のエージェントがこの実行ファイルより古く再起動が必要であると警告し（`relay` は省略しつつピアと `pending` は点検します）、エージェント側のログには `unknown CONTROL request` が 1 行記録されます。`v0.1.4` 以前のエージェントは `status-detail` を認識しないため、未接続のピア行には汎用的な `not connected; …` の案内が表示されます。また、`v0.1.2` から `v0.1.4` までのエージェントは、`herdvia status` または `herdvia doctor` が `status-detail` を要求するたびに `unknown CONTROL request` を 1 行ログに記録します。
 
 **両方のマシン**で実行してください。B 側の問題（`herdr-core` の未導入や未承認のピアなど）は B の出力に現れます。マシン A での実行例：
 
@@ -498,10 +572,40 @@ warn peer office (both): could not reach it (timed out); its agent may be off or
 ok   pending: no rejected connection attempts
 ```
 
+<details>
+<summary><code>doctor</code> が順番に点検する項目</summary>
+
+`herdvia doctor` は以下の項目を順番に点検します：
+
+1. **この実行ファイル:** バージョンとパス（`agent install` がそのパスを記録するため、一時フォルダや Cargo の `target` ディレクトリから実行されている場合は警告）。
+2. **データフォルダ:** パス（`HERDVIA_DIR` による指定かどうかも含む。`HERDVIA_DIR` は絶対パスである必要あり）、存在するか、実際のディレクトリであるか（シンボリックリンク不可、Windows ではジャンクションも不可）、そして現在のユーザーが開けるか（macOS/Unix では所有者も確認し、開けない場合は `fail` となり macOS/Unix では `chmod 700` を案内）。`HERDVIA_DIR`（Linux では `XDG_DATA_HOME` も）で指定したフォルダは、他のアカウントが親フォルダのいずれかを変更できる場合、フォルダがまだ存在しなくても `fail` となります（[セキュリティモデル](#security-model)を参照）。
+   - **macOS / Unix:** macOS ではフォルダにアクセスを許可する ACL（アクセス制御リスト）エントリがある場合も `fail` となり `chmod -N` を案内します。また macOS/Unix では、エージェントのソケットパスが Unix ソケット長の上限に収まるかも確認します。
+   - **Windows:** 他の種類の再解析ポイント（reparse point）である場合、所有者が現在のユーザー・Administrators・SYSTEM 以外の場合、または他のアカウントにアクセス権が付与されており現在のユーザーがその権限を変更できない場合に `fail` となります（最後の場合は管理者ターミナルで実行する `icacls … /grant` コマンドを案内）。これら 3 アカウント以外にアクセス権が付与されていても、現在のユーザーが権限を変更できるフォルダは、herdvia が次回実行時に権限を制限するため `warn` となります。
+3. **`secret.key`:** 存在するか、およびエージェントと同じ検査に通るか（macOS/Unix：現在のユーザーの所有で権限が `0600` 以下であり、macOS ではアクセスを許可する ACL エントリがないこと。Windows：リンクではない通常のファイルで、所有者が現在のユーザー・Administrators・SYSTEM のいずれかであり、他のアカウントにアクセス権が付与されていないこと）。Windows で他のアカウントにアクセス権が付与されているファイルは、現在のユーザーが権限を変更できる場合は herdvia が次回実行時に制限するため `warn`、変更できない場合は `icacls … /grant` コマンドを案内する `fail` となります。`secret.key` がちょうど 32 バイトでない場合や、権限による拒否以外の理由で読み取りに失敗した場合は `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)` を出力します。再ペアリングの前に、すべてのピアでこの PC について `herdvia revoke <名前>` を実行してください（[セキュリティモデル](#security-model)を参照）。出力にはフィンガープリントのみが表示されます。
+4. **`peers`:** 読み取り可能か（`secret.key` と同じ検査）・解析可能か、および方向ごとの登録ピア数。Windows で herdvia が次回実行時に権限を制限する予定のファイルはピア数のない `warn` 行になりますが、ファイルの内容自体は検査され、形式エラーがあれば（権限を制限しても不正な内容は直らないため）通常の `fail` 行になります。
+5. **`herdr-core`:** エージェントが探す場所（macOS では自動起動エージェントの `PATH`）にあるか、また `herdr-core --version` が検証済みの `0.1.21` を返すか。空または相対パスの `PATH` エントリ（`.` など）は無視されるため、それらを通じてのみ到達できる `herdr-core` は見つからないものとして報告されます。
+6. **自動起動:** 登録されているか（macOS の LaunchAgent plist、Windows の `Run` レジストリ値）、かつこの実行ファイルを指しているか。Windows で管理者として実行されている場合も警告します。
+7. **エージェント:** このデータフォルダのエージェントが応答するか、そのバージョンと実行ファイル、およびホームリレーに接続されているか。
+8. **ピア:** `herdvia status` に基づき、登録されたピアごとに接続状態と経路を 1 行ずつ表示し、未接続のピアは切断理由と再試行までの秒数を含む `warn peer <name> (<in|out|both>): ...` を表示（ピアが未登録の場合は `warn` を 1 行表示）。
+9. **保留中の試行（`pending`）:** `herdvia pending` に表示される拒否された着信試行の件数。
+
+</details>
+
+<details>
+<summary>出力形式、終了コード、タイムアウト、古いエージェント</summary>
+
+標準出力（`stdout`）に書き出される各行は `ok`、`warn`、`fail` のいずれかで始まり、`warn` と `fail` の行には同じ行内に対処法が示されます。ピア接続はピアごとに 1 行出力され、前の段階が失敗した場合はそれに依存する後続の点検が省略されます：データフォルダの点検が `fail` になるとエージェント点検とそれ以降の行はすべて省略され（Unix ソケットパス長の上限超過のみが原因である場合を除き、`secret.key` と `peers` も省略）、エージェントが応答しない場合は `relay`、ピア、`pending` の行が省略されます。失敗（`fail`）が 1 つもなければ終了コード `0`（警告のみでも `0`）、1 つでも失敗があれば `1` で終了します。引数エラーなどは他のコマンドと同様に `herdvia:` の 1 行を出力して `255` で終了します。
+
+- **読み取り専用の動作:** `doctor` はデータフォルダ、`secret.key`、`peers`、自動起動の登録、エージェントの状態を作成・変更しません。そのため Windows で他のアカウントにアクセス権が付与されているデータフォルダ、`secret.key`、`peers` は、データフォルダを準備するコマンドが権限を制限するまで `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`）のままになります — 該当するコマンドは `herdvia id`、`listen`（承認時）、`connect`（承認時）、`allow`、`accept`、`revoke`、およびエージェントの起動であり、`peers`、`status`、`pending`、`register`、`agent reload`、`doctor`、`--help` は何も変更せず、権限が制限されるまでは `peers` と `register` もそのような `peers` ファイルを拒否して `herdvia id` の実行またはエージェントの起動を案内します。Windows 版の `v0.1.2` 以前はデータフォルダと内部ファイルの権限を変更せず、ユーザープロファイルから継承された既定の権限（他のアカウントに読み取りを許可している場合がある）をそのまま使っていたため、`v0.1.2` 以前からアップグレードした PC では、新しいバージョンで上記コマンドのいずれかを実行するまで 3 項目すべてで警告が表示されることがあります（インストールスクリプトは `herdvia id` を実行します）。実行後はフォルダと 2 つのファイルが現在のユーザー・SYSTEM・Administrators のみにアクセスを許可する状態となり、3 行とも `ok` になります。
+- **タイムアウト:** 実行する外部プログラムは `herdr-core --version`（2 秒制限）のみです。エージェントへの各リクエストには 3 秒の制限があり、エージェントが稼働中でも 3 秒以内に応答しない場合は `fail agent: it may be running, but it did not answer within 3 seconds; …` を出力して残りのエージェント点検を省略します。後続のピア状態または `pending` のリクエストが 3 秒を超えた場合はその行が `warn` になります。ピア詳細のリクエストが 3 秒を超えた場合は、ピアの行に汎用的な案内が表示され、その後に `warn peer details: the agent did not answer within 3 seconds; …` が続きます（`status` またはピア詳細がタイムアウトした場合は `pending` を省略）。
+- **古いバージョンのエージェント:** `herdvia doctor` は `v0.1.2` で追加されました。それより前のバージョンのエージェントは `doctor` リクエストを認識しないため、`doctor` は稼働中のエージェントがこの実行ファイルより古く再起動が必要であると警告し（`relay` は省略しつつピアと `pending` は点検します）、エージェント側のログには `unknown CONTROL request` が 1 行記録されます。`v0.1.4` 以前のエージェントは `status-detail` を認識しないため、未接続のピア行には汎用的な `not connected; …` の案内が表示されます。また、`v0.1.2` から `v0.1.4` までのエージェントは、`herdvia status` または `herdvia doctor` が `status-detail` を要求するたびに `unknown CONTROL request` を 1 行ログに記録します。
+
+</details>
+
 <a id="common-symptoms"></a>
 ### よくある症状
 
-未接続のピアが 1 つでもあると、`herdvia status` は表の後に空行を挟んでピアごとに 1 行ずつ理由を表示します — `rejected by the peer (<reason>)`（`403 peer not allowed`、`403 inbound permission required`、`403 peer permissions changed` には対処法の案内付き）、`could not reach it (<detail>); its agent may be off or offline.`、`the connection closed (<detail>).`、`waiting for <name> to connect (this PC only accepts it).`、または `not connected yet.` が表示されます。再試行が予定されているピアの行末には `Retrying in <n>s.` が付き、そのようなピアが 1 つでもあれば最後に `Run herdvia agent reload to retry now.` の 1 行が加わります：
+未接続のピアが 1 つでもあると、`herdvia status` は表の後に空行を挟んでピアごとに 1 行ずつ理由を表示します：
 
 ```text
 $ herdvia status
@@ -512,7 +616,14 @@ win1: rejected by the peer (403 peer not allowed); on win1 run herdvia pending, 
 Run herdvia agent reload to retry now.
 ```
 
+<details>
+<summary>理由行の一覧と古いエージェントでの表示</summary>
+
+各行には `rejected by the peer (<reason>)`（`403 peer not allowed`、`403 inbound permission required`、`403 peer permissions changed` には対処法の案内付き）、`could not reach it (<detail>); its agent may be off or offline.`、`the connection closed (<detail>).`、`waiting for <name> to connect (this PC only accepts it).`、または `not connected yet.` が表示されます。再試行が予定されているピアの行末には `Retrying in <n>s.` が付き、そのようなピアが 1 つでもあれば最後に `Run herdvia agent reload to retry now.` の 1 行が加わります。
+
 アウトバウンドの失敗記録はメモリ上にのみ保持されるため、エージェント起動直後は `not connected yet.` と表示され、電源オフの PC への発信は約 30 秒（QUIC アイドルタイムアウト）経ってから `could not reach it` になります。稼働中のエージェントが `0.1.4` 以前の場合は表のみを出力し、`stderr` に `herdvia: note: restart the agent (herdvia agent install) to see why peers are disconnected` を表示します。
+
+</details>
 
 | 症状 | 主な原因 | 対処法 |
 |---|---|---|
@@ -541,13 +652,18 @@ Run herdvia agent reload to retry now.
 **推奨 — [インストールスクリプト](#install-script)を再実行する:**
 新しいバイナリを取得・検証して安全に置き換え（macOS はアトミックな `mv`、Windows は稼働中ロックを回避するため `herdvia.new.exe` で動作確認後に `.old` へリネーム置換）、`herdvia agent install` を再実行して新しいバイナリでエージェントを再起動します。`PATH` が重複追加されることはありません。
 
+アップグレード後、稼働中のエージェントが古い実行ファイルやバージョンのままになっている場合、`herdvia doctor` が警告します。
+
+<details>
+<summary>フォアグラウンドのエージェントが動作中の場合と手動アップグレード</summary>
+
 *（手動起動したフォアグラウンドのエージェントが動作中、または `HERDVIA_DIR` が設定されている場合は、そのエージェントを止めるか `HERDVIA_DIR` を解除して `herdvia agent install` を実行するか、`HERDVIA_NO_AGENT=1` を渡してご自身でエージェントを再起動してください。）*
 
 **手動アップグレード:**
 - **macOS:** [macOS (Apple Silicon)](#macos-apple-silicon) のダウンロード・検証・`mv` 手順を再実行します（`.zprofile` の行は不要）。**稼働中のバイナリを `cp` で上書きしないでください**（次回起動時に `Killed: 9` になります）。必ず `mv` で置き換えてから `herdvia agent install` を実行してください（またはフォアグラウンドの `herdvia agent` を再起動してください）。
 - **Windows:** 実行中の `.exe` は `tar.exe` で上書きできないため、先に `herdvia agent uninstall`（フォアグラウンドなら `Ctrl-C`）で停止してから [Windows (x64)](#windows-x64) の手順で展開し、再度 `herdvia agent install` を実行します。
 
-アップグレード後、稼働中のエージェントが古い実行ファイルやバージョンのままになっている場合、`herdvia doctor` が警告します。
+</details>
 
 ### アンインストール
 
@@ -569,13 +685,24 @@ Run herdvia agent reload to retry now.
 > [!WARNING]
 > **`--inbound`（または `--both`）で許可したピアは、このマシン上であなたのユーザー権限として `herdr-core` セッションを開けます — 実質的にシェル権限を与えるのと同等です。** 自分自身の端末と同等に信頼できる機器のみを許可してください。
 
-- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。権限はストリームごとに再確認され、`revoke` / `allow` の変更は稼働中のエージェントに即時反映されます（エージェントの起動中に行った変更も含む）。
-- **`revoke` で元に戻らないもの:** `revoke` はそのピアとのトンネルを閉じ、そのトンネルが起動した `herdr-core connect` プロセスを終了します。ただし、そのピアがすでに開いていたリモートターミナルは `herdr-core` 内に残り、起動済みのプロセスや行った変更もそのまま残ります。ピアの侵害が疑われる場合は `revoke` で登録を解除したうえで、この PC の Herdr セッションとエージェントログの `session started` / `session ended` 行を確認してください（[設定とファイルの保存場所](#configuration-and-files)を参照）。`revoke` はこの PC の `peers` のみを更新するため、成功時には `stderr` にも案内を出力します：`herdvia: note: Herdr may still list <name>; remove it with: hc machine rm <name>`（アウトバウンド権限を持っていたピアの場合）と `herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)`。稼働中のエージェントが `peers` の再読み込みを確認できなかった場合、再読み込みされるまでそのピアを受け入れ続ける可能性があるため、終了コード `255` で終了します — `herdvia agent reload` を実行し、失敗する場合はエージェントを再起動してください（`herdvia agent install`、または `herdvia agent` の再起動）。
 - **インバウンド信頼の連鎖:** ピアに `--inbound` を許可した PC の安全性は、そのピアの安全性を上回りません。そのピアを掌握した者はこの PC でもセッションを開けるためです。`--outbound` は Herdr を操作するマシンにのみ、`--inbound` は接続先の対象マシンにのみ付与し、`--both` は双方向で実際に発信し合う場合にのみ使用してください。
 - **アウトバウンド接続先からの受信データ:** こちらから発信して接続する場合でも、相手ピアはこの PC の `hc` が読み取るバイト列、エラー文字列、終了コードを送ってきます。信頼できる PC にのみ接続してください。
 - **コマンド許可リストの位置づけ（多層防御でありサンドボックスではない）:** `hc` の正確な `herdr-core connect` コマンド以外をすべて拒否してログに記録する仕組みは、誤用を減らし異常を可視化するためのものです。`herdr-core connect` 自体がシェル実行を提供するため、**真のセキュリティ境界はピアの鍵リスト（`peers`）です。**
+- **`secret.key` はこの PC の ID です:** このファイルを持つ者は誰でも、この PC を信頼しているピアに対してこの PC になりすませます。
+
+<details>
+<summary>認証、<code>revoke</code>、制限</summary>
+
+- **公開鍵による相互認証:** すべての接続は `iroh` により各マシンの Ed25519 鍵ペア（`EndpointId`）で認証されます。ピアリストが空、または方向権限（`in`、`out`、`both`）が一致しない接続はすべて拒否されます。権限はストリームごとに再確認され、`revoke` / `allow` の変更は稼働中のエージェントに即時反映されます（エージェントの起動中に行った変更も含む）。
+- **`revoke` で元に戻らないもの:** `revoke` はそのピアとのトンネルを閉じ、そのトンネルが起動した `herdr-core connect` プロセスを終了します。ただし、そのピアがすでに開いていたリモートターミナルは `herdr-core` 内に残り、起動済みのプロセスや行った変更もそのまま残ります。ピアの侵害が疑われる場合は `revoke` で登録を解除したうえで、この PC の Herdr セッションとエージェントログの `session started` / `session ended` 行を確認してください（[設定とファイルの保存場所](#configuration-and-files)を参照）。`revoke` はこの PC の `peers` のみを更新するため、成功時には `stderr` にも案内を出力します：`herdvia: note: Herdr may still list <name>; remove it with: hc machine rm <name>`（アウトバウンド権限を持っていたピアの場合）と `herdvia: note: on that PC, also revoke this PC (herdvia revoke <the name it uses for this PC>)`。稼働中のエージェントが `peers` の再読み込みを確認できなかった場合、再読み込みされるまでそのピアを受け入れ続ける可能性があるため、終了コード `255` で終了します — `herdvia agent reload` を実行し、失敗する場合はエージェントを再起動してください（`herdvia agent install`、または `herdvia agent` の再起動）。
 - **`root`・管理者権限での実行の拒否:** macOS/Unix では `root` での起動を拒否します。Windows では、`herdvia agent` は「管理者として実行」したターミナル（UAC で分割されたトークンの昇格側）からの起動を拒否し、`herdvia agent install` は昇格したトークンをすべて拒否します。UAC を無効にした PC や組み込みの Administrator アカウントでは、エージェントは起動します。
 - **接続の上限:** 接続済みのピアが 1 つの接続で同時に開けるストリームは最大 16 本（`hc` セッションごとに 1 本）で、単方向ストリームとデータグラムは使えません。ストリームを開いてから 10 秒以内に最初の要求を送らなければ、そのストリームは閉じられます。
+
+</details>
+
+<details>
+<summary>ローカルファイルと権限</summary>
+
 - **ユーザー分離されたローカル IPC:**
   - **macOS / Unix:** `0700` データフォルダ内の `0600` ソケットを使用し、接続元の UID を検証します。
   - **Windows:** DACL により現在のユーザー SID のみに制限された名前付きパイプを使用し、リモートネットワークからのパイプクライアントを拒否します。エージェントはデータフォルダの `agent.lock` をロックしているため、同じフォルダで 2 つ目のエージェントを起動すると拒否されます。別のアカウントがすでにパイプ名を占有している場合は、そのアカウントの SID を示して（所有者を読み取れない場合はその旨を示して）起動を拒否します。
@@ -587,16 +714,24 @@ Run herdvia agent reload to retry now.
     - **macOS / Unix:** 各親フォルダは現在のユーザーまたは root の所有で、group/other の書き込み権限がないことが必要です。`/tmp` のように sticky ビットを持つフォルダの中にある、現在のユーザー（または root）所有のフォルダは受け付けます。macOS では、エントリの追加・削除、権限の変更、または所有者の変更を許可する ACL の allow エントリを持つ親フォルダも拒否します。
     - **Windows（ドライブ文字で始まるパス）:** 各親フォルダはジャンクションやシンボリックリンクなどの再解析ポイントでないこと、所有者が現在のユーザー・SYSTEM・Administrators・TrustedInstaller のいずれかであること、他のアカウントにそのフォルダへの書き込み権限（ファイルの追加や属性の変更 — ジャンクションに変えるのに十分な権限）や、そのフォルダまたは内部の項目を削除・名前変更・所有権取得・権限変更する権限を与えていないことが必要です（読み取りとサブフォルダの作成は問題ありません）。NULL DACL を持つ親フォルダや、現在のユーザーが読み取れない親フォルダも拒否します。UNC パスは検査しません。
     - 親フォルダが拒否されると、データフォルダを使用するすべてのコマンドとエージェントが該当フォルダと理由を含むエラーで終了し（終了コード `255`）、`herdvia doctor` はデータフォルダがまだ存在しなくても `data directory` の行を `fail` と報告します。
-- **`secret.key` はこの PC の ID です:** このファイルを持つ者は誰でも、この PC を信頼しているピアに対してこの PC になりすませます。漏洩した可能性がある場合、読み取れない・紛失した場合（バックアップから復元するのではなく）、またはバックアップから復元したり別の PC に移したりした場合は、鍵を交換してください：
+- **`secret.key` の交換:** 漏洩した可能性がある場合、読み取れない・紛失した場合（バックアップから復元するのではなく）、またはバックアップから復元したり別の PC に移したりした場合は、鍵を交換してください：
   1. すべてのピアで、この PC の項目を `herdvia revoke <名前>` で削除します（読み取れない `secret.key` に対して `herdvia doctor` が新しい ID の作成を案内した場合でも、先にこの手順を行ってください。そうしないと相手 PC でその名前が古い `EndpointId` に紐づいたままになり、同じ名前での `accept` が拒否されます）。
   2. エージェントを停止します（`herdvia agent uninstall`、フォアグラウンド実行中なら `Ctrl-C`）。
   3. `secret.key` を削除します。
   4. `herdvia id` を実行して新しい ID を作成します。
   5. `herdvia agent install` を実行します（または `herdvia agent` を起動し直します）。
   6. すべてのピアと改めてペアリングします。
+
+</details>
+
+<details>
+<summary>ペアリングとフィンガープリント</summary>
+
 - **対話型ペアリング (`listen` / `connect`):** ペアリングはリモートコマンドを一切実行せず `pending` にも記録されない専用 ALPN（`herdvia/pair/1`）上で動作し、`herdvia listen` が待機中のときのみハンドシェイクを受け付けます。各 `listen` セッションは 5 分で失効する 128 ビットの 1 回限りトークンを生成し、無効なハンドシェイク証明が 5 回続くとセッションを終了し、同時に 1 件の確認のみを受け付けて承認または拒否の直後に閉じます。双方は QUIC TLS 1.3 exporter（`herdvia-pair-v1`）と commit-reveal 乱数交換から 6 桁の確認コード（`NNN-NNN`、約 20 ビット）を導出し、接続先 PC で人間が両画面の一致を確認して `y` を入力しない限り `peers` は一切変更されません。操作側 PC も、その PC のユーザーが `Same code on both PCs? [y/N]:` に `y` を入力し、かつ接続先 PC が承認するまでは `peers` に何も書き込まず、`hc machine add` も実行しません。LAN 検出ビーコンには署名がなく、同じ LAN の誰でも自分の鍵でビーコンを送り、すぐに承認メッセージを送れるためです。そのため `connect` は見つかった PC を自分で選びません。この確認手順でネットワークプロトコルは変わらないため、以前のバージョンともそのままペアリングできます。付与される権限も接続先 PC では `--inbound` のみ、操作側 PC では `--outbound` のみです（自動で `--both` にはなりません）。
 - **`0.1.4` 以前の対話型ペアリング:** `herdvia connect` は LAN で見つかった PC が 1 台なら自動で選び、この PC のユーザーの確認なしに相手の承認メッセージだけで保存していました。そのため同じ LAN の別の機器が接続先 PC になりすますことができました。Herdr を動かす PC（`connect` を実行する側）の `herdvia` をアップグレードしてそのエージェントを再起動すると解消します（インストールスクリプトは両方を行います）。それまでは接続先 PC の画面に表示された招待文字列でペアリングしてください（`herdvia connect <名前> hvi1-...`）。
 - **フィンガープリントと `pending` / `accept`:** フィンガープリントは目視照合のために 256 ビット `EndpointId` の先頭 16 桁の 16 進文字（64 ビット）のみを表示したもので、`herdvia` が保存・検証するのは常に完全な `EndpointId` です。`pending` は認証済み `iroh` ハンドシェイクを完了したピアのみをメモリ上に最大 16 件・10 分間保持し、`accept` は接頭辞の重複で候補が複数ある場合や、リストが満杯の場合（この PC の `EndpointId` を知る誰もが埋められるため）をいずれも拒否します。フィンガープリントは `pending` 自体からではなく、必ず**相手マシン自身の画面**から読み取ってください。
+
+</details>
 
 **脆弱性の報告:** 機密性の高いセキュリティ上の問題は、GitHub の[非公開脆弱性報告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new)からご連絡いただき、機密性のないバグについては通常の Issue を作成してください。
 
@@ -610,11 +745,17 @@ Run herdvia agent reload to retry now.
 - **公開リレーサーバー（[n0](https://n0.computer)）:** 各エージェントはホームリレーに接続し、接続確立の仲介や、直接通信できない場合のフォールバック経路として使用します。
 - **DNS アドレス検索（`dns.iroh.link`）:** `EndpointId` から互いを見つけられるよう、各エージェントは自身の **`EndpointId` とホームリレー URL** を含む署名付きレコードを公開サービスへ登録します。
 - **ルーターのポートマッピング:** ルーターが対応していれば UPnP、PCP、NAT-PMP によるポート開放を要求し、直接接続を補助します。
-- **フォアグラウンド LAN ペアリング検出:** `herdvia listen` または招待指定なしの `herdvia connect` がフォアグラウンドで実行されている間のみ、UDP ポート `48721`（IPv4 マルチキャスト `239.255.77.86` およびブロードキャスト）で接続先の `EndpointId`、エージェント QUIC ポート、1 回限り LAN トークン、サニタイズ済みホスト名を含む短い検出パケットを送受信します。このパケットには署名がなく、LAN 上のどの機器でも任意の鍵を名乗れます（そのため `connect` はフィンガープリントで選ばせます）。`herdvia listen` は検出クエリに直接（ユニキャストで）応答する際、クエリがプライベート（RFC 1918）、リンクローカル（`169.254.0.0/16`）、ループバックのアドレスから来た場合のみ応答し、それ以外のアドレスからのクエリは無視します。ポートに届くリモートホストに 1 回限り LAN トークンを渡さないためで、定期的なマルチキャスト・ブロードキャストのビーコンには影響しません。常駐する `herdvia agent` はこの UDP ポートを開きません。
 - **IP アドレスと `EndpointId`:** アドレス検索サービスに登録されるのはホームリレー URL だけですが、この PC の `EndpointId` を知る者はリレー経由でこの PC に接続でき、`herdvia` がその接続を拒否する前に、`iroh` がこの PC の直接接続用アドレス候補（LAN アドレスやポートマッピングされたグローバルアドレスを含む）をその相手に送ることがあります。そのため、この PC の現在の IP アドレスを知られる可能性があります。`EndpointId` は秘密ではありませんが、公開の場には掲載しないでください。
 - **暗号化とメタデータ:** セッション通信はすべて QUIC/TLS によりエンドツーエンドで暗号化され、リレーサーバーが中身を読むことはできません。ただし n0 によれば、IP アドレス、接続時刻、転送データ量などのメタデータはリレー側から観測可能です。
 - **サービス品質に関する注意:** n0 の公開リレーは**開発および趣味用途（development and hobby use only）**とされており、SLA や稼働保証はなくレート制限があります。詳細は iroh ドキュメントの [Public Relays](https://docs.iroh.computer/iroh-services/relays/public) と [DNS address lookup](https://docs.iroh.computer/connecting/dns-address-lookup) を参照してください。
+
+<details>
+<summary>LAN ペアリング検出とログ出力</summary>
+
+- **フォアグラウンド LAN ペアリング検出:** `herdvia listen` または招待指定なしの `herdvia connect` がフォアグラウンドで実行されている間のみ、UDP ポート `48721`（IPv4 マルチキャスト `239.255.77.86` およびブロードキャスト）で接続先の `EndpointId`、エージェント QUIC ポート、1 回限り LAN トークン、サニタイズ済みホスト名を含む短い検出パケットを送受信します。このパケットには署名がなく、LAN 上のどの機器でも任意の鍵を名乗れます（そのため `connect` はフィンガープリントで選ばせます）。`herdvia listen` は検出クエリに直接（ユニキャストで）応答する際、クエリがプライベート（RFC 1918）、リンクローカル（`169.254.0.0/16`）、ループバックのアドレスから来た場合のみ応答し、それ以外のアドレスからのクエリは無視します。ポートに届くリモートホストに 1 回限り LAN トークンを渡さないためで、定期的なマルチキャスト・ブロードキャストのビーコンには影響しません。常駐する `herdvia agent` はこの UDP ポートを開きません。
 - **ログ出力:** `iroh` の内部ログは無効化されています。エージェントのログには接続・拒否・切断などのイベントと、ピアがこの PC で実行したセッションの開始・終了のみが記録され、セッションの内容は一切記録されません。リモート側が指定できる文字列はエスケープおよび切り詰めが行われ、ログ出力にはレート制限があります（[設定とファイルの保存場所](#configuration-and-files)を参照）。
+
+</details>
 
 ---
 
@@ -651,12 +792,15 @@ Run herdvia agent reload to retry now.
 | **ログ（Windows 自動起動時）** | `%LOCALAPPDATA%\herdvia\herdvia.log` |
 | **ログ（`herdvia agent` 手動起動時）** | 標準エラー出力（`stderr`） |
 
-エージェントログの仕様：
+<details>
+<summary>エージェントログの仕様</summary>
 
 - **行の形式とエスケープ:** エージェントが稼働中に書き込む各ログ行は `2026-11-14T14:17:03Z herdvia: connected <id>` のように UTC タイムスタンプで始まり、常に 1 行に収まります。改行や ESC などの制御文字、Unicode の行区切り・段落区切り（U+2028、U+2029）、および 12 個の双方向制御文字（U+202E など）はエスケープされ（`\n`、`\u{1b}`、`\u{2028}`、`\u{202e}`）、300 文字を超える文字列は切り詰められて末尾が `... [truncated, <N> bytes]` になります。
 - **レート制限:** 未認証の接続に関する行（拒否したピアや失敗した着信ハンドシェイク）は連続 30 行まで即座に書き込んだ後は 10 秒あたり 1 行に制限され、それ以外の行は連続 60 行まで書き込んだ後は 1 秒あたり 1 行に制限されます。制限により破棄された行がある場合は、同じ分類の次の行を書き込む直前に `suppressed 71 log lines about unauthenticated connections` や `suppressed 3 other log lines` のように破棄された行数が記録されます。
 - **セッション記録と書き込み失敗時の扱い:** 着信側では、ピアが実行したセッションごとに `session started: <名前> (fingerprint <フィンガープリント>), herdr session <セッション>`（`hc` がセッション名を指定しない場合は `herdr session` の部分を省略）と `session ended: <同じ説明>: <理由>` の行を記録します。理由には例えば `exit code 0`、`closed`（この PC で `revoke` や権限変更を行った場合）、`the agent stopped` などが入ります。ディスク容量不足などでログに行を書き込めない場合、エージェントはその行を痕跡なく破棄し、エージェントと稼働中のセッションはそのまま継続します。
 - **サイズと経過日数による切り詰め:** 自動起動で開始したエージェントは、起動直後とその後 1 時間ごとにログファイルのサイズを確認し、10 MiB を超えていれば末尾 5 MiB 内に収まる完全な行だけを残します。また、起動直後とその後 24 時間ごとに 180 日を過ぎた行を削除します（失敗した場合は次の 1 時間ごとの確認時に再試行します）。別ファイルへローテーションするのではなく、同じファイルの先頭部分をその場で切り詰めます。タイムスタンプのない行（以前のバージョンが出力した行や、エージェントの起動失敗時に出力されたエラー行など）は、次にあるタイムスタンプ付きの行と一緒に削除されます。フォアグラウンドで起動した `herdvia agent` は、`stderr` がターミナルや別のファイルに向いている場合は手を加えませんが、macOS ではフォアグラウンド起動であっても `stderr` を `~/Library/Logs/herdvia.log` に追記していれば同様に切り詰めます。
+
+</details>
 
 ---
 
