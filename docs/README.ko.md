@@ -214,6 +214,52 @@ LAN 탐색에는 인증이 없으므로 `connect`는 스스로 PC를 고르지 �
 1. **양쪽 화면의 6자리 번호가 정확히 일치하는지** 눈으로 확인합니다. 번호가 다르면 `n`을 입력하세요. 다른 PC에 연결되었을 수 있습니다.
 2. **PC A**의 `Same code on both PCs? [y/N]:` 프롬프트와 **PC B**의 `Allow? [y/N]:` 프롬프트에 각각 `y`를 입력합니다(순서는 상관없습니다).
 
+두 화면은 다음과 같습니다(실제 이름, 지문, 확인 번호는 이와 다릅니다):
+
+**PC B** (`herdvia listen`):
+
+```text
+$ herdvia listen
+Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...
+This PC's fingerprint: c7d2-91e0-4a5b-3f68
+
+  Same local network: run on the Herdr PC:
+    herdvia connect <name>
+  and choose the entry with this fingerprint.
+
+  Different network:  run on the Herdr PC:
+    herdvia connect <name> hvi1-...
+
+Incoming pairing request:
+  Peer name:         my-laptop
+  Peer fingerprint:  28af-63b6-258e-859d
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. Approving lets that PC run commands as this user (--inbound).
+Allow? [y/N]: y
+Paired with my-laptop (in).
+```
+
+**PC A** (`herdvia connect B`):
+
+```text
+$ herdvia connect B
+Searching local network for a waiting PC...
+Waiting PCs found on the local network.
+Choose the PC whose fingerprint matches the one 'herdvia listen' shows on the target PC:
+  1) home-desktop (fingerprint c7d2-91e0-4a5b-3f68)
+  0) Paste an invite token instead
+Select [1, or 0]: 1
+
+Connected to home-desktop (fingerprint c7d2-91e0-4a5b-3f68).
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. If it shows a different code, answer n: you may be connected to another PC.
+Same code on both PCs? [y/N]: y
+Waiting for approval on the other PC...
+Paired with B and registered machine 'B' in Herdr.
+```
+
 양쪽 모두 `y`를 입력하면:
 - **PC B**는 PC A를 `--inbound`로(B가 승인하는 즉시), **PC A**는 PC B를 `--outbound`로 각각 저장합니다.
 - 재시도 대기 없이 곧바로 암호화 터널이 맺어집니다.

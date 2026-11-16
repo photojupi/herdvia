@@ -214,6 +214,52 @@ herdvia listen
 1. 核对**两块屏幕上显示的 6 位数字是否完全相同**。若不同，请输入 `n`：你可能连接到了另一台电脑。
 2. 在**电脑 A** 的 `Same code on both PCs? [y/N]:` 和**电脑 B** 的 `Allow? [y/N]:` 提示符后分别输入 `y`（顺序不限）。
 
+两块屏幕显示如下（你的名称、指纹和验证码会与此不同）：
+
+**电脑 B** (`herdvia listen`)：
+
+```text
+$ herdvia listen
+Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...
+This PC's fingerprint: c7d2-91e0-4a5b-3f68
+
+  Same local network: run on the Herdr PC:
+    herdvia connect <name>
+  and choose the entry with this fingerprint.
+
+  Different network:  run on the Herdr PC:
+    herdvia connect <name> hvi1-...
+
+Incoming pairing request:
+  Peer name:         my-laptop
+  Peer fingerprint:  28af-63b6-258e-859d
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. Approving lets that PC run commands as this user (--inbound).
+Allow? [y/N]: y
+Paired with my-laptop (in).
+```
+
+**电脑 A** (`herdvia connect B`)：
+
+```text
+$ herdvia connect B
+Searching local network for a waiting PC...
+Waiting PCs found on the local network.
+Choose the PC whose fingerprint matches the one 'herdvia listen' shows on the target PC:
+  1) home-desktop (fingerprint c7d2-91e0-4a5b-3f68)
+  0) Paste an invite token instead
+Select [1, or 0]: 1
+
+Connected to home-desktop (fingerprint c7d2-91e0-4a5b-3f68).
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. If it shows a different code, answer n: you may be connected to another PC.
+Same code on both PCs? [y/N]: y
+Waiting for approval on the other PC...
+Paired with B and registered machine 'B' in Herdr.
+```
+
 双方都输入 `y` 后：
 - **电脑 B** 将电脑 A 保存为 `--inbound`（在 B 确认时即保存），**电脑 A** 将电脑 B 保存为 `--outbound`。
 - 两端代理无需等待退避重试，立即建立端到端加密通道。

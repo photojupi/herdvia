@@ -214,6 +214,52 @@ LAN 検出には認証がないため、`connect` が自分で PC を選ぶこ�
 1. **両方の画面にまったく同じ 6 桁のコードが表示されていること**を目視で確認します。コードが異なる場合は `n` を入力してください。別の PC に接続している可能性があります。
 2. **マシン A** の `Same code on both PCs? [y/N]:` と **マシン B** の `Allow? [y/N]:` にそれぞれ `y` を入力します（順序は問いません）。
 
+2 つの画面は次のように表示されます（実際の名前、フィンガープリント、確認コードはこれとは異なります）：
+
+**マシン B** (`herdvia listen`):
+
+```text
+$ herdvia listen
+Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...
+This PC's fingerprint: c7d2-91e0-4a5b-3f68
+
+  Same local network: run on the Herdr PC:
+    herdvia connect <name>
+  and choose the entry with this fingerprint.
+
+  Different network:  run on the Herdr PC:
+    herdvia connect <name> hvi1-...
+
+Incoming pairing request:
+  Peer name:         my-laptop
+  Peer fingerprint:  28af-63b6-258e-859d
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. Approving lets that PC run commands as this user (--inbound).
+Allow? [y/N]: y
+Paired with my-laptop (in).
+```
+
+**マシン A** (`herdvia connect B`):
+
+```text
+$ herdvia connect B
+Searching local network for a waiting PC...
+Waiting PCs found on the local network.
+Choose the PC whose fingerprint matches the one 'herdvia listen' shows on the target PC:
+  1) home-desktop (fingerprint c7d2-91e0-4a5b-3f68)
+  0) Paste an invite token instead
+Select [1, or 0]: 1
+
+Connected to home-desktop (fingerprint c7d2-91e0-4a5b-3f68).
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. If it shows a different code, answer n: you may be connected to another PC.
+Same code on both PCs? [y/N]: y
+Waiting for approval on the other PC...
+Paired with B and registered machine 'B' in Herdr.
+```
+
 両方が `y` を入力すると：
 - **マシン B** はマシン A を `--inbound` で（B が承認した時点で）保存し、**マシン A** はマシン B を `--outbound` で保存します。
 - 再試行の待ち時間なしで即座に暗号化トンネルが確立します。

@@ -210,6 +210,52 @@ Both terminals display a 6-digit verification code (for example, `482-917`):
 1. Check that **both screens show the exact same 6-digit code**. If they differ, answer `n`: you may be connected to another PC.
 2. On **Machine A**, type `y` at `Same code on both PCs? [y/N]:`, and on **Machine B**, type `y` at `Allow? [y/N]:` (in either order).
 
+The two screens look like this (your names, fingerprints, and code will differ):
+
+**Machine B** (`herdvia listen`):
+
+```text
+$ herdvia listen
+Waiting for a connection (expires in 5 minutes; press Ctrl-C to cancel)...
+This PC's fingerprint: c7d2-91e0-4a5b-3f68
+
+  Same local network: run on the Herdr PC:
+    herdvia connect <name>
+  and choose the entry with this fingerprint.
+
+  Different network:  run on the Herdr PC:
+    herdvia connect <name> hvi1-...
+
+Incoming pairing request:
+  Peer name:         my-laptop
+  Peer fingerprint:  28af-63b6-258e-859d
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. Approving lets that PC run commands as this user (--inbound).
+Allow? [y/N]: y
+Paired with my-laptop (in).
+```
+
+**Machine A** (`herdvia connect B`):
+
+```text
+$ herdvia connect B
+Searching local network for a waiting PC...
+Waiting PCs found on the local network.
+Choose the PC whose fingerprint matches the one 'herdvia listen' shows on the target PC:
+  1) home-desktop (fingerprint c7d2-91e0-4a5b-3f68)
+  0) Paste an invite token instead
+Select [1, or 0]: 1
+
+Connected to home-desktop (fingerprint c7d2-91e0-4a5b-3f68).
+  Verification code: 482-917
+
+Check that the other PC shows 482-917. If it shows a different code, answer n: you may be connected to another PC.
+Same code on both PCs? [y/N]: y
+Waiting for approval on the other PC...
+Paired with B and registered machine 'B' in Herdr.
+```
+
 Once both of you have answered `y`:
 - **Machine B** saves Machine A with `--inbound` permission (as soon as B approves), and **Machine A** saves Machine B with `--outbound` permission.
 - The two agents establish their encrypted tunnel immediately (no retry backoff wait).
