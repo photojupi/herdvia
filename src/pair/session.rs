@@ -11,7 +11,7 @@ use crate::{
 use data_encoding::HEXLOWER;
 use iroh::{
     EndpointAddr, EndpointId,
-    endpoint::{Connection, Side},
+    endpoint::{ConnectError, ConnectWithOptsError, Connection, Side},
 };
 use std::{
     collections::HashMap,
@@ -30,6 +30,7 @@ use tokio::{
 
 const LISTEN_TTL: Duration = Duration::from_secs(300);
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+const DIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_APPROVAL_WAIT: Duration = Duration::from_secs(65);
 const MAX_INFLIGHT_PAIR_CONNS: usize = 4;
@@ -856,15 +857,44 @@ where
     }
 
     let dial = async {
-        let conn = tokio::time::timeout(STEP_TIMEOUT, network.endpoint.connect(addr, PAIR_ALPN))
-            .await
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timed out connecting to target PC (is 'herdvia listen' running there?)",
-                )
-            })?
-            .map_err(|err| io::Error::other(format!("could not connect to target PC: {err}")))?;
+        // A target that has just started publishes its address only once it has a home relay, so
+        // looking it up by ID alone can come back empty for a moment. Such a dial is tried again
+        // within the same step deadline; any other failure ends it at once.
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        let mut no_address = None;
+        let conn = loop {
+            let attempt = tokio::time::timeout_at(
+                deadline,
+                network.endpoint.connect(addr.clone(), PAIR_ALPN),
+            )
+            .await;
+            let err = match attempt {
+                Ok(Ok(conn)) => break Ok(conn),
+                Ok(Err(err)) => err,
+                Err(_) => match no_address.take() {
+                    Some(err) => break Err(err),
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "timed out connecting to target PC (is 'herdvia listen' running there?)",
+                        ));
+                    }
+                },
+            };
+            let retry = matches!(
+                err,
+                ConnectError::Connect {
+                    source: ConnectWithOptsError::NoAddress { .. },
+                    ..
+                }
+            ) && tokio::time::Instant::now() + DIAL_RETRY_DELAY < deadline;
+            if !retry {
+                break Err(err);
+            }
+            no_address = Some(err);
+            tokio::time::sleep(DIAL_RETRY_DELAY).await;
+        }
+        .map_err(|err| io::Error::other(format!("could not connect to target PC: {err}")))?;
 
         let tls_binding = export_tls_binding(&conn)?;
         let nonce_a: [u8; 32] = random_bytes();
@@ -1043,7 +1073,9 @@ mod tests {
         pair::codec::{AuthKind, PAIR_ALPN, PairMsg, compute_commit_a, write_msg},
         peers::{self, Permission},
     };
-    use iroh::{Endpoint, EndpointAddr, SecretKey, endpoint::presets};
+    use iroh::{
+        Endpoint, EndpointAddr, SecretKey, address_lookup::memory::MemoryLookup, endpoint::presets,
+    };
     use std::time::Duration;
     use tokio::task::JoinSet;
 
@@ -1232,6 +1264,133 @@ mod tests {
         assert!(connect_task.await.unwrap().is_err());
         assert!(peers::load(dir_a.path()).unwrap().is_empty());
 
+        target_ep.close().await;
+        net_a.endpoint.close().await;
+    }
+
+    /// Makes the caller look addresses up only in the returned table, so that what it finds does
+    /// not depend on public address lookup.
+    fn memory_lookup_only(net: &Network) -> MemoryLookup {
+        let lookup = MemoryLookup::new();
+        let services = net.endpoint.address_lookup().unwrap();
+        services.clear();
+        services.add(lookup.clone());
+        lookup
+    }
+
+    /// Sends an invite connect request, which names the target by its ID alone.
+    async fn start_invite_connect(
+        net_a: &Arc<Network>,
+        target_id: EndpointId,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let (mut cli_a, srv_a) = tokio::io::duplex(4096);
+        let connect_task = tokio::spawn(serve_connect(srv_a, net_a.clone()));
+        let req = format!("home {target_id} invite {}", HEXLOWER.encode(&[5u8; 16]));
+        frame::write(&mut cli_a, STDIN, req.as_bytes())
+            .await
+            .unwrap();
+        (cli_a, connect_task)
+    }
+
+    #[tokio::test]
+    async fn invite_dial_waits_for_a_freshly_started_target_to_publish_its_address() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let lookup = memory_lookup_only(&net_a);
+        let (target_ep, target_id, port) = spawn_eager_approver().await;
+        let (mut cli_a, connect_task) = start_invite_connect(&net_a, target_id).await;
+
+        // The target publishes its address only after the caller's first lookup came back empty.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        lookup.add_endpoint_info(
+            EndpointAddr::new(target_id).with_ip_addr(([127, 0, 0, 1], port).into()),
+        );
+
+        let sas = tokio::time::timeout(Duration::from_secs(10), frame::read(&mut cli_a))
+            .await
+            .expect("connect session should answer")
+            .unwrap()
+            .unwrap();
+        let text = String::from_utf8(sas.payload).unwrap();
+        assert_eq!(sas.tag, STDOUT, "{text}");
+        assert!(text.starts_with("SAS "), "{text}");
+
+        drop(cli_a);
+        let _ = tokio::time::timeout(Duration::from_secs(5), connect_task)
+            .await
+            .expect("connect session should end");
+        target_ep.close().await;
+        net_a.endpoint.close().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invite_dial_reports_the_missing_address_once_the_step_deadline_passes() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let _lookup = memory_lookup_only(&net_a);
+        let target_id = SecretKey::generate().public();
+        let started = tokio::time::Instant::now();
+        let (mut cli_a, connect_task) = start_invite_connect(&net_a, target_id).await;
+
+        let outcome = frame::read(&mut cli_a).await.unwrap().unwrap();
+        let text = String::from_utf8(outcome.payload).unwrap();
+        assert_eq!(outcome.tag, ERROR, "{text}");
+        assert!(
+            text.contains("could not connect to target PC: No addressing information available"),
+            "{text}"
+        );
+        let waited = started.elapsed();
+        assert!(
+            (STEP_TIMEOUT - Duration::from_secs(1)..=STEP_TIMEOUT).contains(&waited),
+            "gave up after {waited:?}"
+        );
+        assert!(connect_task.await.unwrap().is_err());
+        net_a.endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn invite_dial_does_not_retry_a_target_that_refuses_the_connection() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let net_a = Network::bind(dir_a.path().to_owned()).await.unwrap();
+        let lookup = memory_lookup_only(&net_a);
+        // A target found at its address that does not speak the pairing protocol.
+        let target_ep = Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
+            .alpns(vec![b"not-pairing".to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let target_id = target_ep.id();
+        let port = target_ep
+            .bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
+        lookup.add_endpoint_info(
+            EndpointAddr::new(target_id).with_ip_addr(([127, 0, 0, 1], port).into()),
+        );
+        let accept_ep = target_ep.clone();
+        tokio::spawn(async move {
+            while let Some(incoming) = accept_ep.accept().await {
+                let _ = incoming.await;
+            }
+        });
+        let (mut cli_a, connect_task) = start_invite_connect(&net_a, target_id).await;
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), frame::read(&mut cli_a))
+            .await
+            .expect("a refused dial should fail at once")
+            .unwrap()
+            .unwrap();
+        let text = String::from_utf8(outcome.payload).unwrap();
+        assert_eq!(outcome.tag, ERROR, "{text}");
+        assert!(text.contains("could not connect to target PC: "), "{text}");
+        assert!(!text.contains("No addressing information"), "{text}");
+        assert!(connect_task.await.unwrap().is_err());
         target_ep.close().await;
         net_a.endpoint.close().await;
     }
