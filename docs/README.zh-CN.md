@@ -180,7 +180,7 @@ herdvia listen
   ```sh
   herdvia connect B
   ```
-  `connect` 会在局域网内扫描约 2 秒，即使只找到一台，也会以带指纹的编号列表（含 `0) Paste an invite token instead`）列出找到的等待中电脑。请选择与 B 的 `listen` 屏幕上所示指纹相同的一项。由于局域网发现没有身份验证，`connect` 从不自行选择电脑（参见[安全模型](#security-model)）。若一台也没找到（例如访客 Wi-Fi 隔离拦截了广播），则会提示粘贴 B 屏幕上的 `hvi1-...` 邀请串。
+  `connect` 会在局域网内扫描约 2 秒，即使只找到一台，也会以带指纹的编号列表（含 `0) Paste an invite token instead`）列出找到的等待中电脑。请选择与 B 的 `listen` 屏幕上所示指纹相同的一项。由于局域网发现没有身份验证，`connect` 从不自行选择电脑（参见[安全模型](#security-model)）。若一台也没找到（例如访客 Wi-Fi 隔离拦截了广播），则会提示粘贴 B 屏幕上的 `hvi1-...` 邀请串。在编号列表或邀请串提示处输入空行（或 EOF）会取消并以退出码 `1` 结束；输入不在列表中的编号会以退出码 `255` 结束。
 
 - **不同网络（例如家里 ↔ 办公室或咖啡馆）：**
   ```sh
@@ -196,12 +196,12 @@ herdvia listen
 1. 核对**两块屏幕上显示的 6 位数字是否完全相同**。若不同，请输入 `n`：你可能连接到了另一台电脑。
 2. 在**电脑 A** 的 `Same code on both PCs? [y/N]:` 和**电脑 B** 的 `Allow? [y/N]:` 提示符后分别输入 `y`（顺序不限）。
 
-在电脑 A 上输入 `n`、输入空行或关闭输入（EOF）都会取消配对并以退出码 `1` 结束；若 A 的回答未在 60 秒内送达，`connect` 会以退出码 `255` 失败。若 B 已确认而 A 取消，B 上会保留 A 作为 `--inbound` 对端，但由于 A 未保存任何内容，连接不会建立；如有需要，可在 B 上运行 `herdvia revoke <名称>` 将其删除。
+在电脑 A 上输入 `n`、输入空行或关闭输入（EOF）都会取消配对并以退出码 `1` 结束；若 A 的回答未在 60 秒内送达，`connect` 会以退出码 `255` 失败。若在 A 上取消，只要 B 的用户输入了 `y`（无论是在你取消之前还是之后），B 仍会将 A 保存为 `--inbound` 对端，但由于 A 未保存任何内容，连接不会建立；如有需要，可在 B 上运行 `herdvia revoke <名称>` 将其删除。
 
 双方都输入 `y` 后：
 - **电脑 B** 将电脑 A 保存为 `--inbound`（在 B 确认时即保存），**电脑 A** 将电脑 B 保存为 `--outbound`。
 - 两端代理无需等待退避重试，立即建立端到端加密通道。
-- **电脑 A** 自动执行 `hc machine add`，`B` 会直接出现在 Herdr 中。*（若 `PATH` 中找不到 `hc` 或注册失败，配对本身依然保留，并会打印可直接复制执行的 `hc machine add --via ... --name B` 命令——也可在安装 Herdr 后运行 `herdvia register B`。）*
+- **电脑 A** 自动执行 `hc machine add`，`B` 会直接出现在 Herdr 中。*（若 `PATH` 中找不到 `hc` 或注册失败，配对本身依然保留，会打印可直接复制执行的 `hc machine add --via ... --name B` 命令并以退出码 `1` 结束——也可在安装 Herdr 后运行 `herdvia register B`。）*
 
 ### 步骤 4. 检查连接状态
 
@@ -282,7 +282,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_VERSION` | 安装指定版本（如 `0.1.0` 或 `v0.1.0`），而非最新版 |
 | `HERDVIA_NO_AGENT=1` | 跳过运行 `herdvia agent install` |
 | `HERDVIA_NO_MODIFY_PATH=1` | 不修改 `~/.zprofile` 或 Windows 用户 `PATH` |
-| `HERDVIA_RELEASE_BASE` | 改从 `<url>/<文件名>` 而非 GitHub Releases 下载发布文件（优先级高于 `HERDVIA_VERSION`）。必须以 `https://` 开头；`http://` 仅接受 `127.0.0.1`、`localhost` 或 `[::1]`（用于本地测试）。即使跟随重定向，也只通过 HTTPS 下载。 |
+| `HERDVIA_RELEASE_BASE` | 改从 `<url>/<文件名>` 而非 GitHub Releases 下载发布文件（优先级高于 `HERDVIA_VERSION`）。必须以 `https://` 开头；`http://` 仅接受 `127.0.0.1`、`localhost` 或 `[::1]`（用于本地测试）。下载仅使用 HTTPS（允许的环回 `http://` 基础地址除外），且仅跟随指向 HTTPS 的重定向。 |
 
 安装指定版本（注意：即使从带版本标签的 URL 下载 `install.sh` / `install.ps1`，也需显式设置 `HERDVIA_VERSION`）：
 
@@ -402,23 +402,23 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | 命令 | 说明 |
 |---|---|
-| `herdvia listen [<名称>]` | 在被控目标电脑上等待最长 5 分钟的交互式配对请求，打印本机指纹，发送局域网发现广播并打印供跨网使用的一次性 `hvi1-...` 邀请串，显示 6 位验证码并在用户于 `[y/N]` 确认后授予 `--inbound`（省略 `<名称>` 时默认使用对方净化后的主机名）。拒绝或超时以退出码 `1` 结束。需要代理正在运行。 |
+| `herdvia listen [<名称>]` | 在被控目标电脑上等待最长 5 分钟的交互式配对请求，打印本机指纹，发送局域网发现广播并打印供跨网使用的一次性 `hvi1-...` 邀请串，显示 6 位验证码并在用户于 `[y/N]` 确认后授予 `--inbound`（省略 `<名称>` 时默认使用对方净化后的主机名）。拒绝、未在 60 秒内回答 `Allow? [y/N]:`（按拒绝处理），或 5 分钟内未收到请求时，均以退出码 `1` 结束。需要代理正在运行。 |
 | `herdvia connect <名称> [<邀请串>]` | 从运行 Herdr 的主控电脑与等待中的目标电脑配对，目标从局域网发现的电脑编号列表中按指纹选择，或由 `<邀请串>`（`hvi1-...`）指定；显示相同的 6 位验证码并询问 `Same code on both PCs? [y/N]:`，仅在用户输入 `y` 且目标电脑也确认后才授予 `--outbound`，随后自动执行 `hc machine add --via ... --name <名称>`。取消、拒绝、目标电脑超时或 `hc` 注册失败（打印手动命令）时以退出码 `1` 结束，用户的回答未在 60 秒内送达时以 `255` 结束。需要代理正在运行。 |
 | `herdvia register <名称>` | 仅为已配对的出站对端重新执行 Herdr 注册（`hc machine add --via ... --name <名称>`），不修改密钥、权限或代理状态（无需代理正在运行）。输出 `Registered machine '<name>' in Herdr.`（若已注册则输出 `<name> is already registered in Herdr`）并以退出码 `0` 结束。若 Herdr 中同名主机已指向别处，或 `hc` 缺失、执行失败或 15 秒后超时（在 `stderr` 打印 `hc machine rm` / `hc machine rename` 提示或手动 `hc machine add` 命令），则以退出码 `1` 结束；若不存在该名称的出站对端则以 `255` 结束。 |
 | `herdvia id` | 打印本机 `EndpointId`（第 1 行）与 16 位短指纹（第 2 行）。若 `secret.key` 不存在则自动生成。 |
-| `herdvia allow <名称> <EndpointId> (--inbound \| --outbound \| --both)` | 添加或更新对端，并输出保存后的记录（`<名称> <EndpointId> <in\|out\|both>`）。替换已有名称的公钥时会在 `stderr` 发出警告（`herdvia: warning: <name> now points to a different key (fingerprint <old> -> <new>)`）。若该 `EndpointId` 已以其他名称注册则拒绝。对运行中的代理立即生效，若运行中的代理未能确认重新读取则以退出码 `255` 结束（无代理运行时在代理下次启动时生效）。 |
+| `herdvia allow <名称> <EndpointId> (--inbound \| --outbound \| --both)` | 添加或更新对端，并输出保存后的记录（`<名称> <EndpointId> <in\|out\|both>`）。替换已有名称的公钥时会在 `stderr` 发出警告（`herdvia: warning: <name> now points to a different key (fingerprint <old> -> <new>)`）。若该 `EndpointId` 已以其他名称注册则拒绝。对运行中的代理立即生效，若运行中的代理未能确认重新读取，则不输出该记录并以退出码 `255` 结束（文件本身已更新；无代理运行时在代理下次启动时生效）。 |
 | `herdvia revoke <名称>` | 移除对端并输出 `revoked <名称> <EndpointId>`（同时在 `stderr` 输出清理提示），立即关闭与该对端的连接，并终止由这些连接启动的 `herdr-core connect` 进程（无法撤销的影响以及运行中的代理未确认重新读取时的行为参见[安全模型](#security-model)）。若不存在该名称的对端则失败。若同一 `EndpointId` 仍以其他名称注册（旧版本写入的 `peers` 文件），会发出警告。要移除 `0.1.4` 及更早版本存为 `--help` 或 `-h` 的对端，请运行 `herdvia revoke -- --help`（或 `-- -h`）。 |
 | `herdvia peers` | 列出已保存的对端：表头 `name permission fingerprint`，每个对端一行，最后是说明行 `in = may open sessions on this PC; out = this PC may connect to it`（未注册任何对端时仅输出 `no peers registered`）。仅读取 `peers`，不创建任何内容，无需代理正在运行。 |
 | `herdvia status` | 显示各对端的名称、权限、连接状态、`direct`/`relay` 路径及往返时延（RTT），并在存在未连接对端时为每个此类对端追加一行原因（若已知）与重试倒计时（参见[常见现象](#common-symptoms)）。需要代理正在运行。 |
 | `herdvia pending` | 列出连入连接尝试被拒绝的设备（指纹、`EndpointId`、尝试次数、距上次出现的时间）。仅保存在内存中：最多保留 16 条，末次尝试 10 分钟后过期。需要代理正在运行。 |
-| `herdvia accept <名称> <指纹> (--inbound \| --both)` | 将 `pending` 中唯一匹配该指纹的设备以其完整 `EndpointId` 加入授权列表。若匹配数为 0 或多于 1、列表已满（16 条：可能有人在大量发起连接尝试，请改用完整 `EndpointId` 执行 `allow`）、`<名称>` 已绑定其他 ID，或该 `EndpointId` 已以其他名称注册，则拒绝操作。需要代理正在运行。 |
+| `herdvia accept <名称> <指纹> (--inbound \| --both)` | 将 `pending` 中唯一匹配该指纹的设备以其完整 `EndpointId` 加入授权列表。若匹配数为 0 或多于 1、列表已满（16 条：可能有人在大量发起连接尝试，请改用完整 `EndpointId` 执行 `allow`）、`<名称>` 已绑定其他 ID，或该 `EndpointId` 已以其他名称注册，则拒绝操作。若运行中的代理未能确认重新读取，则不输出该记录并以退出码 `255` 结束（文件本身已更新）。需要代理正在运行。 |
 | `herdvia doctor` | 在不做任何修改的前提下检查本机配置（可执行文件、数据目录、`secret.key`、`peers`、`herdr-core`、自动启动、代理、中继、对端连接、待确认连入请求）。输出以 `ok`/`warn`/`fail` 开头的检查行（对端连接为每个对端一行；前置步骤失败时省略后续依赖项），若有任一检查失败则以退出码 `1` 结束。详见[运行 `herdvia doctor`](#run-herdvia-doctor)。 |
 | `herdvia --version` | 输出 `herdvia <版本号>`。 |
 | `herdvia --help` | 输出命令概览与用法（`-h` 与 `herdvia help` 相同），或运行 `herdvia <command> --help`（`-h`）查看单个命令的用法与示例。不读取任何文件，无需代理正在运行。 |
 | `herdvia agent` | 在前台运行代理（按 `Ctrl-C` 停止）。在 Windows 上，`herdvia agent --log` 会将输出追加至 `%LOCALAPPDATA%\herdvia\herdvia.log`。 |
 | `herdvia agent install` | 注册登录自动启动并立即启动代理（支持 macOS、Windows）。 |
 | `herdvia agent uninstall` | 停止后台自启代理并移除自启注册（保留数据目录与日志文件）。 |
-| `herdvia agent reload` | 让运行中的代理重新读取 `peers` 并立即重试等待中的出站连接，输出 `reloaded: peers re-read; waiting connections retry now`。若代理未运行则以退出码 `255` 失败（`herdvia: agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)`）。 |
+| `herdvia agent reload` | 让运行中的代理重新读取 `peers` 并立即重试等待中的出站连接，输出 `reloaded: peers re-read; waiting connections retry now`。若代理未运行则以退出码 `255` 失败（`herdvia: agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)`）。若代理返回错误，或在 macOS/Unix 上持续 1 秒拒绝该请求，同样以退出码 `255` 结束。 |
 | `herdvia via <对端> <命令>` | 供 `hc` 内部调用的传输子命令，无需手动执行。需要本地代理正在运行。 |
 
 发生任何错误时，`herdvia` 会在标准错误（`stderr`）输出一行以 `herdvia:` 开头的错误信息，并以退出码 **`255`** 结束。`--help` 和 `-h` 不能用作对端名称（`herdvia: --help and -h cannot be peer names`），若代理未在 5 秒内响应，`status`、`pending`、`accept` 和 `agent reload` 会以 `herdvia: the agent did not answer the <request> request within 5 seconds` 结束（`status` 的 `<request>` 为 `status-detail`）。
@@ -469,7 +469,7 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
    - **Windows：** 若目录是其他类型的重解析点（reparse point），或所有者不是当前用户、Administrators 或 SYSTEM，又或向其他账户开放了访问权限而当前用户无法修改其权限，均判为 `fail`（最后一种情况会给出需在管理员终端运行的 `icacls … /grant` 命令）。若目录向这三者以外的账户开放了访问权限但当前用户可以修改其权限，则判为 `warn`，因为 herdvia 会在下次运行时限制其权限。
 3. **`secret.key`：** 是否存在，以及能否通过与代理相同的检查（macOS/Unix：归当前用户所有、权限不宽于 `0600`，且在 macOS 上没有允许访问的 ACL 条目；Windows：非链接的普通文件，所有者为当前用户、Administrators 或 SYSTEM，且未向其他账户授予访问权限）。在 Windows 上，若文件向其他账户授予了访问权限，当前用户可以修改其权限时判为 `warn`（因为 herdvia 会在下次运行时限制其权限），否则判为 `fail` 并给出 `icacls … /grant` 命令。若 `secret.key` 不是恰好 32 字节，或因权限拒绝以外的原因读取失败，`doctor` 会输出 `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)`；重新配对前，请在所有对端上针对本机运行 `herdvia revoke <名称>`（参见[安全模型](#security-model)）。输出中仅显示短指纹。
 4. **`peers`：** 是否可读（执行与 `secret.key` 相同的检查）且可解析，以及各方向已注册的对端数量。在 Windows 上，herdvia 将在下次运行时限制权限的文件会输出不带计数信息的 `warn` 行；文件内容仍会照常校验，若存在格式错误则输出常规的 `fail` 行（因为限制文件权限并不能修复损坏的内容）。
-5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。
+5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。空的和相对路径的 `PATH` 条目（如 `.`）会被忽略，因此仅能通过这类条目找到的 `herdr-core` 会被报告为缺失。
 6. **自动启动：** 是否已注册（macOS 的 LaunchAgent plist、Windows 的注册表 `Run` 值）且指向当前可执行文件。在 Windows 上若以管理员身份运行也会发出警告。
 7. **代理：** 当前数据目录对应的代理是否响应、其版本与可执行文件路径，以及是否已连接归属中继（home relay）。
 8. **对端连接：** 基于 `herdvia status`，为每个已注册对端输出一行连接状态与路径，未连接时则输出带有断开原因与重试倒计时的 `warn peer <name> (<in|out|both>): ...`（若尚未注册任何对端，则输出一行 `warn`）。
@@ -477,24 +477,24 @@ Linux 不支持自动启动（`agent install` / `agent uninstall`）。请直接
 
 输出行写往标准输出（`stdout`），以 `ok`、`warn` 或 `fail` 开头；`warn` 与 `fail` 行会在同一行给出处理建议。对端连接按每个对端输出一行，当前置步骤失败时会省略依赖它的后续检查：若数据目录检查为 `fail`，将跳过代理检查及其后的所有行（除非仅因 Unix 套接字路径过长而失败，否则 `secret.key` 与 `peers` 也会一并跳过）；若代理无响应，则跳过 `relay`、对端连接与 `pending` 行。没有任何 `fail` 时退出码为 `0`（仅有 `warn` 仍为 `0`），存在任一 `fail` 时退出码为 `1`。命令参数错误等情况仍输出一行 `herdvia:` 并以 `255` 结束。
 
-- **只读行为：** `doctor` 不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直保持 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到运行某个会准备数据目录的命令来限制权限——即 `herdvia id`、`listen`（确认通过时）、`connect`（确认通过时）、`allow`、`accept`、`revoke` 或启动代理（`peers`、`status`、`pending`、`register`、`agent reload`、`doctor` 和 `--help` 不做任何修改；在权限受限之前，`peers` 与 `register` 会拒绝此类 `peers` 文件，并提示运行 `herdvia id` 或启动代理）。由于 Windows 版 `v0.1.2` 未修改数据目录及内部文件的权限，沿用了从用户配置文件继承的默认权限（可能允许其他账户读取），从 `v0.1.2` 升级上来的电脑在用新版本运行上述任一命令之前，这三项可能都会显示 `warn`（安装脚本会运行 `herdvia id`）。一旦运行过上述命令，该目录和两个文件将仅向当前用户、SYSTEM 和 Administrators 授予访问权限，三行都会变为 `ok`。
+- **只读行为：** `doctor` 不会创建或修改数据目录、`secret.key`、`peers`、自动启动注册项或代理状态。因此在 Windows 上，向其他账户授予了访问权限的数据目录、`secret.key` 或 `peers` 会一直保持 `warn`（`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`），直到运行某个会准备数据目录的命令来限制权限——即 `herdvia id`、`listen`（确认通过时）、`connect`（确认通过时）、`allow`、`accept`、`revoke` 或启动代理（`peers`、`status`、`pending`、`register`、`agent reload`、`doctor` 和 `--help` 不做任何修改；在权限受限之前，`peers` 与 `register` 会拒绝此类 `peers` 文件，并提示运行 `herdvia id` 或启动代理）。由于 Windows 版 `v0.1.2` 及更早版本未修改数据目录及内部文件的权限，沿用了从用户配置文件继承的默认权限（可能允许其他账户读取），从 `v0.1.2` 或更早版本升级上来的电脑在用新版本运行上述任一命令之前，这三项可能都会显示 `warn`（安装脚本会运行 `herdvia id`）。一旦运行过上述命令，该目录和两个文件将仅向当前用户、SYSTEM 和 Administrators 授予访问权限，三行都会变为 `ok`。
 - **超时限制：** 唯一调用的外部程序是 `herdr-core --version`（限时 2 秒）。发往代理的每次请求均有 3 秒超时限制：即使代理正在运行，若未在 3 秒内响应，`doctor` 也会输出 `fail agent: it may be running, but it did not answer within 3 seconds; …` 并跳过其余代理检查；若后续的对端状态或 `pending` 请求超过 3 秒，对应行会记为 `warn`；若对端详情请求超过 3 秒，对端行改用通用提示，其后再输出 `warn peer details: the agent did not answer within 3 seconds; …`（`status` 或对端详情超时后跳过 `pending`）。
-- **旧版本代理：** `herdvia doctor` 自 `v0.1.2` 起新增。更早版本的代理不识别该请求，因此 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理的日志会记录一行 `unknown CONTROL request`。`v0.1.4` 及更早版本的代理不识别 `status-detail`，因此未连接对端的检查行仍显示通用的 `not connected; …` 提示。
+- **旧版本代理：** `herdvia doctor` 自 `v0.1.2` 起新增。更早版本的代理不识别该请求，因此 `doctor` 会警告正在运行的代理早于当前可执行文件并提示重启（省略 `relay`，但仍继续检查对端连接与 `pending`），同时该代理的日志会记录一行 `unknown CONTROL request`。`v0.1.4` 及更早版本的代理不识别 `status-detail`，因此未连接对端的检查行仍显示通用的 `not connected; …` 提示。此外，每当 `herdvia status` 或 `herdvia doctor` 向 `v0.1.2` 至 `v0.1.4` 的代理请求 `status-detail` 时，该代理也会在日志中记录一行 `unknown CONTROL request`。
 
 请在**两台电脑**上都运行一次：电脑 B 上的问题（例如缺少 `herdr-core` 或尚未 `accept` 对端）会显示在 B 的输出中。电脑 A 上的运行示例：
 
 ```text
 $ herdvia doctor
-ok   executable: herdvia 0.1.2 at /Users/you/.local/bin/herdvia
+ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
 ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
 ok   automatic start: registered for this executable
-ok   agent: running herdvia 0.1.2 from /Users/you/.local/bin/herdvia
+ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
 ok   peer B (out): connected directly, 4.12ms
-warn peer office (both): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)
+warn peer office (both): could not reach it (timed out); its agent may be off or offline. Retrying in 12s.
 ok   pending: no rejected connection attempts
 ```
 
@@ -584,9 +584,9 @@ Run herdvia agent reload to retry now.
   - **Windows（设置权限）：** 若数据目录是目录联接（junction）或其他重解析点，或所有者不是当前用户、Administrators 或 SYSTEM，则拒绝使用。除非目录已具备相应设置，否则 herdvia 会为其设置仅向这三个账户授予完全访问权限的受保护 DACL，并由 herdvia 在其中创建的文件继承（带有会继承给内部文件的拒绝（deny）条目的目录，不视为已具备该设置）。每当 `secret.key` 或 `peers` 向其他账户授予了访问权限且当前用户可以修改其权限时，herdvia 都会直接为该文件本身设置仅向这三个账户授予完全访问权限的受保护 DACL，而不依赖目录继承下来的权限。此外，作为尽力而为的加固措施，herdvia 还会为数据目录、`secret.key` 和 `peers` 设置 Medium 完整性标签（no-write-up、no-read-up），使同一用户的 Low 完整性进程无法新打开这些文件进行读取。在当前用户无权设置该标签的目录中不会应用此标签，herdvia 仍可正常工作。
   - **Windows（拒绝条件与例外）：** 若 `secret.key` 或 `peers` 是链接、所有者不同，或仍向其他账户授予访问权限，则拒绝使用（错误信息会打印需在管理员终端运行的 `icacls … /grant` 命令，执行后当前用户将获得该文件的完全控制权限，再次运行 herdvia 时即会限制其权限）。同理，若目录向其他账户授予了访问权限而当前用户无法修改其权限，也会拒绝该目录并打印 `icacls … /grant` 命令。这两条 `icacls` 命令均可原样粘贴到 PowerShell 或 cmd 中执行。仅向这三个账户授予访问权限但当前用户无法修改其权限的目录会按原样使用；若该目录未受保护，则会继续从父目录继承权限条目。
   - **`HERDVIA_DIR` 数据目录的父目录：** 当数据目录来自 `HERDVIA_DIR`（Linux 上也包括 `XDG_DATA_HOME`）时，其父目录必须是其他账户无法更改的，以防其他账户将某个父目录替换为别的目录，从而改变密钥和对端列表的存放位置。内置的默认数据目录不做此检查（默认目录位于用户配置文件内，且自动启动只使用默认目录）。
-    - **macOS / Unix：** 每个父目录必须归当前用户或 root 所有，且 group/other 没有写权限；位于 `/tmp` 等带 sticky 位的目录中、归当前用户（或 root）所有的目录可以接受。在 macOS 上，若父目录带有允许添加或删除条目、或更改权限的 ACL allow 条目，也会被拒绝。
-    - **Windows（以驱动器号开头的路径）：** 每个父目录不得是目录联接或符号链接等重解析点，所有者必须是当前用户、SYSTEM、Administrators 或 TrustedInstaller 之一，且不得授予其他账户删除、重命名或更改该目录或其中条目权限的权利（只读权限没有问题）。UNC 路径不做检查。
-    - 若父目录未通过检查，所有命令和代理都会以包含该目录及原因的错误结束（退出码 `255`），`herdvia doctor` 也会将 `data directory` 一行报告为 `fail`，即使数据目录尚不存在。
+    - **macOS / Unix：** 每个父目录必须归当前用户或 root 所有，且 group/other 没有写权限；位于 `/tmp` 等带 sticky 位的目录中、归当前用户（或 root）所有的目录可以接受。在 macOS 上，若父目录带有允许添加或删除条目、更改权限或更改所有者的 ACL allow 条目，也会被拒绝。
+    - **Windows（以驱动器号开头的路径）：** 每个父目录不得是目录联接或符号链接等重解析点，所有者必须是当前用户、SYSTEM、Administrators 或 TrustedInstaller 之一，且不得授予其他账户向该目录写入的权利（添加文件或更改其属性——这足以将其变成目录联接），也不得授予删除、重命名、取得所有权或更改该目录或其中条目权限的权利（读取和创建子目录没有问题）。带有 NULL DACL 的父目录或当前用户无法读取的父目录也会被拒绝。UNC 路径不做检查。
+    - 若父目录未通过检查，所有使用数据目录的命令和代理都会以包含该目录及原因的错误结束（退出码 `255`），`herdvia doctor` 也会将 `data directory` 一行报告为 `fail`，即使数据目录尚不存在。
 - **`secret.key` 即本机身份：** 任何拿到它的人都可向信任本机的对端冒充本机。若它可能已泄露、无法读取或丢失（不建议从备份中恢复），或你从备份中恢复了它、把它复制到了另一台电脑，请更换密钥：
   1. 在所有对端上用 `herdvia revoke <名称>` 删除本机的记录（即使 `herdvia doctor` 因 `secret.key` 无法读取而建议创建新身份，也请先执行这一步；否则对端电脑仍会将该名称绑定到旧的 `EndpointId`，从而拒绝以同名执行 `accept`）。
   2. 停止代理（`herdvia agent uninstall`，前台运行时按 `Ctrl-C`）。
@@ -595,7 +595,7 @@ Run herdvia agent reload to retry now.
   5. 运行 `herdvia agent install`（或重新启动 `herdvia agent`）。
   6. 与所有对端重新配对。
 - **交互式配对 (`listen` / `connect`)：** 配对运行在独立的 `herdvia/pair/1` ALPN 上，绝不执行远程命令，也不会写入 `pending`，且仅在 `herdvia listen` 正在等待时接受握手。每次 `listen` 会话都会生成 5 分钟后过期的 128 位一次性令牌，连续 5 次握手证明无效即中止会话，同时仅允许一个请求进入人工确认，并在用户确认或拒绝后立即关闭。双方基于 QUIC TLS 1.3 exporter（`herdvia-pair-v1`）与 commit-reveal 随机数交换导出 6 位验证码（`NNN-NNN`，约 20 位熵），在目标电脑用户核对两屏一致并输入 `y` 之前绝不修改 `peers`。主控电脑同样要等其用户在 `Same code on both PCs? [y/N]:` 输入 `y` 且目标电脑已确认后，才会写入 `peers` 并运行 `hc machine add`。这是因为局域网发现广播没有签名：同一局域网中的任何人都可以用自己的公钥发送广播并立即发送确认消息，因此 `connect` 从不自行选择发现的电脑。此确认步骤并未改变网络协议，因此仍可与旧版本正常配对。授权遵循最小权限：目标电脑仅写入 `--inbound`，主控电脑仅写入 `--outbound`（不会默认授予 `--both`）。
-- **`0.1.4` 及更早版本的交互式配对：** `herdvia connect` 在局域网中只找到一台电脑时会自动选择它，并且仅凭对方的确认消息就会保存，无需本机用户确认，因此同一局域网中的其他设备可以冒充目标电脑。升级运行 Herdr 的电脑（运行 `connect` 的一端）上的 `herdvia` 即可修复。升级之前，请使用目标电脑屏幕上打印的邀请串进行配对（`herdvia connect <名称> hvi1-...`）。
+- **`0.1.4` 及更早版本的交互式配对：** `herdvia connect` 在局域网中只找到一台电脑时会自动选择它，并且仅凭对方的确认消息就会保存，无需本机用户确认，因此同一局域网中的其他设备可以冒充目标电脑。升级运行 Herdr 的电脑（运行 `connect` 的一端）上的 `herdvia` 并重启其代理即可修复（安装脚本会同时完成这两步）。升级之前，请使用目标电脑屏幕上打印的邀请串进行配对（`herdvia connect <名称> hvi1-...`）。
 - **短指纹与 `pending` / `accept`：** 指纹仅表示 256 位 `EndpointId` 的前 16 个十六进制字符（64 位），供人工比对；`herdvia` 存储与校验始终使用完整 `EndpointId`。`pending` 仅记录完成已认证 `iroh` 握手的对端，在内存中最多保留 16 条、10 分钟过期，且 `accept` 仅在唯一匹配时才放行；由于任何知道本机 `EndpointId` 的人都能填满列表，列表已满时也会拒绝。请务必**从对方电脑自己的屏幕上读取指纹**，切勿照抄 `pending` 列表。
 
 **报告安全漏洞：** 如发现敏感安全问题，请通过本仓库的 [GitHub 私密漏洞报告（Private vulnerability reporting）](https://github.com/photojupi/herdvia/security/advisories/new) 提交；非敏感的 bug 请新建普通 Issue。

@@ -180,7 +180,7 @@ herdvia listen
   ```sh
   herdvia connect B
   ```
-  약 2초 동안 로컬 네트워크를 탐색한 뒤, 찾은 대기 중인 PC를 한 대뿐이어도 지문과 함께 번호 목록(`0) Paste an invite token instead` 포함)으로 보여 줍니다. B의 `listen` 화면에 나온 지문과 같은 항목을 고르세요. LAN 탐색에는 인증이 없으므로 `connect`는 스스로 PC를 고르지 않습니다([보안 모델](#security-model) 참고). 하나도 찾지 못하면(예: 게스트 Wi-Fi 격리로 탐색 신호가 막힌 경우) B 화면의 `hvi1-...` 초대를 붙여 넣으라고 안내합니다.
+  약 2초 동안 로컬 네트워크를 탐색한 뒤, 찾은 대기 중인 PC를 한 대뿐이어도 지문과 함께 번호 목록(`0) Paste an invite token instead` 포함)으로 보여 줍니다. B의 `listen` 화면에 나온 지문과 같은 항목을 고르세요. LAN 탐색에는 인증이 없으므로 `connect`는 스스로 PC를 고르지 않습니다([보안 모델](#security-model) 참고). 하나도 찾지 못하면(예: 게스트 Wi-Fi 격리로 탐색 신호가 막힌 경우) B 화면의 `hvi1-...` 초대를 붙여 넣으라고 안내합니다. 번호 목록이나 초대 입력 프롬프트에서 빈 줄을 입력하거나 입력을 닫으면(EOF) 취소되어 종료 코드 `1`로 끝나고, 목록에 없는 번호를 입력하면 종료 코드 `255`로 끝납니다.
 
 - **서로 다른 장소(예: 집 ↔ 사무실·카페):**
   ```sh
@@ -196,12 +196,12 @@ herdvia listen
 1. **양쪽 화면의 6자리 번호가 정확히 일치하는지** 눈으로 확인합니다. 번호가 다르면 `n`을 입력하세요. 다른 PC에 연결되었을 수 있습니다.
 2. **PC A**의 `Same code on both PCs? [y/N]:` 프롬프트와 **PC B**의 `Allow? [y/N]:` 프롬프트에 각각 `y`를 입력합니다(순서는 상관없습니다).
 
-PC A에서 `n`을 입력하거나 빈 줄을 입력하거나 입력을 닫으면(EOF) 페어링이 취소되고 종료 코드 `1`로 끝나며, A의 답이 60초 안에 도착하지 않으면 `connect`는 종료 코드 `255`로 실패합니다. B가 승인한 뒤 A에서 취소하면 B에는 A가 `--inbound` 피어로 남지만, A가 아무것도 저장하지 않았으므로 연결은 생기지 않습니다. 원하면 B에서 `herdvia revoke <이름>`으로 지우세요.
+PC A에서 `n`을 입력하거나 빈 줄을 입력하거나 입력을 닫으면(EOF) 페어링이 취소되고 종료 코드 `1`로 끝나며, A의 답이 60초 안에 도착하지 않으면 `connect`는 종료 코드 `255`로 실패합니다. A에서 취소하더라도 B의 사용자가 `y`를 입력하면(A에서 취소하기 전이든 후든) B는 여전히 A를 `--inbound` 피어로 저장하지만, A가 아무것도 저장하지 않았으므로 연결은 생기지 않습니다. 원하면 B에서 `herdvia revoke <이름>`으로 지우세요.
 
 양쪽 모두 `y`를 입력하면:
 - **PC B**는 PC A를 `--inbound`로(B가 승인하는 즉시), **PC A**는 PC B를 `--outbound`로 각각 저장합니다.
 - 재시도 대기 없이 곧바로 암호화 터널이 맺어집니다.
-- **PC A**에서 `hc machine add`까지 자동 실행되어 Herdr 사이드바에 `B`가 바로 등록됩니다. *(`PATH`에 `hc`가 없거나 실행에 실패하더라도 페어링 자체는 유지되며, 직접 복사해 실행할 수 있는 `hc machine add --via ... --name B` 명령이 안내됩니다 — 또는 Herdr를 설치한 뒤 `herdvia register B`를 실행해도 됩니다.)*
+- **PC A**에서 `hc machine add`까지 자동 실행되어 Herdr 사이드바에 `B`가 바로 등록됩니다. *(`PATH`에 `hc`가 없거나 실행에 실패하더라도 페어링 자체는 유지되며, 직접 복사해 실행할 수 있는 `hc machine add --via ... --name B` 명령을 출력하고 종료 코드 `1`로 끝납니다 — 또는 Herdr를 설치한 뒤 `herdvia register B`를 실행해도 됩니다.)*
 
 ### 4단계. 연결 상태 확인하기
 
@@ -282,7 +282,7 @@ powershell -c "irm https://github.com/photojupi/herdvia/releases/latest/download
 | `HERDVIA_VERSION` | 최신 버전 대신 지정한 릴리스 설치 (예: `0.1.0` 또는 `v0.1.0`) |
 | `HERDVIA_NO_AGENT=1` | `herdvia agent install` 실행 생략 |
 | `HERDVIA_NO_MODIFY_PATH=1` | `~/.zprofile` 또는 Windows 사용자 `PATH` 수정 생략 |
-| `HERDVIA_RELEASE_BASE` | GitHub Releases 대신 `<url>/<파일명>`에서 다운로드 (`HERDVIA_VERSION`보다 우선). `https://`로 시작해야 하며, `http://`는 `127.0.0.1`, `localhost`, `[::1]`(로컬 시험용)에만 허용합니다. 리다이렉트를 따라가더라도 HTTPS로만 다운로드합니다. |
+| `HERDVIA_RELEASE_BASE` | GitHub Releases 대신 `<url>/<파일명>`에서 다운로드 (`HERDVIA_VERSION`보다 우선). `https://`로 시작해야 하며, `http://`는 `127.0.0.1`, `localhost`, `[::1]`(로컬 시험용)에만 허용합니다. 허용된 루프백 `http://` 기본 주소를 쓸 때를 제외하면 HTTPS로만 다운로드하며, 리다이렉트도 HTTPS로만 따라갑니다. |
 
 특정 버전을 지정해 설치하려면(참고: 버전 태그 URL에서 `install.sh` / `install.ps1`을 내려받더라도 `HERDVIA_VERSION`을 명시적으로 설정해야 합니다):
 
@@ -402,23 +402,23 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 | 명령어 | 설명 |
 |---|---|
-| `herdvia listen [<이름>]` | 연결될 대상 PC에서 최대 5분 동안 대화형 페어링 요청을 기다리며, 이 PC의 지문을 출력하고, 로컬 네트워크에 탐색 신호를 보내고 외부망용 일회용 `hvi1-...` 초대를 출력한 뒤, 6자리 확인 번호를 보여 주고 `[y/N]` 승인 시 `--inbound`로 등록합니다(`<이름>` 생략 시 상대의 정화된 호스트명 사용). 거부하거나 시간 초과되면 종료 코드 `1`로 끝납니다. 에이전트 실행 필요. |
+| `herdvia listen [<이름>]` | 연결될 대상 PC에서 최대 5분 동안 대화형 페어링 요청을 기다리며, 이 PC의 지문을 출력하고, 로컬 네트워크에 탐색 신호를 보내고 외부망용 일회용 `hvi1-...` 초대를 출력한 뒤, 6자리 확인 번호를 보여 주고 `[y/N]` 승인 시 `--inbound`로 등록합니다(`<이름>` 생략 시 상대의 정화된 호스트명 사용). 거부하거나, `Allow? [y/N]:`에 60초 안에 답하지 않거나(거부로 처리됨), 5분 안에 요청이 오지 않으면 종료 코드 `1`로 끝납니다. 에이전트 실행 필요. |
 | `herdvia connect <이름> [<초대>]` | Herdr를 실행하는 PC에서 대기 중인 대상 PC와 페어링합니다. 대상은 LAN에서 찾은 PC의 번호 목록에서 지문으로 고르거나 `<초대>`(`hvi1-...`)로 지정합니다. 6자리 확인 번호를 표시하고 `Same code on both PCs? [y/N]:`를 물으며, 사용자가 `y`를 입력하고 대상 PC도 승인해야 `--outbound` 등록 후 `hc machine add --via ... --name <이름>`을 자동 실행합니다. 취소·거부·대상 PC의 시간 초과·`hc` 등록 실패 시(수동 명령 출력) 종료 코드 `1`로, 사용자의 답이 60초 안에 도착하지 않으면 `255`로 끝납니다. 에이전트 실행 필요. |
 | `herdvia register <이름>` | 이미 페어링된 아웃바운드 피어에 대해 키·권한·에이전트는 건드리지 않고 Herdr 등록(`hc machine add --via ... --name <이름>`)만 다시 실행합니다(에이전트가 실행 중일 필요 없음). `Registered machine '<name>' in Herdr.`(이미 등록돼 있으면 `<name> is already registered in Herdr`)를 출력하고 종료 코드 `0`으로 끝납니다. Herdr에 같은 이름이 다른 곳을 가리키고 있거나 `hc`가 없거나 실패하거나 15초 안에 끝나지 않으면(`stderr`에 `hc machine rm` / `hc machine rename` 안내 또는 수동 `hc machine add` 명령 출력) 종료 코드 `1`로, 해당 이름의 아웃바운드 피어가 없으면 `255`로 끝납니다. |
 | `herdvia id` | 이 PC의 `EndpointId`(첫째 줄)와 16자 지문(둘째 줄)을 출력합니다. `secret.key`가 없으면 새로 생성합니다. |
-| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 갱신하고, 저장한 항목(`<이름> <EndpointId> <in\|out\|both>`)을 출력합니다. 기존 이름의 키를 바꾸면 `stderr`에 경고(`herdvia: warning: <name> now points to a different key (fingerprint <old> -> <new>)`)를 출력합니다. 이미 다른 이름으로 등록된 `EndpointId`는 거부합니다. 실행 중인 에이전트에는 즉시 반영되며, 실행 중인 에이전트가 다시 읽었다고 응답하지 않으면 종료 코드 `255`로 끝납니다(에이전트가 꺼져 있으면 다음 에이전트 시작 시 반영). |
+| `herdvia allow <이름> <EndpointId> (--inbound \| --outbound \| --both)` | 피어를 추가하거나 기존 항목을 갱신하고, 저장한 항목(`<이름> <EndpointId> <in\|out\|both>`)을 출력합니다. 기존 이름의 키를 바꾸면 `stderr`에 경고(`herdvia: warning: <name> now points to a different key (fingerprint <old> -> <new>)`)를 출력합니다. 이미 다른 이름으로 등록된 `EndpointId`는 거부합니다. 실행 중인 에이전트에는 즉시 반영되며, 실행 중인 에이전트가 다시 읽었다고 응답하지 않으면 항목을 출력하지 않고 종료 코드 `255`로 끝납니다(파일은 이미 갱신된 상태이며, 에이전트가 꺼져 있으면 다음 에이전트 시작 시 반영). |
 | `herdvia revoke <이름>` | 피어를 삭제하고 `revoked <이름> <EndpointId>`를 출력하며(`stderr`에는 정리 안내도 출력), 해당 피어와의 연결을 즉시 닫고 그 연결이 실행한 `herdr-core connect` 프로세스를 종료합니다(이것으로 되돌려지지 않는 항목과 실행 중인 에이전트가 다시 읽었다고 응답하지 않을 때의 동작은 [보안 모델](#security-model) 참고). 해당 이름의 피어가 없으면 실패합니다. 같은 `EndpointId`가 다른 이름으로 아직 남아 있으면(이전 버전이 작성한 `peers` 파일) 경고를 출력합니다. `0.1.4` 이하 버전이 `--help`나 `-h`로 저장한 피어를 지우려면 `herdvia revoke -- --help`(또는 `-- -h`)를 사용하세요. |
 | `herdvia peers` | 저장된 피어 목록을 출력합니다: `name permission fingerprint` 헤더, 피어마다 한 줄, 그다음 설명 줄 `in = may open sessions on this PC; out = this PC may connect to it`(피어가 없으면 `no peers registered`만). `peers`만 읽고 아무것도 만들지 않으며 에이전트가 실행 중일 필요가 없습니다. |
 | `herdvia status` | 각 피어의 이름, 권한, 연결 상태, 경로(`direct`/`relay`), 왕복 시간(RTT)을 표시하고, 연결되지 않은 피어가 있으면 그 아래에 피어마다 이유(알 수 있을 때)와 재시도까지 남은 시간을 한 줄씩 덧붙입니다([자주 겪는 증상](#common-symptoms) 참고). 에이전트 실행 필요. |
 | `herdvia pending` | 인바운드 접속 시도가 거부된 기기 목록을 보여 줍니다(지문, `EndpointId`, 시도 횟수, 마지막 확인 후 경과 시간). 메모리에만 최대 16개까지 보관하며 마지막 시도로부터 10분 뒤 만료됩니다. 에이전트 실행 필요. |
-| `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문과 일치하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, 목록이 가득 찼거나(16개 — 누군가 접속 시도를 대량으로 보내고 있을 수 있으므로 전체 `EndpointId`로 `allow`를 사용하세요), `<이름>`이 이미 다른 ID를 가리키고 있거나, 해당 `EndpointId`가 이미 다른 이름으로 등록돼 있으면 거부합니다. 에이전트 실행 필요. |
+| `herdvia accept <이름> <지문> (--inbound \| --both)` | `pending` 목록에서 해당 지문과 일치하는 유일한 기기를 전체 `EndpointId`로 등록합니다. 일치 항목이 없거나 둘 이상이거나, 목록이 가득 찼거나(16개 — 누군가 접속 시도를 대량으로 보내고 있을 수 있으므로 전체 `EndpointId`로 `allow`를 사용하세요), `<이름>`이 이미 다른 ID를 가리키고 있거나, 해당 `EndpointId`가 이미 다른 이름으로 등록돼 있으면 거부합니다. 실행 중인 에이전트가 다시 읽었다고 응답하지 않으면 항목을 출력하지 않고 종료 코드 `255`로 끝납니다(파일은 이미 갱신된 상태). 에이전트 실행 필요. |
 | `herdvia doctor` | 아무것도 변경하지 않고 이 PC의 설정 상태(실행 파일, 데이터 폴더, `secret.key`, `peers`, `herdr-core`, 자동 시작, 에이전트, 중계 서버, 피어 연결, 대기 목록의 접속 시도)를 점검합니다. `ok`/`warn`/`fail` 줄을 출력하며(피어 연결은 피어마다 한 줄, 앞 단계가 실패하면 의존하는 뒤 점검 생략), 실패한 항목이 하나라도 있으면 종료 코드 `1`로 끝납니다. [`herdvia doctor` 실행하기](#run-herdvia-doctor) 참고. |
 | `herdvia --version` | `herdvia <버전>`을 출력합니다. |
 | `herdvia --help` | 명령어 개요와 사용법을 출력하며(`-h`, `herdvia help`도 동일), `herdvia <command> --help`(`-h`)로 개별 명령어의 사용법과 예시를 볼 수 있습니다. 어떤 파일도 읽지 않으며 에이전트가 실행 중일 필요가 없습니다. |
 | `herdvia agent` | 에이전트를 포그라운드에서 실행합니다 (`Ctrl-C`로 종료). Windows에서 `herdvia agent --log`는 출력을 `%LOCALAPPDATA%\herdvia\herdvia.log`에 이어 씁니다. |
 | `herdvia agent install` | 로그인 시 자동 시작을 등록하고 즉시 에이전트를 시작합니다 (macOS, Windows). |
 | `herdvia agent uninstall` | 자동 시작 에이전트를 멈추고 등록을 해제합니다. 데이터 폴더와 로그는 유지됩니다. |
-| `herdvia agent reload` | 실행 중인 에이전트가 `peers`를 다시 읽고 대기 중인 아웃바운드 연결을 즉시 재시도하게 하며 `reloaded: peers re-read; waiting connections retry now`를 출력합니다. 실행 중인 에이전트가 없으면 종료 코드 `255`로 실패합니다(`herdvia: agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)`). |
+| `herdvia agent reload` | 실행 중인 에이전트가 `peers`를 다시 읽고 대기 중인 아웃바운드 연결을 즉시 재시도하게 하며 `reloaded: peers re-read; waiting connections retry now`를 출력합니다. 실행 중인 에이전트가 없으면 종료 코드 `255`로 실패합니다(`herdvia: agent is not running; start it with 'herdvia agent install' (or 'herdvia agent' in a terminal)`). 에이전트가 오류를 반환하거나 macOS/Unix에서 1초 동안 요청을 계속 거부해도 종료 코드 `255`로 끝납니다. |
 | `herdvia via <피어> <줄>` | `hc`가 내부적으로 호출하는 전송 명령어입니다 (수동 실행용 아님). 로컬 에이전트 실행 필요. |
 
 오류 발생 시 `herdvia`는 표준 오류(`stderr`)에 `herdvia:`로 시작하는 한 줄을 출력하고 종료 코드 **`255`**로 끝납니다. `--help`와 `-h`는 피어 이름으로 쓸 수 없으며(`herdvia: --help and -h cannot be peer names`), 에이전트가 5초 안에 응답하지 않으면 `status`, `pending`, `accept`, `agent reload`는 `herdvia: the agent did not answer the <request> request within 5 seconds`를 출력하고 멈춥니다(`status`의 `<request>`는 `status-detail`).
@@ -469,7 +469,7 @@ cargo install --locked --git https://github.com/photojupi/herdvia
    - **Windows:** 다른 종류의 재분석 지점(reparse point)이거나, 소유자가 현재 사용자·Administrators·SYSTEM이 아니거나, 다른 계정에 접근 권한이 허용되어 있는데 현재 사용자가 권한을 바꿀 수 없으면 `fail`을 출력합니다(마지막 경우 관리자 터미널에서 실행할 `icacls … /grant` 명령을 안내). 이 세 계정 외의 계정에 접근 권한이 허용되어 있더라도 현재 사용자가 권한을 바꿀 수 있으면, herdvia가 다음 실행 때 권한을 제한하므로 `warn`을 출력합니다.
 3. **`secret.key`:** 존재 여부 및 에이전트와 동일한 검사를 통과하는지 여부 — macOS/Unix: 현재 사용자 소유이고 권한이 `0600` 이하이며, macOS에서는 접근을 허용하는 ACL 항목이 없을 것. Windows: 링크가 아닌 일반 파일이고 소유자가 현재 사용자·Administrators·SYSTEM 중 하나이며 다른 계정에 접근 권한이 허용되어 있지 않을 것. Windows에서 다른 계정에 접근 권한이 허용된 파일은 현재 사용자가 권한을 바꿀 수 있으면 `warn`(herdvia가 다음 실행 때 제한), 바꿀 수 없으면 `icacls … /grant` 명령을 안내하는 `fail`이 됩니다. `secret.key`가 정확히 32바이트가 아니거나, 권한 거부가 아닌 다른 이유로 읽기에 실패하면 `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)`를 출력합니다. 다시 페어링하기 전에 모든 피어에서 이 PC에 대해 `herdvia revoke <이름>`을 실행하세요([보안 모델](#security-model) 참고). 출력에는 지문만 표시됩니다.
 4. **`peers`:** 파일을 읽고(`secret.key`와 동일한 검사) 해석할 수 있는지 여부, 그리고 방향별 등록된 피어 수. Windows에서 herdvia가 다음 실행 때 제한할 파일은 피어 수 없이 `warn` 줄로 표시되지만 파일 내용은 그대로 검사하며, 형식 오류가 있으면 파일 권한을 제한해도 고쳐지지 않으므로 일반 `fail` 줄을 출력합니다.
-5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.21`을 출력하는지 여부.
+5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.21`을 출력하는지 여부. 비어 있거나 상대 경로인 `PATH` 항목(`.` 등)은 무시하므로, 그러한 항목으로만 찾을 수 있는 `herdr-core`는 없는 것으로 보고됩니다.
 6. **자동 시작:** 등록되어 있는지(macOS의 LaunchAgent plist, Windows의 레지스트리 `Run` 값), 그리고 이 실행 파일을 가리키는지 여부. Windows에서 관리자 권한으로 실행 중이면 이에 대해서도 경고합니다.
 7. **에이전트:** 이 데이터 폴더의 에이전트가 응답하는지, 실행 중인 버전과 실행 파일 경로, 홈 중계 서버(relay) 연결 여부.
 8. **피어 연결:** `herdvia status`를 바탕으로 등록된 피어마다 연결 상태와 경로를 한 줄씩 표시하며, 연결되지 않은 피어는 끊긴 이유와 재시도까지 남은 시간을 담은 `warn peer <name> (<in|out|both>): ...` 줄을 출력합니다 (등록된 피어가 없으면 `warn` 한 줄).
@@ -477,24 +477,24 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 출력 줄은 표준 출력(`stdout`)에 `ok`, `warn`, `fail` 중 하나로 시작하며, `warn`과 `fail` 줄에는 해야 할 일이 같은 줄에 함께 안내됩니다. 피어 연결은 피어마다 한 줄씩 출력되고, 앞 단계가 실패하면 그에 의존하는 뒤 점검은 생략됩니다. 즉 데이터 폴더 점검이 `fail`이면 에이전트 점검과 그 이후 줄들이 생략되고(Unix 소켓 경로 길이 초과만 원인인 경우가 아니면 `secret.key`와 `peers`도 생략), 에이전트가 응답하지 않으면 `relay`, 피어, `pending` 줄이 생략됩니다. 실패(`fail`)한 점검이 하나도 없으면 종료 코드 `0`(경고만 있어도 `0`), 하나라도 있으면 `1`로 끝납니다. 명령어 인자 오류 등은 다른 명령과 마찬가지로 `herdvia:` 한 줄을 출력하고 `255`로 끝납니다.
 
-- **읽기 전용 동작:** `doctor`는 데이터 폴더, `secret.key`, `peers`, 자동 시작 등록, 에이전트 상태를 새로 만들거나 변경하지 않습니다. 따라서 Windows에서 다른 계정에 접근 권한이 허용된 데이터 폴더, `secret.key`, `peers`는 데이터 폴더를 준비하는 명령이 권한을 제한하기 전까지 계속 `warn`(`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`)으로 표시됩니다 — 해당 명령은 `herdvia id`, `listen`(승인 시), `connect`(승인 시), `allow`, `accept`, `revoke`, 그리고 에이전트 시작입니다. `peers`, `status`, `pending`, `register`, `agent reload`, `doctor`, `--help`는 아무것도 바꾸지 않으며, 권한이 제한되기 전까지 `peers`와 `register`는 그러한 `peers` 파일을 거부하고 `herdvia id` 실행이나 에이전트 시작을 안내합니다. Windows용 `v0.1.2`는 데이터 폴더와 내부 파일의 권한을 바꾸지 않고 사용자 프로필에서 상속된 기본 권한(다른 계정의 읽기를 허용할 수 있음)을 그대로 유지했으므로, `v0.1.2`에서 업그레이드한 PC는 새 버전으로 위 명령 중 하나를 실행하기 전까지 세 항목 모두 경고가 표시될 수 있습니다(설치 스크립트는 `herdvia id`를 실행합니다). 한 번 실행되고 나면 폴더와 두 파일 모두 현재 사용자, SYSTEM, Administrators에게만 접근을 허용하며 세 줄 모두 `ok`가 됩니다.
+- **읽기 전용 동작:** `doctor`는 데이터 폴더, `secret.key`, `peers`, 자동 시작 등록, 에이전트 상태를 새로 만들거나 변경하지 않습니다. 따라서 Windows에서 다른 계정에 접근 권한이 허용된 데이터 폴더, `secret.key`, `peers`는 데이터 폴더를 준비하는 명령이 권한을 제한하기 전까지 계속 `warn`(`… herdvia restricts it the next time it runs (herdvia id, or the agent when it starts)`)으로 표시됩니다 — 해당 명령은 `herdvia id`, `listen`(승인 시), `connect`(승인 시), `allow`, `accept`, `revoke`, 그리고 에이전트 시작입니다. `peers`, `status`, `pending`, `register`, `agent reload`, `doctor`, `--help`는 아무것도 바꾸지 않으며, 권한이 제한되기 전까지 `peers`와 `register`는 그러한 `peers` 파일을 거부하고 `herdvia id` 실행이나 에이전트 시작을 안내합니다. Windows용 `v0.1.2` 이하 버전은 데이터 폴더와 내부 파일의 권한을 바꾸지 않고 사용자 프로필에서 상속된 기본 권한(다른 계정의 읽기를 허용할 수 있음)을 그대로 유지했으므로, `v0.1.2` 이하 버전에서 업그레이드한 PC는 새 버전으로 위 명령 중 하나를 실행하기 전까지 세 항목 모두 경고가 표시될 수 있습니다(설치 스크립트는 `herdvia id`를 실행합니다). 한 번 실행되고 나면 폴더와 두 파일 모두 현재 사용자, SYSTEM, Administrators에게만 접근을 허용하며 세 줄 모두 `ok`가 됩니다.
 - **시간 제한:** 외부 프로그램으로는 `herdr-core --version`(2초 제한) 하나만 실행합니다. 에이전트에 보내는 각 요청에는 3초 제한이 있어서, 에이전트가 실행 중이더라도 3초 안에 응답하지 않으면 `fail agent: it may be running, but it did not answer within 3 seconds; …`를 출력하고 나머지 에이전트 점검을 건너뜁니다. 뒤이어 보내는 피어 상태나 `pending` 요청이 3초를 넘기면 해당 줄은 `warn`이 됩니다. 피어 상세 사유 요청이 3초를 넘기면 피어 줄에는 일반 안내가 표시되고 그 뒤에 `warn peer details: the agent did not answer within 3 seconds; …`가 이어집니다(`status`나 피어 상세 사유가 시간 초과되면 `pending`은 생략).
-- **이전 버전 에이전트:** `herdvia doctor`는 `v0.1.2`에서 추가되었습니다. 그보다 이전 버전의 에이전트는 `doctor` 요청을 알지 못하므로, `doctor`는 실행 중인 에이전트가 현재 실행 파일보다 오래되어 재시작해야 한다고 경고하며(`relay`는 생략하되 피어와 `pending`은 계속 점검), 해당 에이전트 로그에는 `unknown CONTROL request` 한 줄이 기록됩니다. `v0.1.4` 이하 버전의 에이전트는 `status-detail`을 알지 못하므로, 연결되지 않은 피어 줄에는 일반 `not connected; …` 안내가 표시됩니다.
+- **이전 버전 에이전트:** `herdvia doctor`는 `v0.1.2`에서 추가되었습니다. 그보다 이전 버전의 에이전트는 `doctor` 요청을 알지 못하므로, `doctor`는 실행 중인 에이전트가 현재 실행 파일보다 오래되어 재시작해야 한다고 경고하며(`relay`는 생략하되 피어와 `pending`은 계속 점검), 해당 에이전트 로그에는 `unknown CONTROL request` 한 줄이 기록됩니다. `v0.1.4` 이하 버전의 에이전트는 `status-detail`을 알지 못하므로, 연결되지 않은 피어 줄에는 일반 `not connected; …` 안내가 표시됩니다. 또한 `v0.1.2`부터 `v0.1.4`까지의 에이전트는 `herdvia status`나 `herdvia doctor`가 `status-detail`을 요청할 때마다 `unknown CONTROL request` 한 줄을 로그에 기록합니다.
 
 **양쪽 PC 모두에서** 실행해 보세요. B에 `herdr-core`가 없거나 아직 피어를 수락하지 않은 문제 등은 B의 출력에 나타납니다. PC A에서의 실행 예시:
 
 ```text
 $ herdvia doctor
-ok   executable: herdvia 0.1.2 at /Users/you/.local/bin/herdvia
+ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
 ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
 ok   automatic start: registered for this executable
-ok   agent: running herdvia 0.1.2 from /Users/you/.local/bin/herdvia
+ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
 ok   peer B (out): connected directly, 4.12ms
-warn peer office (both): not connected; its agent is off, or it has not allowed this PC (on that PC: herdvia pending, then herdvia accept)
+warn peer office (both): could not reach it (timed out); its agent may be off or offline. Retrying in 12s.
 ok   pending: no rejected connection attempts
 ```
 
@@ -584,9 +584,9 @@ Run herdvia agent reload to retry now.
   - **Windows (권한 설정):** 데이터 폴더가 정션 같은 재분석 지점이거나 소유자가 현재 사용자·Administrators·SYSTEM이 아니면 거부합니다. 폴더에 아직 해당 설정이 없으면 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 설정해 herdvia가 그 안에 만드는 파일이 상속받도록 합니다(하위 파일로 상속되는 거부(deny) 항목이 있는 폴더는 이미 설정된 것으로 인정하지 않습니다). 다른 계정에 접근 권한이 허용된 `secret.key`·`peers`는 현재 사용자가 권한을 바꿀 수 있을 때마다 파일 자체에 이 세 계정에만 모든 권한을 허용하는 보호된 DACL을 직접 설정하므로, 상위 폴더가 물려주는 권한에 의존하지 않습니다. 또한 최선 노력 강화로서 데이터 폴더와 `secret.key`, `peers`에 Medium 무결성 레이블(no-write-up, no-read-up)을 걸어, 같은 사용자의 Low 무결성 프로세스가 이 파일들을 새로 열어 읽지 못하게 합니다. 현재 사용자가 레이블을 걸 권한이 없는 폴더에서는 적용되지 않으며, 그래도 herdvia는 동작합니다.
   - **Windows (거부 조건과 예외):** 링크이거나, 소유자가 다르거나, 여전히 다른 계정에 접근 권한이 허용된 `secret.key`·`peers`는 거부합니다(오류 문구에 관리자 터미널에서 실행할 `icacls … /grant` 명령이 안내되며, 이를 실행해 현재 사용자에게 파일의 모든 권한을 부여한 뒤 herdvia를 다시 실행하면 권한이 제한됩니다). 폴더가 다른 계정에 접근 권한을 허용하는데 현재 사용자가 권한을 바꿀 수 없을 때도 폴더를 거부하고 `icacls … /grant` 명령을 안내합니다. 두 `icacls` 명령은 모두 PowerShell과 cmd에 그대로 붙여 넣어 실행할 수 있습니다. 이 세 계정에만 접근을 허용하지만 현재 사용자가 권한을 바꿀 수 없는 폴더는 그대로 사용하며, 보호되지 않은 폴더라면 상위 폴더로부터 계속 권한 항목을 상속받습니다.
   - **`HERDVIA_DIR` 데이터 폴더의 상위 폴더:** 데이터 폴더가 `HERDVIA_DIR`(Linux에서는 `XDG_DATA_HOME`도)에서 온 경우, 그 상위 폴더들은 다른 계정이 바꿀 수 없어야 합니다. 다른 계정이 상위 폴더를 다른 폴더로 바꿔치기해 키와 피어 목록의 위치를 돌리지 못하게 하기 위해서입니다. 내장 기본 데이터 폴더에는 이 검사를 하지 않습니다(기본 폴더는 사용자 프로필 안에 있고, 자동 시작은 기본 폴더만 사용합니다).
-    - **macOS / Unix:** 각 상위 폴더는 현재 사용자나 root 소유여야 하고 group/other 쓰기 권한이 없어야 합니다. `/tmp`처럼 sticky 비트가 있는 폴더 안의, 현재 사용자(또는 root) 소유 폴더는 허용합니다. macOS에서는 항목 추가·삭제나 권한 변경을 허용하는 ACL allow 항목이 있는 상위 폴더도 거부합니다.
-    - **Windows (드라이브 문자로 시작하는 경로):** 각 상위 폴더는 정션이나 심볼릭 링크 같은 재분석 지점이 아니어야 하고, 소유자가 현재 사용자·SYSTEM·Administrators·TrustedInstaller 중 하나여야 하며, 다른 계정에게 그 폴더나 그 안의 항목을 삭제·이름 변경·권한 변경할 권한을 주지 않아야 합니다(읽기 전용 권한은 괜찮습니다). UNC 경로는 검사하지 않습니다.
-    - 상위 폴더가 거부되면 모든 명령과 에이전트가 해당 폴더와 이유를 담은 오류로 끝나고(종료 코드 `255`), `herdvia doctor`는 데이터 폴더가 아직 없어도 `data directory` 줄을 `fail`로 보고합니다.
+    - **macOS / Unix:** 각 상위 폴더는 현재 사용자나 root 소유여야 하고 group/other 쓰기 권한이 없어야 합니다. `/tmp`처럼 sticky 비트가 있는 폴더 안의, 현재 사용자(또는 root) 소유 폴더는 허용합니다. macOS에서는 항목 추가·삭제, 권한 변경, 또는 소유자 변경을 허용하는 ACL allow 항목이 있는 상위 폴더도 거부합니다.
+    - **Windows (드라이브 문자로 시작하는 경로):** 각 상위 폴더는 정션이나 심볼릭 링크 같은 재분석 지점이 아니어야 하고, 소유자가 현재 사용자·SYSTEM·Administrators·TrustedInstaller 중 하나여야 하며, 다른 계정에게 그 폴더에 쓸 권한(파일 추가나 속성 변경 — 정션으로 바꾸기에 충분한 권한)이나 그 폴더 또는 그 안의 항목을 삭제·이름 변경·소유권 취득·권한 변경할 권한을 주지 않아야 합니다(읽기와 하위 폴더 생성은 괜찮습니다). NULL DACL인 상위 폴더나 현재 사용자가 읽을 수 없는 상위 폴더도 거부합니다. UNC 경로는 검사하지 않습니다.
+    - 상위 폴더가 거부되면 데이터 폴더를 사용하는 모든 명령과 에이전트가 해당 폴더와 이유를 담은 오류로 끝나고(종료 코드 `255`), `herdvia doctor`는 데이터 폴더가 아직 없어도 `data directory` 줄을 `fail`로 보고합니다.
 - **`secret.key`는 이 PC의 신원입니다:** 이 파일을 손에 넣은 사람은 이 PC를 신뢰하는 피어에게 이 PC로 위장할 수 있습니다. 유출되었을 가능성이 있거나, 파일을 읽을 수 없거나 잃어버렸거나(백업에서 복원하는 대신), 백업에서 복원했거나, 다른 PC로 복사했다면 키를 교체하세요:
   1. 모든 피어에서 이 PC의 항목을 `herdvia revoke <이름>`으로 삭제합니다(읽을 수 없는 `secret.key`에 대해 `herdvia doctor`가 새 신원 생성을 안내할 때도 이 단계를 먼저 실행하세요. 그렇지 않으면 상대 PC에서 그 이름이 여전히 예전 `EndpointId`에 묶여 있어 같은 이름으로 `accept`할 때 거부됩니다).
   2. 에이전트를 중지합니다(`herdvia agent uninstall`, 포그라운드 실행 중이면 `Ctrl-C`).
@@ -595,7 +595,7 @@ Run herdvia agent reload to retry now.
   5. `herdvia agent install`을 실행합니다(또는 `herdvia agent`를 다시 시작합니다).
   6. 모든 피어와 다시 페어링합니다.
 - **대화형 페어링 (`listen` / `connect`):** 페어링은 원격 명령을 전혀 실행하지 않고 `pending`에도 기록되지 않는 별도 ALPN(`herdvia/pair/1`)으로 동작하며, `herdvia listen`이 대기 중일 때만 핸드셰이크를 받아들입니다. 각 `listen` 세션은 5분 뒤 만료되는 128비트 일회용 토큰을 만들며, 잘못된 증명이 5회 누적되면 세션을 중단하고, 한 번에 한 요청만 승인 프롬프트를 띄우며 사용자가 승인하거나 거절하는 즉시 종료됩니다. 양쪽은 QUIC TLS 1.3 exporter(`herdvia-pair-v1`)와 commit-reveal 난수 교환으로 6자리 확인 번호(`NNN-NNN`, 약 20비트)를 계산하며, 대상 PC 사용자가 두 화면의 번호가 일치함을 확인하고 `y`를 입력하기 전에는 `peers`를 전혀 바꾸지 않습니다. 조작하는 PC도 그 PC의 사용자가 `Same code on both PCs? [y/N]:`에 `y`를 입력하고 대상 PC가 승인하기 전에는 `peers`에 아무것도 쓰지 않으며 `hc machine add`도 실행하지 않습니다. LAN 탐색 비콘에는 서명이 없어 같은 LAN의 누구나 자기 키로 비콘을 보내고 곧바로 승인 메시지를 보낼 수 있기 때문이며, 그래서 `connect`는 찾은 PC를 스스로 고르지 않습니다. 이 확인 단계로 네트워크 프로토콜이 바뀌지는 않으므로 이전 버전과도 그대로 페어링됩니다. 승인 시에도 대상 PC에는 `--inbound`만, 조작하는 PC에는 `--outbound`만 부여합니다(자동으로 `--both`를 주지 않음).
-- **`0.1.4` 이하의 대화형 페어링:** `herdvia connect`는 LAN에서 찾은 PC가 한 대면 자동으로 골랐고, 이 PC의 사용자 확인 없이 상대의 승인 메시지만으로 저장했습니다. 그래서 같은 LAN의 다른 기기가 대상 PC 행세를 할 수 있었습니다. Herdr를 실행하는 PC(`connect`를 실행하는 쪽)의 `herdvia`를 업그레이드하면 해결됩니다. 그 전까지는 대상 PC 화면에 출력된 초대 문자열로 페어링하세요(`herdvia connect <이름> hvi1-...`).
+- **`0.1.4` 이하의 대화형 페어링:** `herdvia connect`는 LAN에서 찾은 PC가 한 대면 자동으로 골랐고, 이 PC의 사용자 확인 없이 상대의 승인 메시지만으로 저장했습니다. 그래서 같은 LAN의 다른 기기가 대상 PC 행세를 할 수 있었습니다. Herdr를 실행하는 PC(`connect`를 실행하는 쪽)의 `herdvia`를 업그레이드하고 그 에이전트를 재시작하면 해결됩니다(설치 스크립트는 둘 다 수행합니다). 그 전까지는 대상 PC 화면에 출력된 초대 문자열로 페어링하세요(`herdvia connect <이름> hvi1-...`).
 - **지문과 `pending` / `accept`:** 지문은 사람이 눈으로 대조하기 위해 256비트 `EndpointId`의 앞 16자리 16진수 문자(64비트)만 표시한 것이며, `herdvia`는 항상 전체 `EndpointId`를 저장하고 검증합니다. `pending`은 `iroh` 인증 핸드셰이크를 마친 피어만 메모리에 최대 16개·10분간 보관하며, `accept`는 접두사가 겹쳐 모호하거나 목록이 가득 찬 경우(이 PC의 `EndpointId`를 아는 누구나 채울 수 있음)를 모두 거부합니다. 지문은 절대 `pending` 목록에서 베끼지 말고 반드시 **상대 PC 화면에서 직접 읽고** 입력하세요.
 
 **보안 취약점 제보:** 민감한 보안 문제는 이 저장소의 [비공개 보안 취약점 제보(Private vulnerability reporting)](https://github.com/photojupi/herdvia/security/advisories/new)를 이용해 주시고, 민감하지 않은 버그는 일반 이슈를 열어 주세요.
