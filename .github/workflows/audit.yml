@@ -38,5 +38,10 @@ jobs:
       # RUSTSEC-2024-0436: paste is unmaintained, with no fixed version. It is a build-time
       # proc-macro that iroh pulls in on Linux only (netwatch -> netlink-packet-core); it is not
       # in the macOS or Windows release binaries.
+      #
+      # RUSTSEC-2026-0543: chrono is unmaintained, with no fixed version. This is a notice, not a
+      # vulnerability. iroh pulls it in on Windows only (netwatch -> wmi, whose default features
+      # include chrono), so it is in the Windows release binary and not in the macOS one. herdvia
+      # cannot turn that feature off; drop this once netwatch or wmi stops depending on chrono.
       - name: cargo audit
-        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0543
