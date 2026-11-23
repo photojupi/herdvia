@@ -70,7 +70,7 @@ When you register a remote computer in Herdr (`hc machine add --via <command>`),
 
 1. **Persistent background agent (`herdvia agent`):** Runs in your user session on each machine, holds the machine's cryptographic identity (`EndpointId`), and maintains encrypted QUIC connections to allowed peers.
 2. **Mutual trust (`listen` / `connect`, or `allow` / `accept`):** Unknown peers are always rejected. Interactive pairing (`herdvia listen` + `herdvia connect`) shows a 6-digit verification code on both screens. Machine B allows sessions from Machine A (`--inbound`) only after the person on B approves, and Machine A allows dialing Machine B (`--outbound`) only after the person on A also confirms that the codes match.
-3. **Strict command filter:** On the receiving side, `herdvia` executes **only** the exact `herdr-core connect` command line sent by `hc` (verified against **`hc 0.1.22`** on macOS; on Windows, last verified against `hc 0.1.21`). Any other command string is rejected and logged.
+3. **Strict command filter:** On the receiving side, `herdvia` executes **only** the exact `herdr-core connect` command line sent by `hc` (verified against **`hc 0.1.22`**). Any other command string is rejected and logged.
 
 ---
 
@@ -80,7 +80,7 @@ Before pairing two computers, check what each machine needs:
 
 | Component | Machine A (Controller — runs Herdr) | Machine B (Remote PC — target) | Notes |
 |---|---|---|---|
-| **`herdr-core`** | Required | Required | Use the **same version** on both machines (verified with **`0.1.22`** on macOS; on Windows, last verified with `0.1.21`). |
+| **`herdr-core`** | Required | Required | Use the **same version** on both machines (verified with **`0.1.22`**). |
 | **Herdr app / `hc` CLI** | Required | Not needed | Machine B only needs `herdr-core`. |
 | **`herdvia` + running agent** | Required | Required | Installed via one-line script, release zip, or Cargo. |
 
@@ -104,7 +104,7 @@ Before pairing two computers, check what each machine needs:
 - **macOS / Linux:** Installs `~/.local/bin/herdr-core` (and an `hc` link beside it if missing). It does not modify `PATH`, and prints a note if `~/.local/bin` is not on your `PATH`.
 - **Windows:** Installs `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe` (and `hc.exe` if missing) and adds that folder to your user `PATH`.
 
-To pin **`0.1.22`** (the exact version `herdvia` was verified against on macOS) instead of the latest release:
+To pin **`0.1.22`** (the exact version `herdvia` was verified against) instead of the latest release:
 
 ```sh
 # macOS / Linux

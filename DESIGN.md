@@ -26,7 +26,7 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
   - `terminal.put`이 조각 전송(`put_begin`/`put_chunk`/`put_finish`)이 되었고 hello의 `put_chunks`로 협상한다. 통로는 바이트만 옮기므로 상관없다.
   - 조각에 오래 답이 없으면 hc가 via를 끝내고 다시 띄운다. 이미 있는 "via 종료 → 재기동" 경로다.
   - Windows의 `connect`는 입력이 끝나도 plain 요청의 응답을 다 받은 뒤 끝난다. hc의 상시 줄은 framed hello로 시작하므로
-    hello 응답 뒤에는 기다릴 응답이 없어 stdin이 닫히면 곧 끝난다고 본다(소스로만 판단).
+    hello 응답 뒤에는 기다릴 응답이 없어 stdin이 닫히면 곧 끝난다(아래 Windows 실기에서 쟀다).
 - 실측(macOS 한 대 안에서 양쪽 모두 hc 0.1.22, 직접 연결):
   - 기본 connect 줄과 세션 지정 줄이 모두 허용되었다.
   - `hc exec --on`, `hc run --on`의 출력과 종료 코드가 맞다.
@@ -36,7 +36,13 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
   - 끊김(상대 에이전트 종료)과 `revoke` 때 받는 쪽의 `connect` 자식이 약 0.02초 안에 사라졌다. 끊김 때 원격 터미널은 살아 있었다(`revoke` 뒤에는 보지 않았다).
 - hc 0.1.22의 `put` 한도는 8MB다(`at most 8 MB per put`).
 - 실기(같은 날, 셋 다 hc 0.1.22): macOS와 Windows가 각각 호출하는 쪽, 다른 macOS가 받는 쪽일 때 직접 연결로 세션이 붙어 유지되었고 거부된 명령은 없었다.
-- 재지 못한 것: Windows가 받는 쪽인 경우(connect 줄, 위의 종료 동작), relay 경로, 0.1.21과 0.1.22를 섞은 경우.
+- 실기(같은 날, Windows 11 10.0.26200이 받는 쪽, macOS가 호출하는 쪽, 양쪽 hc 0.1.22, 직접 연결. 양쪽 herdvia는 0.1.3이고 줄 검사와 실행 코드는 그 뒤로 바뀌지 않았다):
+  - 기본 Windows 줄과 `--session` 줄이 모두 허용되었고 받는 쪽 로그에 `rejected command`가 없었다.
+  - `hc exec --on`의 출력, 종료 코드, 표준 입력 전달이 맞다.
+  - 8MiB `hc put`이 0.9초에 끝났고 sha256이 같았다. 전송 중의 `hc exec --on`도 0.1~0.25초에 응답했다.
+  - `herdr-core.exe connect`는 stdin이 닫히면 코드 0으로 0.001~0.012초 안에 끝났다. hello를 보내고 곧바로 닫아도 응답을 다 받은 뒤 끝났다(plain과 framed 모두).
+  - 호출하는 쪽의 via를 강제로 끝내자 받는 쪽의 `connect` 자식이 사라지고 새 자식이 떴다(3초 뒤에 확인). 원격 터미널은 살아 있었다.
+- 재지 못한 것: relay 경로, 0.1.21과 0.1.22를 섞은 경우.
 
 ## 구성
 

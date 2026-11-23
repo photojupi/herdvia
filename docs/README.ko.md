@@ -72,7 +72,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 
 1. **상주 에이전트 (`herdvia agent`):** 양쪽 PC의 사용자 세션에서 백그라운드로 실행되며, 기기 고유 키(`EndpointId`)로 허용된 피어와 암호화된 QUIC 연결을 유지합니다.
 2. **양방향 명시적 허용 (`listen` / `connect`, 또는 `allow` / `accept`):** 처음 보는 기기는 절대 자동으로 신뢰하지 않습니다. 대화형 페어링(`herdvia listen` + `herdvia connect`)은 양쪽 화면에 같은 6자리 확인 번호를 띄웁니다. 받는 쪽(PC B)은 B의 사용자가 승인해야 `--inbound`를 저장하고, 거는 쪽(PC A)은 A의 사용자도 번호가 같다고 확인해야 `--outbound`를 저장합니다.
-3. **명령줄 정확 일치 검사:** 받는 쪽(PC B) 에이전트는 `hc`가 보내는 정확한 `herdr-core connect` 명령줄만 실행하며(macOS에서 **`hc 0.1.22`** 기준 검증 완료, Windows는 `hc 0.1.21`까지 검증), 그 외 모든 명령은 거부하고 로그에 기록합니다.
+3. **명령줄 정확 일치 검사:** 받는 쪽(PC B) 에이전트는 `hc`가 보내는 정확한 `herdr-core connect` 명령줄만 실행하며(**`hc 0.1.22`** 기준 검증 완료), 그 외 모든 명령은 거부하고 로그에 기록합니다.
 
 ---
 
@@ -83,7 +83,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 
 | 구성 요소 | PC A (조작하는 쪽 — Herdr 실행) | PC B (연결할 원격 PC) | 비고 |
 |---|---|---|---|
-| **`herdr-core`** | 필수 | 필수 | 양쪽 PC에서 **같은 버전**을 사용하세요 (macOS는 **`0.1.22`**, Windows는 `0.1.21`에서 검증됨) |
+| **`herdr-core`** | 필수 | 필수 | 양쪽 PC에서 **같은 버전**을 사용하세요 (**`0.1.22`**에서 검증됨) |
 | **Herdr 앱 / `hc` CLI** | 필수 | 불필요 | 원격 PC B에는 `herdr-core`만 있으면 됩니다 |
 | **`herdvia` + 에이전트 실행** | 필수 | 필수 | 한 줄 스크립트, 릴리스 압축 파일, 또는 Cargo로 설치 |
 
@@ -107,7 +107,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 - **macOS / Linux:** `~/.local/bin/herdr-core`를 설치합니다(`hc`가 아직 없으면 옆에 심볼릭 링크도 함께 생성). `PATH`를 자동 수정하지는 않으며, `~/.local/bin`이 `PATH`에 없으면 안내 문구를 출력합니다.
 - **Windows:** `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`(및 아직 없으면 `hc.exe`)를 설치하고 사용자 `PATH`에 폴더를 자동 추가합니다.
 
-`herdvia` 동작이 macOS에서 검증된 **`0.1.22`** 버전을 지정해 설치하려면 `HC_VERSION`을 함께 넘기세요:
+`herdvia` 동작이 검증된 **`0.1.22`** 버전을 지정해 설치하려면 `HC_VERSION`을 함께 넘기세요:
 
 ```sh
 # macOS / Linux

@@ -72,7 +72,7 @@
 
 1. **常驻后台代理 (`herdvia agent`)：** 在每台电脑的当前用户会话中运行，持有设备密钥身份（`EndpointId`），并与已授权对端保持加密 QUIC 连接。
 2. **双向显式授权 (`listen` / `connect`，或 `allow` / `accept`)：** 从不自动信任陌生设备。交互式配对（`herdvia listen` + `herdvia connect`）在两端屏幕显示相同的 6 位验证码。被控端 B 仅在 B 的用户确认后才写入 `--inbound`，主控端 A 仅在 A 的用户也核对验证码一致后才写入 `--outbound`。
-3. **命令逐字白名单校验：** 接收端（电脑 B）仅执行与 `hc` 发送的 `herdr-core connect` 命令逐字完全一致的指令（已在 macOS 上基于 **`hc 0.1.22`** 实测验证；Windows 上最近一次验证基于 `hc 0.1.21`），其余任何命令均会被拒绝并写入日志。
+3. **命令逐字白名单校验：** 接收端（电脑 B）仅执行与 `hc` 发送的 `herdr-core connect` 命令逐字完全一致的指令（已基于 **`hc 0.1.22`** 实测验证），其余任何命令均会被拒绝并写入日志。
 
 ---
 
@@ -83,7 +83,7 @@
 
 | 组件 | 电脑 A（主控端 — 运行 Herdr） | 电脑 B（远程目标电脑） | 说明 |
 |---|---|---|---|
-| **`herdr-core`** | 必需 | 必需 | 两台电脑请保持**相同版本**（已验证版本：macOS 为 **`0.1.22`**，Windows 为 `0.1.21`） |
+| **`herdr-core`** | 必需 | 必需 | 两台电脑请保持**相同版本**（已验证版本为 **`0.1.22`**） |
 | **Herdr 应用 / `hc` CLI** | 必需 | 不需要 | 电脑 B 只需安装 `herdr-core` |
 | **`herdvia` + 运行中的代理** | 必需 | 必需 | 可通过一键脚本、发布包或 Cargo 安装 |
 
@@ -107,7 +107,7 @@
 - **macOS / Linux：** 安装至 `~/.local/bin/herdr-core`（若尚无 `hc` 则一并创建链接）。该脚本不会自动修改 `PATH`；若 `~/.local/bin` 不在 `PATH` 中会打印提示。
 - **Windows：** 安装至 `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（若尚无 `hc.exe` 则一并安装），并自动将该目录加入当前用户的 `PATH`。
 
-如需安装经 `herdvia` 在 macOS 上实测验证的 **`0.1.22`** 版本：
+如需安装经 `herdvia` 实测验证的 **`0.1.22`** 版本：
 
 ```sh
 # macOS / Linux
