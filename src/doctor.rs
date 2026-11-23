@@ -21,7 +21,7 @@ use std::{
 };
 
 /// The herdr-core (hc) version whose connect line herdvia was verified with.
-pub const VERIFIED_CORE_VERSION: &str = "0.1.21";
+pub const VERIFIED_CORE_VERSION: &str = "0.1.22";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1539,10 +1539,10 @@ mod tests {
             ok.text,
             format!("herdr-core: /h/.local/bin/herdr-core (hc {VERIFIED_CORE_VERSION})")
         );
-        let newer = core(&agent, Some(Ok("0.1.22")), false);
+        let newer = core(&agent, Some(Ok("0.1.23")), false);
         assert_eq!(newer.level, Level::Warn);
         assert!(
-            newer.text.contains("hc 0.1.22")
+            newer.text.contains("hc 0.1.23")
                 && newer.text.contains("rejected command")
                 && newer.text.contains("LOG"),
             "{}",

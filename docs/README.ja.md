@@ -72,7 +72,7 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 
 1. **常駐エージェント (`herdvia agent`):** 各マシンのユーザーセッションで動作し、マシン固有の鍵（`EndpointId`）を使って許可済みピアとの暗号化 QUIC 接続を維持します。
 2. **双方向の明示的な許可 (`listen` / `connect`、または `allow` / `accept`):** 未知の端末が自動的に信頼されることはありません。対話型ペアリング（`herdvia listen` + `herdvia connect`）では両方の画面に同じ 6 桁の確認コードを表示します。着信側（マシン B）は B のユーザーが承認した場合のみ `--inbound` を保存し、発信側（マシン A）は A のユーザーもコードの一致を確認した場合のみ `--outbound` を保存します。
-3. **厳格なコマンド検証:** 着信側（マシン B）では、`hc` が送信する `herdr-core connect` コマンドラインと完全一致する場合のみ実行します（**`hc 0.1.21`** で検証済み）。それ以外のコマンド文字列はすべて拒否し、ログに記録します。
+3. **厳格なコマンド検証:** 着信側（マシン B）では、`hc` が送信する `herdr-core connect` コマンドラインと完全一致する場合のみ実行します（macOS では **`hc 0.1.22`**、Windows では `hc 0.1.21` まで検証済み）。それ以外のコマンド文字列はすべて拒否し、ログに記録します。
 
 ---
 
@@ -83,7 +83,7 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 
 | 要素 | マシン A（操作側 — Herdr を使用） | マシン B（接続先のリモート PC） | 備考 |
 |---|---|---|---|
-| **`herdr-core`** | 必須 | 必須 | 両方のマシンで**同じバージョン**を使用してください（**`0.1.21`** で検証済み） |
+| **`herdr-core`** | 必須 | 必須 | 両方のマシンで**同じバージョン**を使用してください（macOS では **`0.1.22`**、Windows では `0.1.21` で検証済み） |
 | **Herdr アプリ / `hc` CLI** | 必須 | 不要 | マシン B には `herdr-core` だけあれば動作します |
 | **`herdvia` + エージェント起動** | 必須 | 必須 | 1 行スクリプト、リリース ZIP、または Cargo で導入 |
 
@@ -107,22 +107,22 @@ Herdr にリモート PC を追加する `hc machine add --via <コマンド>` �
 - **macOS / Linux:** `~/.local/bin/herdr-core`（および未作成なら同じ場所に `hc` リンク）を配置します。`PATH` は変更せず、`~/.local/bin` が `PATH` になければ案内を表示します。
 - **Windows:** `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（および未作成なら `hc.exe`）をインストールし、ユーザー `PATH` に自動で追加します。
 
-`herdvia` で動作確認済みのバージョン **`0.1.21`** を指定して入れる場合：
+`herdvia` が macOS で動作確認済みのバージョン **`0.1.22`** を指定して入れる場合：
 
 ```sh
 # macOS / Linux
-curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.21 sh
+curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.22 sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-$env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
+$env:HC_VERSION = "0.1.22"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
 ```
 
 *（macOS では、すでにより新しい `herdr-core` が入っているとダウングレードせず停止し、`hc update --from ... --force` を使うよう案内されます。）*
 
 **`herdr-core` に関する重要な注意点 2 つ:**
-1. **リモートインストール・更新コマンドの制限（`hc 0.1.21` 基準）:** `herdvia` は `hc` が送る `herdr-core connect` 行と完全一致するコマンド以外はすべて拒否するため、`hc machine add --install` や `hc machine update` でリモート側の `herdr-core` を導入・更新することはできません。また将来 `hc` 側の接続コマンドが変わった場合、`herdvia` が対応するまで拒否されます。
+1. **リモートインストール・更新コマンドの制限（`hc 0.1.22` 基準）:** `herdvia` は `hc` が送る `herdr-core connect` 行と完全一致するコマンド以外はすべて拒否するため、`hc machine add --install` や `hc machine update` でリモート側の `herdr-core` を導入・更新することはできません。また将来 `hc` 側の接続コマンドが変わった場合、`herdvia` が対応するまで拒否されます。
 2. **マシン B で `herdr-core` を探すパス:**
    - **macOS / Unix:** `~/.local/bin/herdr-core` またはエージェントの `PATH` 上。特に macOS で `herdvia agent install` により自動起動されたエージェントの `PATH` は `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin` のみのため、Homebrew 等の別パスに入れた場合は `~/.local/bin/herdr-core` にシンボリックリンクを作成してください。
    - **Windows:** `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`。
@@ -609,7 +609,7 @@ ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
-ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.22)
 ok   automatic start: registered for this executable
 ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
@@ -629,7 +629,7 @@ ok   pending: no rejected connection attempts
    - **Windows:** 他の種類の再解析ポイント（reparse point）である場合、所有者が現在のユーザー・Administrators・SYSTEM 以外の場合、または他のアカウントにアクセス権が付与されており現在のユーザーがその権限を変更できない場合に `fail` となります（最後の場合は管理者ターミナルで実行する `icacls … /grant` コマンドを案内）。これら 3 アカウント以外にアクセス権が付与されていても、現在のユーザーが権限を変更できるフォルダは、herdvia が次回実行時に権限を制限するため `warn` となります。
 3. **`secret.key`:** 存在するか、およびエージェントと同じ検査に通るか（macOS/Unix：現在のユーザーの所有で権限が `0600` 以下であり、macOS ではアクセスを許可する ACL エントリがないこと。Windows：リンクではない通常のファイルで、所有者が現在のユーザー・Administrators・SYSTEM のいずれかであり、他のアカウントにアクセス権が付与されていないこと）。Windows で他のアカウントにアクセス権が付与されているファイルは、現在のユーザーが権限を変更できる場合は herdvia が次回実行時に制限するため `warn`、変更できない場合は `icacls … /grant` コマンドを案内する `fail` となります。`secret.key` がちょうど 32 バイトでない場合や、権限による拒否以外の理由で読み取りに失敗した場合は `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)` を出力します。再ペアリングの前に、すべてのピアでこの PC について `herdvia revoke <名前>` を実行してください（[セキュリティモデル](#security-model)を参照）。出力にはフィンガープリントのみが表示されます。
 4. **`peers`:** 読み取り可能か（`secret.key` と同じ検査）・解析可能か、および方向ごとの登録ピア数。Windows で herdvia が次回実行時に権限を制限する予定のファイルはピア数のない `warn` 行になりますが、ファイルの内容自体は検査され、形式エラーがあれば（権限を制限しても不正な内容は直らないため）通常の `fail` 行になります。
-5. **`herdr-core`:** エージェントが探す場所（macOS では自動起動エージェントの `PATH`）にあるか、また `herdr-core --version` が検証済みの `0.1.21` を返すか。空または相対パスの `PATH` エントリ（`.` など）は無視されるため、それらを通じてのみ到達できる `herdr-core` は見つからないものとして報告されます。
+5. **`herdr-core`:** エージェントが探す場所（macOS では自動起動エージェントの `PATH`）にあるか、また `herdr-core --version` が検証済みの `0.1.22` を返すか。空または相対パスの `PATH` エントリ（`.` など）は無視されるため、それらを通じてのみ到達できる `herdr-core` は見つからないものとして報告されます。
 6. **自動起動:** 登録されているか（macOS の LaunchAgent plist、Windows の `Run` レジストリ値）、かつこの実行ファイルを指しているか。Windows で管理者として実行されている場合も警告します。
 7. **エージェント:** このデータフォルダのエージェントが応答するか、そのバージョンと実行ファイル、およびホームリレーに接続されているか。
 8. **ピア:** `herdvia status` に基づき、登録されたピアごとに接続状態と経路を 1 行ずつ表示し、未接続のピアは切断理由と再試行までの秒数を含む `warn peer <name> (<in|out|both>): ...` を表示（ピアが未登録の場合は `warn` を 1 行表示）。

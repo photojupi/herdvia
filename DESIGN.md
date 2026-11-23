@@ -18,6 +18,25 @@ SSH 서버·VPN 없이, 서로 다른 공유기 뒤의 PC를 Herdr 사이드바�
 - 통로가 끊겨도 원격 터미널은 살아 있다.
 - `herdr-core connect`는 표준 입력이 닫히면 약 0.1초 안에 코드 0으로 끝난다.
 
+## hc 0.1.22 확인 (2026-11-23)
+
+- 소스 대조(v0.1.21과 v0.1.22): connect 줄을 만드는 코드, via 실행 방식(Unix `sh -c`, Windows 셸 없는 직접 실행), 종료 코드 판정과 Windows 줄 재시도,
+  재접속, `hc machine ls --json`의 필드, 세션 이름 규칙, 프로토콜 generation(1)이 같다. 위 절과 M5 실측 절의 줄은 그대로 맞다.
+- 바뀐 것:
+  - `terminal.put`이 조각 전송(`put_begin`/`put_chunk`/`put_finish`)이 되었고 hello의 `put_chunks`로 협상한다. 통로는 바이트만 옮기므로 상관없다.
+  - 조각에 오래 답이 없으면 hc가 via를 끝내고 다시 띄운다. 이미 있는 "via 종료 → 재기동" 경로다.
+  - Windows의 `connect`는 입력이 끝나도 plain 요청의 응답을 다 받은 뒤 끝난다. hc의 상시 줄은 framed hello로 시작하므로
+    hello 응답 뒤에는 기다릴 응답이 없어 stdin이 닫히면 곧 끝난다고 본다(소스로만 판단).
+- 실측(macOS 한 대 안에서 양쪽 모두 hc 0.1.22, 직접 연결):
+  - 기본 connect 줄과 세션 지정 줄이 모두 허용되었다.
+  - `hc exec --on`, `hc run --on`의 출력과 종료 코드가 맞다.
+  - 8MiB `hc put`이 조각 전송으로 0.7초에 끝났고 sha256이 같았다. 전송 중의 `hc exec --on`도 응답했다.
+  - `hc machine update`는 거부되었고 원격 코어는 그대로다.
+  - `herdr-core connect`는 stdin이 닫히면 코드 0으로 0.005~0.046초 안에 끝났다.
+  - 끊김(상대 에이전트 종료)과 `revoke` 때 받는 쪽의 `connect` 자식이 약 0.02초 안에 사라졌다. 끊김 때 원격 터미널은 살아 있었다(`revoke` 뒤에는 보지 않았다).
+- hc 0.1.22의 `put` 한도는 8MB다(`at most 8 MB per put`).
+- 재지 못한 것: Windows(connect 줄, 위의 종료 동작), 서로 다른 기기 사이와 relay 경로, 0.1.21과 0.1.22를 섞은 경우.
+
 ## 구성
 
 실행 파일 하나 `herdvia`, 단일 crate.
@@ -822,7 +841,7 @@ M5b: Windows 자동 시작(`agent install`/`uninstall`). M5a 실기 확인 뒤�
   5. herdr-core. 에이전트가 실제로 찾는 위치를 본다. Windows는 `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`,
      macOS는 LaunchAgent가 주는 PATH(`~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`)의 실행 가능한 파일, 그 밖의 Unix는 현재 PATH와 `~/.local/bin`이다.
      macOS에서 현재 PATH에만 있으면 warn하고 `~/.local/bin/herdr-core`로 링크하는 `mkdir -p … && ln -s …` 명령을 쓴다. 현재 PATH의 빈 항목과 상대 경로 항목은 건너뛰므로, 표시하는 경로와 링크 대상은 절대 경로다. 그런 항목은 현재 폴더를 가리키는데, 에이전트는 그 폴더에서 실행되지 않고 doctor는 찾은 파일을 실행하므로, 남이 파일을 둘 수 있는 폴더에서 doctor를 실행하면 그 폴더의 `herdr-core`가 실행되기 때문이다. `listen`이 시작할 때 하는 같은 점검도 이 탐색을 쓰고, `connect`가 `hc machine add`를 위해 `hc`를 찾을 때도 같은 이유로 그런 항목을 건너뛴다. 어디에도 없으면 fail이고 Herdr 설치 스크립트를 안내한다(설치는 하지 않는다).
-     찾으면 `--version` 첫 줄의 마지막 단어를 버전으로 읽는다. 검증 버전(상수 `VERIFIED_CORE_VERSION`, `0.1.21`)과 다르면 warn(connect 줄이 바뀌었으면 원격이 거부한다. 로그의 `rejected command`를 보라). 실행이 실패해도 warn.
+     찾으면 `--version` 첫 줄의 마지막 단어를 버전으로 읽는다. 검증 버전(상수 `VERIFIED_CORE_VERSION`, `0.1.22`)과 다르면 warn(connect 줄이 바뀌었으면 원격이 거부한다. 로그의 `rejected command`를 보라). 실행이 실패해도 warn.
   6. 자동 시작. macOS는 plist의 `ProgramArguments` 첫 값, Windows는 Run 값을 읽기만 한다(`launchctl`은 부르지 않는다).
      등록이 없거나 다른 실행 파일을 가리키면 warn(`agent install`을 다시 실행). Windows는 Run 값을 `install`이 쓸 명령과 ASCII 대소문자를 무시하고 비교한다. Linux는 지원하지 않는다는 warn. Windows에서 관리자 권한으로 돌고 있으면 `agent install`이 거부된다는 warn을 한 줄 더 쓴다.
   7. 에이전트. 제어 요청 `doctor`를 보낸다. 응답이 없으면 fail. 버전이나 실행 파일 경로가 이 실행 파일과 다르면 warn(업그레이드 뒤 다시 시작하지 않은 경우).

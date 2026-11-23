@@ -72,7 +72,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 
 1. **상주 에이전트 (`herdvia agent`):** 양쪽 PC의 사용자 세션에서 백그라운드로 실행되며, 기기 고유 키(`EndpointId`)로 허용된 피어와 암호화된 QUIC 연결을 유지합니다.
 2. **양방향 명시적 허용 (`listen` / `connect`, 또는 `allow` / `accept`):** 처음 보는 기기는 절대 자동으로 신뢰하지 않습니다. 대화형 페어링(`herdvia listen` + `herdvia connect`)은 양쪽 화면에 같은 6자리 확인 번호를 띄웁니다. 받는 쪽(PC B)은 B의 사용자가 승인해야 `--inbound`를 저장하고, 거는 쪽(PC A)은 A의 사용자도 번호가 같다고 확인해야 `--outbound`를 저장합니다.
-3. **명령줄 정확 일치 검사:** 받는 쪽(PC B) 에이전트는 `hc`가 보내는 정확한 `herdr-core connect` 명령줄만 실행하며(**`hc 0.1.21`** 기준 검증 완료), 그 외 모든 명령은 거부하고 로그에 기록합니다.
+3. **명령줄 정확 일치 검사:** 받는 쪽(PC B) 에이전트는 `hc`가 보내는 정확한 `herdr-core connect` 명령줄만 실행하며(macOS에서 **`hc 0.1.22`** 기준 검증 완료, Windows는 `hc 0.1.21`까지 검증), 그 외 모든 명령은 거부하고 로그에 기록합니다.
 
 ---
 
@@ -83,7 +83,7 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 
 | 구성 요소 | PC A (조작하는 쪽 — Herdr 실행) | PC B (연결할 원격 PC) | 비고 |
 |---|---|---|---|
-| **`herdr-core`** | 필수 | 필수 | 양쪽 PC에서 **같은 버전**을 사용하세요 (**`0.1.21`**에서 검증됨) |
+| **`herdr-core`** | 필수 | 필수 | 양쪽 PC에서 **같은 버전**을 사용하세요 (macOS는 **`0.1.22`**, Windows는 `0.1.21`에서 검증됨) |
 | **Herdr 앱 / `hc` CLI** | 필수 | 불필요 | 원격 PC B에는 `herdr-core`만 있으면 됩니다 |
 | **`herdvia` + 에이전트 실행** | 필수 | 필수 | 한 줄 스크립트, 릴리스 압축 파일, 또는 Cargo로 설치 |
 
@@ -107,22 +107,22 @@ Herdr에서 원격 PC를 등록할 때 쓰는 `hc machine add --via <명령>`은
 - **macOS / Linux:** `~/.local/bin/herdr-core`를 설치합니다(`hc`가 아직 없으면 옆에 심볼릭 링크도 함께 생성). `PATH`를 자동 수정하지는 않으며, `~/.local/bin`이 `PATH`에 없으면 안내 문구를 출력합니다.
 - **Windows:** `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`(및 아직 없으면 `hc.exe`)를 설치하고 사용자 `PATH`에 폴더를 자동 추가합니다.
 
-`herdvia` 동작이 검증된 **`0.1.21`** 버전을 지정해 설치하려면 `HC_VERSION`을 함께 넘기세요:
+`herdvia` 동작이 macOS에서 검증된 **`0.1.22`** 버전을 지정해 설치하려면 `HC_VERSION`을 함께 넘기세요:
 
 ```sh
 # macOS / Linux
-curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.21 sh
+curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.22 sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-$env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
+$env:HC_VERSION = "0.1.22"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
 ```
 
 *(macOS에서는 이미 더 높은 버전의 `herdr-core`가 설치돼 있으면 스크립트가 다운그레이드를 멈추고 `hc update --from ... --force`를 쓰라고 안내합니다.)*
 
 **꼭 알아 두어야 할 `herdr-core` 주의사항 두 가지:**
-1. **원격 설치·업데이트 명령 제한 (`hc 0.1.21` 기준):** `herdvia`는 `hc`가 보내는 `herdr-core connect` 줄과 글자 하나까지 똑같은 명령만 허용합니다. 따라서 `hc machine add --install`이나 `hc machine update`로는 원격 PC의 `herdr-core`를 설치·업데이트할 수 없으며, 향후 `hc`가 연결 명령 형식을 바꾸면 `herdvia`도 업데이트되기 전까지 이를 거부합니다.
+1. **원격 설치·업데이트 명령 제한 (`hc 0.1.22` 기준):** `herdvia`는 `hc`가 보내는 `herdr-core connect` 줄과 글자 하나까지 똑같은 명령만 허용합니다. 따라서 `hc machine add --install`이나 `hc machine update`로는 원격 PC의 `herdr-core`를 설치·업데이트할 수 없으며, 향후 `hc`가 연결 명령 형식을 바꾸면 `herdvia`도 업데이트되기 전까지 이를 거부합니다.
 2. **원격 PC(B)에서 `herdr-core`를 찾는 위치:**
    - **macOS / Unix:** `~/.local/bin/herdr-core` 또는 에이전트의 `PATH`. 특히 macOS에서 `herdvia agent install`로 자동 시작된 에이전트의 `PATH`는 `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`뿐이므로, Homebrew 등 다른 경로에 설치했다면 `~/.local/bin/herdr-core`로 심볼릭 링크를 걸어 주세요.
    - **Windows:** `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`.
@@ -609,7 +609,7 @@ ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
-ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.22)
 ok   automatic start: registered for this executable
 ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
@@ -629,7 +629,7 @@ ok   pending: no rejected connection attempts
    - **Windows:** 다른 종류의 재분석 지점(reparse point)이거나, 소유자가 현재 사용자·Administrators·SYSTEM이 아니거나, 다른 계정에 접근 권한이 허용되어 있는데 현재 사용자가 권한을 바꿀 수 없으면 `fail`을 출력합니다(마지막 경우 관리자 터미널에서 실행할 `icacls … /grant` 명령을 안내). 이 세 계정 외의 계정에 접근 권한이 허용되어 있더라도 현재 사용자가 권한을 바꿀 수 있으면, herdvia가 다음 실행 때 권한을 제한하므로 `warn`을 출력합니다.
 3. **`secret.key`:** 존재 여부 및 에이전트와 동일한 검사를 통과하는지 여부 — macOS/Unix: 현재 사용자 소유이고 권한이 `0600` 이하이며, macOS에서는 접근을 허용하는 ACL 항목이 없을 것. Windows: 링크가 아닌 일반 파일이고 소유자가 현재 사용자·Administrators·SYSTEM 중 하나이며 다른 계정에 접근 권한이 허용되어 있지 않을 것. Windows에서 다른 계정에 접근 권한이 허용된 파일은 현재 사용자가 권한을 바꿀 수 있으면 `warn`(herdvia가 다음 실행 때 제한), 바꿀 수 없으면 `icacls … /grant` 명령을 안내하는 `fail`이 됩니다. `secret.key`가 정확히 32바이트가 아니거나, 권한 거부가 아닌 다른 이유로 읽기에 실패하면 `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)`를 출력합니다. 다시 페어링하기 전에 모든 피어에서 이 PC에 대해 `herdvia revoke <이름>`을 실행하세요([보안 모델](#security-model) 참고). 출력에는 지문만 표시됩니다.
 4. **`peers`:** 파일을 읽고(`secret.key`와 동일한 검사) 해석할 수 있는지 여부, 그리고 방향별 등록된 피어 수. Windows에서 herdvia가 다음 실행 때 제한할 파일은 피어 수 없이 `warn` 줄로 표시되지만 파일 내용은 그대로 검사하며, 형식 오류가 있으면 파일 권한을 제한해도 고쳐지지 않으므로 일반 `fail` 줄을 출력합니다.
-5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.21`을 출력하는지 여부. 비어 있거나 상대 경로인 `PATH` 항목(`.` 등)은 무시하므로, 그러한 항목으로만 찾을 수 있는 `herdr-core`는 없는 것으로 보고됩니다.
+5. **`herdr-core`:** 에이전트가 실제로 찾는 위치(macOS에서는 자동 시작 에이전트의 `PATH`)에 있는지, `herdr-core --version`이 검증된 버전인 `0.1.22`를 출력하는지 여부. 비어 있거나 상대 경로인 `PATH` 항목(`.` 등)은 무시하므로, 그러한 항목으로만 찾을 수 있는 `herdr-core`는 없는 것으로 보고됩니다.
 6. **자동 시작:** 등록되어 있는지(macOS의 LaunchAgent plist, Windows의 레지스트리 `Run` 값), 그리고 이 실행 파일을 가리키는지 여부. Windows에서 관리자 권한으로 실행 중이면 이에 대해서도 경고합니다.
 7. **에이전트:** 이 데이터 폴더의 에이전트가 응답하는지, 실행 중인 버전과 실행 파일 경로, 홈 중계 서버(relay) 연결 여부.
 8. **피어 연결:** `herdvia status`를 바탕으로 등록된 피어마다 연결 상태와 경로를 한 줄씩 표시하며, 연결되지 않은 피어는 끊긴 이유와 재시도까지 남은 시간을 담은 `warn peer <name> (<in|out|both>): ...` 줄을 출력합니다 (등록된 피어가 없으면 `warn` 한 줄).

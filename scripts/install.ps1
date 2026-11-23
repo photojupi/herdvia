@@ -27,7 +27,7 @@ function Fail($why) { throw "herdvia install: $why" }
 $repo = "https://github.com/photojupi/herdvia/releases"
 $archive = "herdvia-windows-x64.zip"
 # The herdr-core version herdvia was verified with.
-$herdrVersion = "0.1.21"
+$herdrVersion = "0.1.22"
 
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($arch -ne "AMD64") { Fail "there is a prebuilt herdvia only for x64 Windows; this is $arch. Nothing was changed." }
@@ -169,7 +169,7 @@ try {
         Write-Host "herdr-core is not installed. herdvia needs it on both machines and looks for it only at $core."
         Write-Host "This script does not install it; Herdr's own install script does:"
         Write-Host '  powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"'
-        Write-Host "To install $herdrVersion, the version herdvia was verified with:"
+        Write-Host "To install $herdrVersion, the version herdvia was verified with on macOS (on Windows, last verified with 0.1.21):"
         Write-Host ('  $env:HC_VERSION = "' + $herdrVersion + '"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"')
     }
 

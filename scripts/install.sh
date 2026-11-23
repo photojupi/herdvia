@@ -20,7 +20,7 @@ set -eu
 repo=https://github.com/photojupi/herdvia/releases
 archive=herdvia-macos-arm64.zip
 # The herdr-core version herdvia was verified with.
-herdr_version=0.1.21
+herdr_version=0.1.22
 
 say() { printf '%s\n' "$*"; }
 fail() { say "herdvia install: $*" >&2; exit 1; }

@@ -72,7 +72,7 @@
 
 1. **常驻后台代理 (`herdvia agent`)：** 在每台电脑的当前用户会话中运行，持有设备密钥身份（`EndpointId`），并与已授权对端保持加密 QUIC 连接。
 2. **双向显式授权 (`listen` / `connect`，或 `allow` / `accept`)：** 从不自动信任陌生设备。交互式配对（`herdvia listen` + `herdvia connect`）在两端屏幕显示相同的 6 位验证码。被控端 B 仅在 B 的用户确认后才写入 `--inbound`，主控端 A 仅在 A 的用户也核对验证码一致后才写入 `--outbound`。
-3. **命令逐字白名单校验：** 接收端（电脑 B）仅执行与 `hc` 发送的 `herdr-core connect` 命令逐字完全一致的指令（已基于 **`hc 0.1.21`** 实测验证），其余任何命令均会被拒绝并写入日志。
+3. **命令逐字白名单校验：** 接收端（电脑 B）仅执行与 `hc` 发送的 `herdr-core connect` 命令逐字完全一致的指令（已在 macOS 上基于 **`hc 0.1.22`** 实测验证；Windows 上最近一次验证基于 `hc 0.1.21`），其余任何命令均会被拒绝并写入日志。
 
 ---
 
@@ -83,7 +83,7 @@
 
 | 组件 | 电脑 A（主控端 — 运行 Herdr） | 电脑 B（远程目标电脑） | 说明 |
 |---|---|---|---|
-| **`herdr-core`** | 必需 | 必需 | 两台电脑请保持**相同版本**（已验证版本为 **`0.1.21`**） |
+| **`herdr-core`** | 必需 | 必需 | 两台电脑请保持**相同版本**（已验证版本：macOS 为 **`0.1.22`**，Windows 为 `0.1.21`） |
 | **Herdr 应用 / `hc` CLI** | 必需 | 不需要 | 电脑 B 只需安装 `herdr-core` |
 | **`herdvia` + 运行中的代理** | 必需 | 必需 | 可通过一键脚本、发布包或 Cargo 安装 |
 
@@ -107,22 +107,22 @@
 - **macOS / Linux：** 安装至 `~/.local/bin/herdr-core`（若尚无 `hc` 则一并创建链接）。该脚本不会自动修改 `PATH`；若 `~/.local/bin` 不在 `PATH` 中会打印提示。
 - **Windows：** 安装至 `%LOCALAPPDATA%\Programs\herdr-core\herdr-core.exe`（若尚无 `hc.exe` 则一并安装），并自动将该目录加入当前用户的 `PATH`。
 
-如需安装经 `herdvia` 实测验证的 **`0.1.21`** 版本：
+如需安装经 `herdvia` 在 macOS 上实测验证的 **`0.1.22`** 版本：
 
 ```sh
 # macOS / Linux
-curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.21 sh
+curl -fsSL https://releases.herdr.dev/core/install.sh | HC_VERSION=0.1.22 sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-$env:HC_VERSION = "0.1.21"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
+$env:HC_VERSION = "0.1.22"; powershell -c "irm https://releases.herdr.dev/core/install.ps1 | iex"
 ```
 
 *（在 macOS 上，若已安装更新版本的 `herdr-core`，脚本会拒绝降级并提示使用 `hc update --from ... --force`。）*
 
 **关于 `herdr-core` 的两条重要说明：**
-1. **不支持通过通道远程安装/更新（基于 `hc 0.1.21`）：** 由于 `herdvia` 只放行与 `hc` 的 `herdr-core connect` 完全一致的命令行，`hc machine add --install` 和 `hc machine update` 无法通过 `herdvia` 安装或更新远端的 `herdr-core`；若未来 `hc` 更改了连接命令格式，在 `herdvia` 跟进更新前也会被拒绝。
+1. **不支持通过通道远程安装/更新（基于 `hc 0.1.22`）：** 由于 `herdvia` 只放行与 `hc` 的 `herdr-core connect` 完全一致的命令行，`hc machine add --install` 和 `hc machine update` 无法通过 `herdvia` 安装或更新远端的 `herdr-core`；若未来 `hc` 更改了连接命令格式，在 `herdvia` 跟进更新前也会被拒绝。
 2. **远程电脑 B 上查找 `herdr-core` 的路径：**
    - **macOS / Unix：** `~/.local/bin/herdr-core` 或代理所在环境的 `PATH`。在 macOS 上，通过 `herdvia agent install` 自动启动的代理，其 `PATH` 仅包含 `~/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin`——若通过 Homebrew 等方式安装在其他位置，请创建软链接至 `~/.local/bin/herdr-core`。
    - **Windows：** `%USERPROFILE%\AppData\Local\Programs\herdr-core\herdr-core.exe`。
@@ -609,7 +609,7 @@ ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
-ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.21)
+ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.22)
 ok   automatic start: registered for this executable
 ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
@@ -629,7 +629,7 @@ ok   pending: no rejected connection attempts
    - **Windows：** 若目录是其他类型的重解析点（reparse point），或所有者不是当前用户、Administrators 或 SYSTEM，又或向其他账户开放了访问权限而当前用户无法修改其权限，均判为 `fail`（最后一种情况会给出需在管理员终端运行的 `icacls … /grant` 命令）。若目录向这三者以外的账户开放了访问权限但当前用户可以修改其权限，则判为 `warn`，因为 herdvia 会在下次运行时限制其权限。
 3. **`secret.key`：** 是否存在，以及能否通过与代理相同的检查（macOS/Unix：归当前用户所有、权限不宽于 `0600`，且在 macOS 上没有允许访问的 ACL 条目；Windows：非链接的普通文件，所有者为当前用户、Administrators 或 SYSTEM，且未向其他账户授予访问权限）。在 Windows 上，若文件向其他账户授予了访问权限，当前用户可以修改其权限时判为 `warn`（因为 herdvia 会在下次运行时限制其权限），否则判为 `fail` 并给出 `icacls … /grant` 命令。若 `secret.key` 不是恰好 32 字节，或因权限拒绝以外的原因读取失败，`doctor` 会输出 `fail secret.key: <error>; fix its permissions or ownership if that is the cause; otherwise remove it, run herdvia id to create a new identity, and pair again with every peer (restoring a copied or backed-up key is not recommended)`；重新配对前，请在所有对端上针对本机运行 `herdvia revoke <名称>`（参见[安全模型](#security-model)）。输出中仅显示短指纹。
 4. **`peers`：** 是否可读（执行与 `secret.key` 相同的检查）且可解析，以及各方向已注册的对端数量。在 Windows 上，herdvia 将在下次运行时限制权限的文件会输出不带计数信息的 `warn` 行；文件内容仍会照常校验，若存在格式错误则输出常规的 `fail` 行（因为限制文件权限并不能修复损坏的内容）。
-5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.21`。空的和相对路径的 `PATH` 条目（如 `.`）会被忽略，因此仅能通过这类条目找到的 `herdr-core` 会被报告为缺失。
+5. **`herdr-core`：** 是否位于代理实际查找的位置（macOS 上为自启代理的 `PATH`），以及 `herdr-core --version` 是否返回已验证的 `0.1.22`。空的和相对路径的 `PATH` 条目（如 `.`）会被忽略，因此仅能通过这类条目找到的 `herdr-core` 会被报告为缺失。
 6. **自动启动：** 是否已注册（macOS 的 LaunchAgent plist、Windows 的注册表 `Run` 值）且指向当前可执行文件。在 Windows 上若以管理员身份运行也会发出警告。
 7. **代理：** 当前数据目录对应的代理是否响应、其版本与可执行文件路径，以及是否已连接归属中继（home relay）。
 8. **对端连接：** 基于 `herdvia status`，为每个已注册对端输出一行连接状态与路径，未连接时则输出带有断开原因与重试倒计时的 `warn peer <name> (<in|out|both>): ...`（若尚未注册任何对端，则输出一行 `warn`）。
