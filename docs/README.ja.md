@@ -605,13 +605,13 @@ cargo install --locked --git https://github.com/photojupi/herdvia
 
 ```text
 $ herdvia doctor
-ok   executable: herdvia 0.1.5 at /Users/you/.local/bin/herdvia
+ok   executable: herdvia 0.1.6 at /Users/you/.local/bin/herdvia
 ok   data directory: /Users/you/Library/Application Support/herdvia
 ok   secret.key: present, fingerprint 28af-63b6-258e-859d
 ok   peers: 2 registered (in 0, out 1, both 1)
 ok   herdr-core: /Users/you/.local/bin/herdr-core (hc 0.1.22)
 ok   automatic start: registered for this executable
-ok   agent: running herdvia 0.1.5 from /Users/you/.local/bin/herdvia
+ok   agent: running herdvia 0.1.6 from /Users/you/.local/bin/herdvia
 ok   relay: connected to https://aps1-1.relay.n0.iroh.link./
 ok   peer B (out): connected directly, 4.12ms
 warn peer office (both): could not reach it (timed out); its agent may be off or offline. Retrying in 12s.
